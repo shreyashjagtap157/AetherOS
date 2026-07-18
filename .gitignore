@@ -1,0 +1,17 @@
+# Local editor / agent state — not portable
+.kilo/
+
+# Python (docs/tools)
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Misc
+*.log
+*.bak

@@ -1,0 +1,20 @@
+# Repository Policy
+# This file defines governance metadata consumed by CI tooling.
+# Editing this file IS a governance act — it changes what CI accepts.
+# Changes require Governance Amendment process.
+
+requirement_namespaces:
+  - GOV     # Governance documents
+  - ARCH    # Architecture Specification
+  - RFC     # Individual RFCs
+  - CTS     # Conformance Test Suite
+
+acceptable_document_classifications:
+  - Constitutional
+  - Normative
+  - Operational
+  - Generated
+  - Informative
+
+# Requirement-ID format: NAMESPACE-SLUG-NUMBER
+# Example: GOV-MON-001, ARCH-INV-001, RFC-0002-001
