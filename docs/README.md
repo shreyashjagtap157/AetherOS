@@ -3,7 +3,7 @@
 Classification: Informative
 Authoritative Source: Platform-Architecture-Specification-v1.1.md
 
-This directory contains a frozen computing platform architecture specification produced after extensive cross-examination of modern operating-system research, capability systems, microkernel design, distributed systems work, formal verification practice, storage engineering, and recent production systems (Linux, Windows NT, macOS/XNU, Fuchsia/Zircon, seL4, QNX, MINIX3, Barrelfish, Kronos, and others).
+This directory contains a validation-candidate computing platform architecture specification produced after extensive cross-examination of modern operating-system research, capability systems, microkernel design, distributed systems work, formal verification practice, storage engineering, and recent production systems (Linux, Windows NT, macOS/XNU, Fuchsia/Zircon, seL4, QNX, MINIX3, Barrelfish, Kronos, and others).
 
 The suite is the deliverable corresponding to one question:
 
@@ -21,7 +21,12 @@ Top-level documents (read in order):
 |------|---------|
 | `README.md` | This document. Entry point. |
 | `Glossary.md` | Terminology used across all documents. |
-| `Platform-Architecture-Specification-v1.1.md` | Frozen top-level architecture. |
+| `Platform-Architecture-Specification-v1.1.md` | Validation-candidate constitutional baseline. |
+| `PRODUCT-FEASIBILITY-AND-SCOPE.md` | Honest product priorities, limits, installation composition, and production criteria. |
+| `COMPATIBILITY-STRATEGY.md` | C0–C9 compatibility claims and implementation lanes. |
+| `PERSISTENCE-AND-EXTERNAL-EFFECTS.md` | Efficient audit commitments and non-rollbackable I/O semantics. |
+| `UASA-INTEGRATION-STATUS.md` | Filesystem integration status and required evidence. |
+| `UASA_COMPREHENSIVE_RESEARCH_REVIEW_PACKET.md` | Imported UASA research handoff and self-declared evidence boundary. |
 | `Revision-History.md` | What changed across versions and why. |
 | `Governance-RFC.md` | How this specification is amended. |
 | `Profiles-Specification.md` | Deployment profiles (Embedded, Desktop, Cloud, HPC, Safety-Critical). |
@@ -55,7 +60,7 @@ Peer architecture subdirectories:
 
 ## Status
 
-The top-level architecture is **frozen at v1.1**. The 41 RFCs are normative specifications that must exist before implementation can claim conformance. They are written as specifications, not as implementation guidance.
+The v1.1 text is the current constitutional baseline and a **validation candidate**. The legacy RFC corpus is Proposed until executable models, CTS fixtures, prototypes, and measured evidence justify acceptance. Specifications are not implementation evidence.
 
 This suite does **not** contain:
 - Working code
@@ -66,7 +71,7 @@ This suite does **not** contain:
 These belong in separate implementation repositories.
 
 This suite **does** contain:
-- A frozen architectural specification
+- A validation-candidate architectural specification
 - 41 normative RFCs
 - A verification methodology
 - A conformance test methodology

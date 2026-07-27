@@ -1,7 +1,7 @@
 # Decision Record: INTF-000 — Capability Enforcement Substrate
 
 Classification: Normative
-Authoritative Source: `Platform-Architecture-Specification-v1.1.md` (Invariants I-1, I-2, I-3, I-13), `PRE-IMPLEMENTATION-DEPENDENCY-MATRIX.md`
+Authoritative Source: `Platform-Architecture-Specification-v1.1.md` (Invariants I-1, I-2, I-3, I-13)
 Requirement-ID: ARCH-INTF-000
 Status: Accepted
 
@@ -77,19 +77,19 @@ The AetherOS **capability semantic model is architecture-neutral** and **does no
 |----------|--------------|
 | **Unforgeability model** | A capability token cannot be created except by a correctly sealed derivation chain rooted in the platform master seal key. The seal-verification primitive is the only path by which a byte sequence becomes a valid capability. Whether seal verification is performed by hardware (tagged register, dedicated instruction) or software (trusted mediator on token dereference) is the provider's choice; the interface presented to AetherOS code is identical. |
 | **Provenance model** | Every new capability has a recorded parent (`rights_derived` counter per `RFC-0037.12`). Revocation (`RFC-0039`) walks the lineage. Provenance is mandatory and enforced by the provider. |
-| **Representation** | Canonical capability token is the 96-byte structure per `RFC-0037.1`. Representation **on the wire**, in registers, or in memory is provider-specific. The hardware-capability provider may use a smaller architectural representation (e.g., 128-bit CHERI capability register) as long as a canonical-form round-trip is available for transmission and persistence. |
+| **Representation** | The `RFC-0037` canonical record is a versioned serialization for persistence, audit, and transfer; it is **not** the mandatory live or hot-path representation. Conventional providers use compact, domain-local, generational capability-space handles whose table entries hold authority and provenance. Native providers may use tagged hardware capabilities. Serialization/deserialization is an explicit mediated operation and never implies that arbitrary bytes become live authority. |
 | **Derivation** | Right-narrowing is performed by a seal-signed operation; the resulting token has incremented `rights_derived` counter (per `RFC-0037.12`). The narrowing invariant — derived rights are a subset of parent rights — is the provider's hard guarantee. |
 | **Revocation** | Driven by `RFC-0039`. The provider must invalidate tokens whose lineage contains a revoked ancestor within the declared latency bound. |
-| **Address interaction** | The capability's `target_object` field is an address (per `RFC-0037.10`). The provider does not infer authority from address bits; the provider does not infer address from authority bits. I-13 must hold at the provider boundary. |
+| **Address interaction** | I-13 is semantic rather than a bit-layout prohibition: an address without validated authority grants nothing, and authority does not invent an undeclared locator. CHERI-style tagged representations are conformant when independent rights/bounds/tag validation preserves those properties. Canonical serialization keeps locator and authorization fields independently validateable. |
 | **Fault semantics** | Any failed capability check (invalid seal, expired, insufficient rights, revoked, cross-domain) yields a single observable fault (`ECAPSTALE` per `RFC-0025.8`). The fault MUST NOT corrupt any resource. The provider MUST NOT silently drop; it MUST record the attempt in observability (per `RFC-0034.1` capability events). |
 | **Trust boundary** | The provider's seal-verification primitive is the trust boundary. Above the primitive, AetherOS code may assume capability semantics. Below the primitive, the provider's internal implementation is software-trusted only if the deployment uses the software provider. |
-| **Performance contract** | The provider MUST complete a capability check (seal + rights + domain bound) within O(1) hardware instructions (hardware provider) or within a documented bounded cycle count (software provider). The performance bound is declared in the conformance declaration per `RFC-0040.13`. |
+| **Performance contract** | The live check is an O(1) tagged-capability validation or bounded capability-space lookup plus generation, rights, type, and domain checks. HMAC/canonical-record verification occurs at explicit import, persistence, or cross-trust serialization boundaries—not on every intra-domain dereference. Bounds and benchmark distributions are declared per `RFC-0040.13`. |
 | **Verification boundary** | Tier A applies to the capability semantics visible at the provider boundary. The hardware provider's internal mechanism is hardware-trusted; the software provider's check sequence is verified. **Provider choice is declared per I-11.** |
 
 ### 4.2 Implementation Providers Defined by This Decision
 
 1. **Native Capability Provider (Provider NCP).** Targets hardware capability architectures. First concrete provider: CHERI-RISC-V (when available). Implementation maps `RFC-0037` token onto architectural register + tag semantics. Tier A.
-2. **Software Capability Provider (Provider SCP).** Targets conventional RV64 (no CHERI), x86-64, ARM64. Implementation validates the 96-byte token (seal + rights + domain) on every dereference at the capability mediation boundary. Tier B.
+2. **Software Capability Provider (Provider SCP).** Targets conventional RV64, x86-64, and ARM64. A live capability is a compact unforgeable handle into a kernel/provider-owned capability space. Importing a canonical record validates its seal, provenance, type, rights, freshness, and domain once and creates a local entry; use validates the entry and generation. Tier B initially, eligible for Tier A after refinement proof.
 3. **Hybrid Provider (Provider HCP, future).** May use hardware-assisted sealing (e.g., AES-NI, RISC-V vector crypto extensions) where available, with software fallback. Future RFC.
 
 ### 4.3 Phase 1 Provider Assignment
@@ -97,8 +97,8 @@ The AetherOS **capability semantic model is architecture-neutral** and **does no
 **Phase 1 implements Provider SCP.** Rationale:
 
 - QEMU RISC-V and current RISC-V silicon (SiFive FU740, StarFive JH7110) do not include CHERI capability extensions. Phase 1 must boot on these platforms.
-- Capabilities, derivation, revocation, and I-13 invariants are realised in software and verified at Tier B. The semantic model is unchanged.
-- **The capability mediators — the only code paths that touch capability bytes — are kept extremely small, audited, and bounded**, providing a foundation on which a Native Provider swap becomes possible at Phase 3 (deferred, no commitment in v1.1).
+- Capabilities, derivation, revocation, and I-13 invariants are realised through protected capability spaces and verified initially at Tier B. The semantic model is unchanged.
+- **Canonical bytes are accepted only by a small import/export mediator; ordinary calls carry compact handles**, keeping cryptography and 96-byte copies off the hot path and preventing ordinary memory bytes from becoming authority.
 
 ### 4.4 Migration Path to Native Provider
 
@@ -127,9 +127,9 @@ The migration does NOT require changes to `RFC-0037` through `RFC-0040` — the 
 
 ## 7. Implementation Consequences
 
-- **First Phase 1 substrate-neutral deliverable.** The capability-mediator implementation is the boundary between provider and rest of AetherOS. It is **smaller than typical microkernel capability checks** (the seal algorithm is HMAC-SHA-256 + rights/domain checks; under 200 LOC of audit-critical code).
+- **First Phase 1 substrate-neutral deliverable.** The capability-space lookup and canonical import/export mediator form the boundary between provider and the rest of AetherOS. No source-line-count claim is made before implementation; size, cycles, cache behavior, and proof surface are measured by the Phase B gate.
 - **No CHERI hardware emulator required for Phase 1.** The Software Provider runs on every RISC-V emulation target.
-- **Compiler ABI (§ `RFC-COMPILER-001`) takes the capability-mediator as the trust anchor.** Capability registers are conventional integer registers with a checking convention enforced at the call site or at value acquisition. A capability-cross-register convention is **not** required because the convention is enforced by the mediator not the register class.
+- **Compiler ABI (§ `RFC-COMPILER-001`) passes a pointer-width local handle on conventional ISAs and a tagged native capability where an approved ABI supports it.** Cross-domain calls invoke generated stubs that transfer/attenuate capabilities through the mediator. Canonical records never occupy a fixed set of argument registers.
 
 ## 8. CTS Impact
 
@@ -152,7 +152,7 @@ None.
 
 ## Acceptance Signature
 
-This decision is accepted and treated as architecturally binding for Phase 1 implementation planning. It is normative input to `RFC-ALLOC-001`, `RFC-COMPILER-001`, and `RFC-DRIVER-001`. Its acceptance does not amend the frozen architecture; the architecture remains invariant-neutral on enforcement substrate, and this decision specifies which mechanism family the implementation will adopt without introducing a new invariant.
+This revised decision is the prototype baseline for Phase A modeling and Phase B implementation. It is normative input to `RFC-ALLOC-001`, `RFC-COMPILER-001`, and `RFC-DRIVER-001`, but handle layout, revocation structure, canonical cryptography, and provider equivalence remain evidence gates. I-13 is semantic orthogonality, permitting tagged CHERI-style packing without treating a raw address as authority.
 
 A future Architecture-Amendment is required only if a new invariant is introduced (e.g., making native hardware capability mandatory). No such amendment is planned.
 

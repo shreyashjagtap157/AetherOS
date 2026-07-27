@@ -1,5 +1,8 @@
 # Cross-Impact Gate 001 Decision Record
 
+Classification: Operational
+Authoritative Source: CROSS-IMPACT-GATE-001-DECISION.md
+
 **Classification:** Governance — cross-impact gate decision
 **Gate ID:** CROSS-IMPACT-GATE-001
 **Subject:** RFC-0037 §2 Amendment & Model A Provenance Selection
