@@ -141,7 +141,7 @@ Object header flags:
 
 `RFC-COMPILER-001.29`: Uncaught exceptions (hardware faults, capability-mediator faults, asynchronous faults) are delivered to the component as an error token via the fault handler registered in the component's manifest. If no fault handler is registered, the component is terminated and the exit stub (RFC-COMPILER-001.23) executes.
 
-`RFC-COMPILER-001.30`: An error token MUST NOT carry information about the resource that caused the error beyond the error code. Error tokens are not capabilities; they grant no authority. The error token's `seal` field MAY be zeroed (it is not a valid capability seal).
+`RFC-COMPILER-001.30`: An error token MUST NOT carry information about the resource that caused the error beyond the error code. Error tokens are not capabilities; they grant no authority. An error token MUST carry a valid HMAC-SHA256 seal per `RFC-0037.9.1`. The error token is not a capability for resource access, but it carries an integrity-protected error code.
 
 ### 2.8 Position-Independent Code and Address Space Layout (REQ-COMP-04)
 
@@ -416,3 +416,4 @@ struct got_entry {
 | Date | Change |
 |------|--------|
 | this cycle | Initial draft. ABI, capability passing, component lifecycle, error propagation, PIC, and symbol resolution specified. INTF-002, INTF-003, INTF-006 resolved. I-1, I-2, I-12, I-13 implemented. RISC-V-specific ABI defined for Phase 1. |
+| 2026-07-20 | Coordinated Specification Amendment applied with RFC-0037 §2 amendment (Cross-Impact Gate 001 authorization; PHASE-4-AUTHORIZATION-RFC-0037-S2.md). RFC-COMPILER-001.30 updated: "MAY be zeroed" removed; error tokens now MUST carry a valid HMAC-SHA256 seal per RFC-0037.9.1 (Model A mandatory sealing). |
