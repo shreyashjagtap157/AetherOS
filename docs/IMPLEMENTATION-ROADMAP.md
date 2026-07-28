@@ -26,7 +26,7 @@ The complete objective resembles a new kernel, distribution, compatibility ecosy
 
 ## 3. Phase A — Specification reconciliation and executable models
 
-**Minimum plausible duration:** 6–18 months after staffing. **Current state:** in progress in documentation only.
+**Minimum plausible duration:** 6–18 months after staffing. **Current state:** in progress; the first capability reference/provider/CTS slice exists under `reference/`, while transaction, update, UASA, scheduler, and formal models remain unimplemented.
 
 Deliverables:
 

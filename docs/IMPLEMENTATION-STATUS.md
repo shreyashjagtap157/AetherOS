@@ -153,7 +153,8 @@ This document tracks the implementation status of every component in the platfor
 | State Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Communication Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Observability Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
-| Cross-Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
+| Capability reference CTS | **Prototype implemented** | Five executable differential cases: attenuation, transfer, lineage revocation, forged-handle rejection, stale-generation rejection |
+| Cross-Architecture CTS | **Partially prototyped** | Host abstract model and table-backed software provider only; kernel/hardware paths do not exist |
 | Hardware Provider CTS | **Not implemented** | Fixtures declared in Hardware-Support-RFC; code not written |
 
 ---
@@ -179,8 +180,8 @@ This document tracks the implementation status of every component in the platfor
 
 ## Last Updated
 
-This document reflects the 2026-07-27 feasibility and UASA integration review. The architecture is a validation candidate. The UASA research packet is now present, but it states that underlying implementation results were reported rather than independently reproduced. No AetherOS CTS code, kernel, HAL, driver, filesystem implementation, runtime, benchmark, or machine proof exists in this checkout.
+This document reflects the 2026-07-28 start of executable Phase A work. The architecture is a validation candidate. `reference/` now contains a dependency-free Rust capability semantic model, table-backed Software Capability Provider prototype, and five-case machine-readable differential CTS runner. There is still no kernel, HAL, driver, transactional-state implementation, filesystem implementation, runtime, benchmark programme, or machine proof. UASA implementation results remain reported rather than independently reproduced.
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-07-27 (feasibility, compatibility, capability representation, persistence/effects, roadmap, and UASA-source review)
+**Last Updated:** 2026-07-28 (first executable capability model/provider/CTS prototype)

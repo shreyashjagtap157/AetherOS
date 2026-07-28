@@ -21,6 +21,7 @@ The repository contains the specification suite — **not** a working kernel, co
 ```
 AetherOS/
 ├── docs/        The full specification suite (entry: docs/README.md)
+├── reference/   Executable capability reference model and CTS prototype
 └── .kilo/       Local editor / agent configuration
 ```
 
@@ -77,6 +78,7 @@ It **is**:
 - A verification-tier methodology (`RFC-0040`) and a conformance-test methodology (`Conformance-Test-Suite-Methodology.md`).
 - A governance process (`ARCHITECTURE-GOVERNANCE.md`, `Governance-RFC.md`).
 - Five deployment profiles (`Profiles-Specification.md`).
+- An initial, explicitly non-production executable capability model, table-backed provider, and machine-readable CTS runner under `reference/`.
 
 ## Vocabulary of Authority
 
