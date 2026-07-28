@@ -4,7 +4,7 @@ Classification: Constitutional
 Authoritative Source: Platform-Architecture-Specification-v1.1.md
 Requirement-ID: ARCH-INV-001, ARCH-Peer-001, ARCH-Boot-001, ARCH-Sched-001, ARCH-Persist-001, ARCH-Dist-001, ARCH-HW-001, ARCH-Profile-001
 
-**Status:** Frozen. Last revised in this cycle. No further architectural iteration is expected.
+**Status:** Validation Candidate. The v1.1 text is the current constitutional baseline, but implementation, executable-model, security, compatibility, and performance evidence may require governed amendment. It SHALL NOT be described as frozen until the Phase A and Phase B evidence gates in `IMPLEMENTATION-ROADMAP.md` pass.
 
 **Path of progression:** v1.0 → v1.1 (see `Revision-History.md` for material changes).
 
@@ -14,7 +14,7 @@ Requirement-ID: ARCH-INV-001, ARCH-Peer-001, ARCH-Boot-001, ARCH-Sched-001, ARCH
 
 This document defines the architecture of a general-purpose computing platform. It is the top-level specification that all subsequent RFCs must conform to.
 
-**Frozen** means the invariants listed here do not change without an explicit Architecture Amendment RFC. Mechanisms, names, and concrete data structures below the invariant layer may evolve through normal RFC revision.
+**Validation Candidate** means the invariants remain authoritative design hypotheses and change only through an explicit Architecture Amendment RFC, but the project actively seeks evidence that may justify amendment. This status prevents implementation inconvenience from silently changing the architecture without pretending that an unimplemented design is empirically final.
 
 This document does **not** specify:
 - Hardware implementation
@@ -57,7 +57,7 @@ These invariants are normative. Every conforming implementation must satisfy the
 | I-10  | Explicit failure semantics                                                   | Every interface contract must declare its failure modes including partial-failure behavior.                                                                                    |
 | I-11  | Declarable profiles                                                          | Every conforming implementation declares the subset of profiles, mechanisms, and tiers it implements; the absence of a declaration is a conformance violation.               |
 | **I-12** | **Origin-of-authority specification**                                     | **The platform shall specify how initial authority is legitimately created at bootstrap. The absence of an origin-of-authority specification is a conformance violation.**       |
-| **I-13** | **Address–authority orthogonality**                                        | **A capability authorizes an action; an address locates a resource. The architecture shall maintain these as orthogonal primitives; collapsing them into a single primitive is a conformance violation.** |
+| **I-13** | **Address–authority semantic orthogonality**                               | **A capability authorizes an action; an address locates a resource. Possession of an address alone grants no authority, and authority validation does not synthesize an undeclared address. A tagged or packed hardware representation MAY carry both when its semantics preserve independent bounds, rights, derivation, and validation; shared representation is not itself a collapse.** |
 
 These are the only architectural invariants. Anything not derivable from these invariants is a mechanism or implementation choice and may be revised through standard RFC process without architectural amendment.
 
@@ -365,8 +365,8 @@ The 41 RFCs of normative specification required for v1 conformance are listed in
 
 ## Document Status
 
-This document is **frozen at architectural level.** Further revisions to Architectural Invariants (Section 2) and the five-peer decomposition (Section 3) require the Architecture-Amendment process defined in `Governance-RFC.md`. Editorial improvements to RFC listings, example rewording, or section ordering do not require an amendment.
+This document is a **validation candidate at architectural level.** Governed revisions to Architectural Invariants (Section 2) and the five-peer decomposition (Section 3) require the Architecture-Amendment process defined in `Governance-RFC.md`. Editorial improvements to RFC listings, example rewording, or section ordering do not require an amendment.
 
 Concrete RFCs are not part of this document and evolve independently.
 
-This is the **final** architectural revision. The next document produced from this suite should be one of the 41 RFCs, not another iteration of this one.
+This is the current constitutional baseline, not a final empirical claim. The next work is executable modeling, CTS implementation, prototype evidence, and governed reconciliation.

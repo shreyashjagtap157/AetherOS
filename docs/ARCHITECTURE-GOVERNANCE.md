@@ -278,7 +278,7 @@ Every architectural decision must be recorded in the repository. The following f
 
 | File | Purpose | Updated By |
 |------|---------|-----------|
-| `Platform-Architecture-Specification-v1.1.md` | Frozen architecture | Architecture Amendment only |
+| `Platform-Architecture-Specification-v1.1.md` | Validation-candidate constitutional baseline | Architecture Amendment only |
 | `Governance-RFC.md` | Amendment process | Governance Amendment |
 | `REVIEWER-GUIDE.md` | Review process | Governance Amendment |
 | `ARCHITECTURE-GOVERNANCE.md` | This document | Governance Amendment |

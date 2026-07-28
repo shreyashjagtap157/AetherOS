@@ -1,6 +1,11 @@
 # RFC-COMPILER-001: Compiler and Runtime Boundary
 
-**Status:** Draft.
+Classification: Normative
+Authoritative Source: RFC-COMPILER-001.md
+Requirement-ID: RFC-COMPILER-001-000
+Status: Draft
+
+**Lifecycle note:** Draft.
 **Implements invariants:** I-1, I-2, I-12, I-13.
 **Depends on:** RFC-0037 (Capability Token Format), RFC-0038 (Capability Transfer Protocol), RFC-0025 (Endpoint Model), RFC-0007 (Execution Domain), RFC-ALLOC-001 (Allocator Hierarchy).
 **Resolves:** INTF-002 (Capability Register Convention), INTF-003 (Component Entry Protocol), INTF-006 (Error Propagation at ABI).
@@ -32,29 +37,29 @@ This RFC does not specify the allocator hierarchy (`RFC-ALLOC-001`), the driver 
 
 `RFC-COMPILER-001.2`: The ABI is architecture-neutral where possible. RISC-V-specific elements are confined to Section 2.9. The architecture-neutral ABI describes the *logical* contract; the RISC-V-specific section describes the *physical* implementation on the Phase 1 reference platform.
 
-### 2.2 Capability Register Convention (INTF-002)
+### 2.2 Live Capability Convention (INTF-002)
 
-`RFC-COMPILER-001.3`: In Phase 1 (Software Capability Provider per INTF-000), capability tokens are represented in conventional integer registers. There is no dedicated hardware capability register class. A 96-byte capability token occupies multiple consecutive registers (see Section 2.9 for RISC-V).
+`RFC-COMPILER-001.3`: Under the Software Capability Provider, a live capability is a pointer-width, domain-local, generational handle into a provider-owned capability space. The canonical `RFC-0037` record is used only for explicit import, export, persistence, and cross-trust transfer.
 
-`RFC-COMPILER-001.4`: The ABI defines a set of **capability-carrying registers**: registers that MAY contain a valid capability token during a function call. Capability-carrying registers are a subset of the architecture's general-purpose register file.
+`RFC-COMPILER-001.4`: Handles use ordinary integer argument registers but are typed distinctly in IDL and generated bindings. Integer construction, arithmetic, memory copying, or use in another domain grants no authority.
 
-`RFC-COMPILER-001.5`: Capability-carrying registers are **caller-saved** by convention. A callee that wishes to preserve a capability across a call MUST copy it to a callee-saved location (stack slot or callee-saved register pair) before making any call. The caller MUST NOT assume that capability-carrying registers are preserved across a call.
+`RFC-COMPILER-001.5`: Handles are caller-saved unless the architecture ABI says otherwise. Preserving a handle preserves only a reference; provider validation of domain, slot generation, type, rights, and revocation state occurs on mediated use.
 
-`RFC-COMPILER-001.6`: When a capability token is loaded into a capability-carrying register, the register pair MUST be loaded atomically (both halves of the 96-byte token loaded before any use). A capability-carrying register that contains only one half of a token is in a **faulting representation**.
+`RFC-COMPILER-001.6`: Zero is the null handle. Freed slots advance their generation before reuse. Truncated, stale, out-of-domain, or type-confused handles fail closed in bounded time.
 
-`RFC-COMPILER-001.7`: A faulting representation is a register state that, when presented to the capability-mediator, yields `ECAPSTALE`. The faulting representation MUST be detectable by the capability-mediator in O(1) time. Two common faulting representations are: (a) a register pair where the seal field has been zeroed, and (b) a register pair where the high word contains a distinguished invalid-marker value (platform-defined constant).
+`RFC-COMPILER-001.7`: Native Capability Providers MAY use tagged capability registers and their standard ABI. Generated stubs preserve the same semantic contract without forcing the software-handle bit layout onto native hardware.
 
-`RFC-COMPILER-001.8`: The ABI MUST NOT create capability tokens implicitly. Every capability in a capability-carrying register MUST originate from: (a) a function parameter, (b) a return value, (c) a capability load from memory, or (d) the component's initial capability environment (Section 2.6). A capability that appears in a register without one of these origins is non-conformant (I-2).
+`RFC-COMPILER-001.8`: A compiler cannot mint authority. Live handles originate only from the initial environment, a mediated return, explicit transfer/derivation, or validated canonical import.
 
 ### 2.3 Capability Passing Protocol
 
-`RFC-COMPILER-001.9`: When a component function call passes a capability token as an argument, the token is passed in consecutive capability-carrying registers. The callee receives the token and MAY pass it to the capability-mediator for verification before use.
+`RFC-COMPILER-001.9`: Intra-domain calls pass live handles by value using the platform's normal pointer-width argument convention.
 
-`RFC-COMPILER-001.10`: A function MAY return at most one capability token as a return value. Return values that include a capability use the same register pair as the primary return. Multi-capability return values are NOT supported; they MUST be communicated through memory or through sequential calls.
+`RFC-COMPILER-001.10`: Functions MAY return one handle directly and return additional handles through an explicitly typed result structure. Error status is separate from capability values.
 
-`RFC-COMPILER-001.11`: Capability tokens are never passed by value in the stack frame as part of the calling convention. Stack-passed arguments are always raw data (integers, pointers to data, or pointers to capability slots in memory). Capability tokens in stack frames are permitted only as explicit save/restore by the callee for preservation across calls.
+`RFC-COMPILER-001.11`: Stack and heap storage may contain live handles, but such bytes have meaning only inside the owning capability domain and generation. They are never a portable serialized authority format.
 
-`RFC-COMPILER-001.12`: When a capability token crosses a trust boundary (user→kernel, user→device, kernel→user), the boundary-crossing MUST be mediated by the capability-mediator per RFC-0013. The ABI provides no mechanism for trust-boundary bypass.
+`RFC-COMPILER-001.12`: Crossing a trust/domain boundary invokes a generated mediator stub that checks transfer authority, attenuates rights, allocates a destination entry, and returns a destination-local handle. Raw handle copying across the boundary is invalid.
 
 ### 2.4 Object Model at ABI Level (REQ-COMP-02)
 
@@ -68,7 +73,7 @@ struct object_header {
     uint8               capability_slots; // number of capability slots following header
     uint8               flags;            // object flags (see below)
     uint16              reserved;
-    // Followed by: capability_slots × 96-byte capability_token
+    // Followed by: capability_slots × provider-width live_cap_handle
     // Followed by: object data
 };
 ```
@@ -85,9 +90,9 @@ Object header flags:
 
 `RFC-COMPILER-001.15`: The `capability_slots` field declares how many capability tokens immediately follow the header. These slots are the object's exported capabilities. The capability slots are part of the object's in-memory representation and are accessed through capability tokens (not raw pointers).
 
-`RFC-COMPILER-001.16`: A **null capability** is a 96-byte zeroed token. A null capability is a valid representation that yields `ECAPSTALE` when presented to the capability-mediator (per RFC-0037.9: no capability and invalid capability are indistinguishable).
+`RFC-COMPILER-001.16`: A **null capability handle** is zero and yields `ECAPSTALE` when used. It is not a canonical capability record.
 
-`RFC-COMPILER-001.17`: An **invalid capability** is any token whose seal verification fails. The ABI MUST NOT produce invalid capabilities as a normal outcome. An invalid capability in a capability-carrying register is a programming error that yields `ECAPSTALE`.
+`RFC-COMPILER-001.17`: An invalid or stale live handle yields `ECAPSTALE`. Canonical seal failures occur only at import and never allocate a live handle.
 
 ### 2.5 Component Entry Protocol (INTF-003)
 
@@ -120,28 +125,17 @@ Object header flags:
 
 ### 2.7 Error Propagation (INTF-006)
 
-`RFC-COMPILER-001.25`: Errors at the ABI level are represented by a distinguished **error token**: a 96-byte capability token with `type = CAP_ERROR` (type 11) and a zeroed `target_object` field. The error token is NOT a valid capability for any resource access; presenting it to the capability-mediator for resource access yields `ECAPSTALE`.
+`RFC-COMPILER-001.25`: ABI operations return a fixed-width status code separately from any capability result. An error value is data and never authority.
 
-`RFC-COMPILER-001.26`: A function that encounters an error returns the error token instead of a success capability. The caller distinguishes success from error by checking whether the returned value is the error token (comparison against the canonical error token constant).
+`RFC-COMPILER-001.26`: Generated bindings use a result structure or the platform language's checked result type; output capability handles are zeroed on failure.
 
-`RFC-COMPILER-001.27`: The error token carries an error code in the `rights` field (repurposed as error code for `CAP_ERROR` tokens). The error code is one of a fixed set defined per profile:
+`RFC-COMPILER-001.27`: The initial error namespace includes `ERR_NOMEM`, `ERR_NOCAP`, `ERR_FAULT`, `ERR_RANGE`, `ERR_PERM`, `ERR_DEPEND`, `ERR_TIMEOUT`, `ERR_BUSY`, `ERR_CANCELLED`, `ERR_UNCERTAIN`, and `ERR_VERSION`. Numeric assignments belong to the ABI implementation contract.
 
-| Code | Name | Meaning |
-|------|------|---------|
-| 0x01 | `ERR_NOMEM` | Allocation failed |
-| 0x02 | `ERR_NOCAP` | Required capability not held |
-| 0x03 | `ERR_FAULT` | Capability fault (seal invalid, expired, revoked) |
-| 0x04 | `ERR_RANGE` | Address or size out of bounds |
-| 0x05 | `ERR_PERM` | Insufficient rights for operation |
-| 0x06 | `ERR_DEPEND` | Dependency not satisfied |
-| 0x07 | `ERR_TIMEOUT` | Operation timed out |
-| 0x08 | `ERR_BUSY` | Resource temporarily unavailable |
+`RFC-COMPILER-001.28`: Applications handle synchronous errors through normal control flow. Error values cannot be presented to the mediator as capabilities.
 
-`RFC-COMPILER-001.28`: Error tokens are NOT catchable by the component that caused the error. An error token returned to a component indicates that the operation failed and the component MUST handle it through normal control flow (e.g., branching on the error token). Unhandled error tokens propagate upward through the call stack until caught or until the component exits.
+`RFC-COMPILER-001.29`: Hardware and asynchronous faults are delivered as bounded fault records to a registered handler endpoint. If no handler exists or the handler violates policy, the component is terminated and cleanup runs from a trusted supervisor context.
 
-`RFC-COMPILER-001.29`: Uncaught exceptions (hardware faults, capability-mediator faults, asynchronous faults) are delivered to the component as an error token via the fault handler registered in the component's manifest. If no fault handler is registered, the component is terminated and the exit stub (RFC-COMPILER-001.23) executes.
-
-`RFC-COMPILER-001.30`: An error token MUST NOT carry information about the resource that caused the error beyond the error code. Error tokens are not capabilities; they grant no authority. An error token MUST carry a valid HMAC-SHA256 seal per `RFC-0037.9.1`. The error token is not a capability for resource access, but it carries an integrity-protected error code.
+`RFC-COMPILER-001.30`: Error detail follows explicit disclosure policy and may carry an opaque diagnostic correlation ID. It never contains undelegated resource identity or authority.
 
 ### 2.8 Position-Independent Code and Address Space Layout (REQ-COMP-04)
 
@@ -153,7 +147,7 @@ Object header flags:
 
 | Relocation Type | Description |
 |----------------|-------------|
-| `REL_CAPABILITY` | Capability token reference (96-byte aligned) |
+| `REL_CAPABILITY` | Provider-width live capability handle slot |
 | `REL_CAP_GOT` | GOT entry for a capability reference |
 | `REL_DATA` | Data pointer (address-relative) |
 | `REL_FUNC` | Function pointer (address-relative) |
@@ -177,39 +171,21 @@ High address
 
 ### 2.9 RISC-V Specific ABI Elements (Phase 1)
 
-`RFC-COMPILER-001.36`: The following are RISC-V-specific ABI elements for the Phase 1 reference platform. These are NOT architecture-neutral; they apply only when the execution provider is a RISC-V hart.
+`RFC-COMPILER-001.36`: Phase 1 follows the standard RV64 integer calling convention wherever possible. A Software Capability Provider handle occupies one XLEN register.
 
-**Register allocation for capabilities:**
+`RFC-COMPILER-001.37`: Handle arguments use ordinary `a0`–`a7` positions according to generated function signatures; status and primary result follow the approved psABI-compatible result convention. No twelve-register token convention exists.
 
-| Register pair | Role | Caller-saved? |
-|---------------|------|---------------|
-| `a0`–`a7` (8 registers) | Capability arguments (up to 4 capabilities in argument registers; each capability uses 2 registers on RV64) | Yes |
-| `t0`–`t6` (7 registers) | Capability temporaries | Yes |
-| `s0`–`s11` (12 registers) | Data only; MUST NOT contain capability tokens | N/A |
+`RFC-COMPILER-001.38`: Cross-domain entry points are generated stubs. They copy ordinary data only after bounds validation and transfer capabilities through the provider, which returns destination-local handles.
 
-`RFC-COMPILER-001.37`: On RV64, a 96-byte capability token occupies 12 general-purpose registers (each 8 bytes). The token is divided into three 32-byte sections, each occupying 4 registers:
+`RFC-COMPILER-001.39`: Canonical capability records are passed by pointer and length only to explicit import/export calls. The mediator validates version and the entire record before creating a live entry.
 
-| Register group | Token section |
-|----------------|---------------|
-| `a0`–`a3` (or `t0`–`t3`) | Identity section (bytes 0–31) |
-| `a4`–`a7` (or `t4`–`t6` + 1 temp) | Reference section (bytes 32–63) |
-| `t0`–`t3` (reused or stack) | Integrity section (bytes 64–95) |
-
-`RFC-COMPILER-001.38`: Because RV64 has only 32 general-purpose registers, passing more than two 96-byte capabilities simultaneously via registers is NOT feasible. The ABI limits capability arguments to a maximum of **two capability tokens** passed in registers. Additional capabilities are passed via memory (stack-passed capability slots).
-
-`RFC-COMPILER-001.39`: The RISC-V ABI uses the following calling convention extensions for capability passing:
-
-- **Capability return value:** The first capability return value occupies `a0`–`a11` (12 registers). A function returning a capability uses the full `a` register file.
-- **Capability arguments:** The first capability argument occupies `a0`–`a11`. The second capability argument (if any) is passed via a pointer to a stack-allocated capability slot.
-- **Capability preservation:** Callee-saved capability preservation uses the stack. The callee saves the capability's 96 bytes to a known stack offset before making any call.
-
-`RFC-COMPILER-001.40`: The capability-mediator performs seal verification on the capability's integrity section (bytes 64–95) when the capability is presented for a resource operation. The mediator does NOT require the capability to reside in specific registers; the register convention is a software contract, not a hardware enforcement.
+`RFC-COMPILER-001.40`: A future CHERI-RISC-V ABI uses tagged capability registers and approved CHERI calling conventions behind the same IDL semantics; it need not preserve the software handle representation.
 
 ### 2.10 Symbol Resolution and Component Linking (REQ-COMP-05)
 
 `RFC-COMPILER-001.41`: Component symbols are classified as **capability symbols** or **data symbols**. Capability symbols represent capability tokens exported by a component. Data symbols represent data addresses.
 
-`RFC-COMPILER-001.42`: The symbol table format distinguishes capability symbols from data symbols using a type field. A capability symbol's value is an offset into the component's GOT where the capability token is stored. A data symbol's value is an offset into the component's data region.
+`RFC-COMPILER-001.42`: The symbol table format distinguishes capability symbols from data symbols using a type field. A capability symbol's value is an offset into the component's GOT where the live capability handle is stored. A data symbol's value is an offset into the component's data region.
 
 `RFC-COMPILER-001.43`: Symbol resolution occurs at load time. The Composition Root resolves imported symbols by matching the symbol name and type against exported symbols in the component's manifest (RFC-0002). Capability symbols are resolved by granting the importing component a derived capability over the exporting component's capability slot.
 

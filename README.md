@@ -1,6 +1,6 @@
 # AetherOS
 
-AetherOS is the working name for the **Ideal Computing Platform**: a frozen v1.1 architectural specification for a general-purpose operating system built around capability-only authority, thirteen normative invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
+AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
 
 The repository contains the specification suite — **not** a working kernel, compiler, or hardware design. Implementation repositories will be separate.
 
@@ -8,10 +8,13 @@ The repository contains the specification suite — **not** a working kernel, co
 
 | Item                              | State                                                                 |
 |-----------------------------------|-----------------------------------------------------------------------|
-| Top-level architecture            | **Frozen v1.1** (`ARCH-INV-001` … `ARCH-Profile-001`)                 |
-| Normative RFCs                    | **41 of 44 produced**; **3 Pre-Phase-1 drafts** under review           |
+| Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
+| RFC corpus                        | **41 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
 | Conformance Test Suite            | Methodology frozen; executable suite not started                       |
-| Implementation                    | Phase 1 (x86-64 / ARM64 execution providers) **not started**          |
+| Implementation                    | Phase 1 (QEMU RISC-V64 reference vertical slice) **not started**       |
+| Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |
+| Compatibility strategy           | Active; see `docs/COMPATIBILITY-STRATEGY.md`                           |
+| UASA storage integration         | Review packet imported from `main`; implementation evidence pending |
 
 ## What Is In This Repository
 
@@ -24,7 +27,7 @@ AetherOS/
 The canonical entry point is **[`docs/README.md`](docs/README.md)**. From there the reading order is:
 
 1. `docs/REPOSITORY-PRINCIPLES.md` — one-page orientation
-2. `docs/Platform-Architecture-Specification-v1.1.md` — frozen architecture with 13 invariants
+2. `docs/Platform-Architecture-Specification-v1.1.md` — validation-candidate architecture with 13 invariants
 3. `docs/ARCHITECTURE-GOVERNANCE.md` — how the spec is amended
 4. `docs/00-RFC-Index.md` — master index of the 41 normative RFCs (and the 3 Pre-Phase-1 drafts)
 
@@ -69,7 +72,7 @@ It is **not**:
 
 It **is**:
 
-- A frozen architectural specification with thirteen invariants.
+- A validation-candidate architectural specification with thirteen invariants that remain subject to evidence-driven amendment.
 - 41 normative RFCs across five peer architectures.
 - A verification-tier methodology (`RFC-0040`) and a conformance-test methodology (`Conformance-Test-Suite-Methodology.md`).
 - A governance process (`ARCHITECTURE-GOVERNANCE.md`, `Governance-RFC.md`).

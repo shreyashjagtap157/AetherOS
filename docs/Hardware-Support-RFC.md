@@ -2,7 +2,7 @@
 
 Classification: Normative
 Authoritative Source: Hardware-Support-RFC.md
-Requirement-ID: ARCH-HW-001
+Requirement-ID: RFC-HW-001
 
 **Status:** Active.
 **Implements invariants:** I-1, I-2, I-3, I-9, I-10, I-13.

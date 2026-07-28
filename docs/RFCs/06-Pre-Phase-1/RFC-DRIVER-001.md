@@ -1,6 +1,11 @@
 # RFC-DRIVER-001: Driver Framework Architecture
 
-**Status:** Draft.
+Classification: Normative
+Authoritative Source: RFC-DRIVER-001.md
+Requirement-ID: RFC-DRIVER-001-000
+Status: Draft
+
+**Lifecycle note:** Draft.
 **Implements invariants:** I-1, I-2, I-3, I-4, I-7, I-9, I-10, I-11, I-13.
 **Depends on:** RFC-0039 (Capability Revocation), RFC-0018 (Lifecycle FSM), RFC-0031 (Event Model), RFC-0002 (Component Manifest), RFC-0004 (Dependency Resolution), RFC-0010 (Interrupt Routing), RFC-ALLOC-001 (Allocator Hierarchy), RFC-COMPILER-001 (Compiler and Runtime Boundary), INTF-000 (Capability Enforcement Substrate).
 **Consumes:** INTF-001 (Memory Region Capability Type), INTF-002 (Capability Register Convention), INTF-003 (Component Entry Protocol), INTF-004 (DMA Capability Semantics), INTF-006 (Error Propagation at ABI).
