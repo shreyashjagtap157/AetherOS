@@ -1,5 +1,8 @@
 # Re-Review Result — RFC-0037 §2 Amendment
 
+Classification: Operational
+Authoritative Source: RE-REVIEW-RESULT-RFC-0037-S2.md
+
 **Classification:** Review — formal re-review result
 **Review Date:** 2026-07-20
 **Review Target:** `docs/RFCs/06-Pre-Phase-1/AMENDMENT-RFC-0037-S2-INTEGRATED-DRAFT.md`

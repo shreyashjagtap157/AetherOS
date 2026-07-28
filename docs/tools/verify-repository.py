@@ -21,7 +21,7 @@ def main():
     failures = 0
     validators = sorted(TOOLS_DIR.glob("verify-*.py"))
     for path in validators:
-        if path.name == __file__:
+        if path.resolve() == Path(__file__).resolve():
             continue
         result = subprocess.run(
             [sys.executable, str(path)],

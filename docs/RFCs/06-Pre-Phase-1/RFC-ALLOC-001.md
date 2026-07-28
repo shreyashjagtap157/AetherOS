@@ -1,6 +1,11 @@
 # RFC-ALLOC-001: Allocator Hierarchy
 
-**Status:** Draft.
+Classification: Normative
+Authoritative Source: RFC-ALLOC-001.md
+Requirement-ID: RFC-ALLOC-001-000
+Status: Draft
+
+**Lifecycle note:** Draft.
 **Implements invariants:** I-1, I-2, I-3, I-8, I-13.
 **Depends on:** RFC-0037 (Capability Token Format), RFC-0009 (Address Space), RFC-0011 (Scheduler), INTF-000 (Capability Enforcement Substrate).
 **Resolves:** INTF-001 (Memory Region Capability Type), INTF-004 (DMA Capability Semantics), INTF-005 (Stack/Heap Allocation Capability).

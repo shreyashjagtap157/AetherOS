@@ -1,5 +1,8 @@
 # Post-Application Reconciliation Record — RFC-0037 §2 Amendment
 
+Classification: Operational
+Authoritative Source: POST-APPLICATION-RECONCILIATION-RFC-0037-S2.md
+
 **Classification:** Operational — post-application verification record
 **Date of application:** 2026-07-20
 **Authorization:** `docs/PHASE-4-AUTHORIZATION-RFC-0037-S2.md` (Phase 4 authorization granted 2026-07-20)
