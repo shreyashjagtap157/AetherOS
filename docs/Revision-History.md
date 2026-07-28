@@ -28,7 +28,7 @@ This document records the revision history of `Platform-Architecture-Specificati
 
 The architectural phase is complete once edits cease to discover invariants and start to rediscover them. The v1.0 → v1.1 transition added **two normative invariants** plus **three substantive specification sections** in direct response to peer-review critique. Every added item either resolves a decision that subsequent RFCs cannot make on their own, or formalizes a property that was implicit and at risk of being lost.
 
-After v1.1, no further architectural revision is expected. Future changes will be RFC-level and confined to specific subsystems.
+After the 2026-07-27 feasibility review, v1.1 is a validation candidate. Further revision is expected only when executable-model, implementation, security, compatibility, or performance evidence passes the governed amendment process.
 
 ---
 

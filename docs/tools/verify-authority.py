@@ -23,8 +23,6 @@ from pathlib import Path
 import re
 import sys
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPO_ROOT / "tools" / "repository-policy.yaml"
 
@@ -44,7 +42,8 @@ SOURCE_HEADER_RE = re.compile(
     r"^Authoritative Source:\s*([^\n]+)\s*$",
     re.MULTILINE,
 )
-REQ_ID_RE = re.compile(r"^Requirement-ID:\s*([A-Z][A-Z0-9\-]+)\s*$", re.MULTILINE)
+REQ_LINE_RE = re.compile(r"^Requirement-ID:\s*([^\n]+)$", re.MULTILINE)
+REQ_ID_RE = re.compile(r"\b([A-Z][A-Za-z0-9\-]*-\d{3})\b")
 NAMESPACE_RE = re.compile(r"^([A-Z]+)-")
 
 
@@ -52,8 +51,21 @@ def load_policy():
     if not POLICY_PATH.exists():
         print(f"FAIL: {POLICY_PATH} not found.")
         sys.exit(1)
-    with open(POLICY_PATH) as f:
-        return yaml.safe_load(f)
+    # The policy currently contains only simple top-level scalar lists. Keep
+    # the governance verifier dependency-free so a clean Python installation
+    # can validate the repository without fetching PyYAML.
+    policy = {}
+    current = None
+    for raw in POLICY_PATH.read_text().splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith((" ", "\t")) and line.endswith(":"):
+            current = line[:-1].strip()
+            policy[current] = []
+        elif current and line.lstrip().startswith("- "):
+            policy[current].append(line.lstrip()[2:].strip())
+    return policy
 
 
 def main():
@@ -103,7 +115,7 @@ def main():
                     continue
                 target_cls = target_cls_match.group(1).strip()
                 target_rank = CLASS_ORDER.get(target_cls, 0)
-                if target_rank > cls_rank:
+                if target_rank < cls_rank:
                     failures.append(
                         f"{rel} (Classification {classification}) references lower-classified "
                         f"document {target.name} (Classification {target_cls}) as Authoritative "
@@ -111,7 +123,9 @@ def main():
                     )
 
         if classification in ("Constitutional", "Normative"):
-            ids = REQ_ID_RE.findall(text)
+            ids = []
+            for declaration in REQ_LINE_RE.findall(text):
+                ids.extend(REQ_ID_RE.findall(declaration))
             if not ids:
                 failures.append(
                     f"{rel}: classification is {classification} but no Requirement-ID declared. "

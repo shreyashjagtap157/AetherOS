@@ -1,5 +1,8 @@
 # Handoff: AetherOS Pre-Phase-1 RFC Work — Exhaustive Project Review
 
+Classification: Informative
+Authoritative Source: HANDOFF-PRE-PHASE-1-RFCs.md
+
 **Date:** 2026-06-09
 **Purpose:** Complete state snapshot so work can continue in a new chat session.
 **Classification:** Operational

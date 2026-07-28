@@ -1,5 +1,8 @@
 # Phase 4 Authorization Record — RFC-0037 §2 Amendment
 
+Classification: Operational
+Authoritative Source: PHASE-4-AUTHORIZATION-RFC-0037-S2.md
+
 **Classification:** Operational — Phase 4 authorization record
 **Date granted:** 2026-07-20
 **Authorizing authority:** Project Owner / Governance Gate

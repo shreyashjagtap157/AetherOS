@@ -2,6 +2,7 @@
 
 Classification: Normative
 Authoritative Source: Conformance-Test-Suite-Methodology.md
+Requirement-ID: CTS-METH-001
 
 **Status:** Active. This document defines the methodology through which an implementation's conformance to the Platform Architecture Specification and its RFCs is measured. The CTS does not itself declare conformance criteria; it exists to make conformance measurable.
 

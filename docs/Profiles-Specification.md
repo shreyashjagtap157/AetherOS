@@ -2,6 +2,7 @@
 
 Classification: Normative
 Authoritative Source: Profiles-Specification.md
+Requirement-ID: RFC-PROFILE-001
 
 **Status:** Active. This document defines deployment profiles referenced by I-11 and by the Composition Architecture. Profiles never relax architectural invariants; they select mechanism subsets, declare defaults, and constrain instance topology.
 
@@ -200,6 +201,12 @@ Profiles never modify architectural invariants and never modify Conformance Test
 A single deployment may declare multiple profiles. When combining profiles, the union of forbidden mechanisms applies, and the most restrictive verification tier applies.
 
 A single deployment claiming to be both Cloud and HPC is acceptable; a deployment claiming both Safety-Critical and Cloud without a documented Safety-Critical Cloud role is not.
+
+### 3.1 Installation composition
+
+Profiles are presets, not monolithic editions. The installer asks which compatibility tiers, hardware providers, user experience, storage, networking, development, assurance, recovery, and optional services the deployment requires. It resolves only that dependency closure, reports download/installed/boot-memory estimates and conflicts before applying, and emits a signed composition manifest. A user MAY start from a profile and customize it. Unselected drivers, foreign personalities, language runtimes, accelerators, fonts, and services SHALL be absent unless required by the recovery environment.
+
+The complete package catalog may be comprehensive and large; conformance size measurements apply to the selected deployment. Removal SHALL be tested so optional breadth cannot silently become trusted-core breadth.
 
 ---
 

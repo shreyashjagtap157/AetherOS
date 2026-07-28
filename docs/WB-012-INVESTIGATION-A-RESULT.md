@@ -1,5 +1,8 @@
 # WB-012 Investigation A Result — Mediation Invocation & CAP_ERROR Provenance
 
+Classification: Operational
+Authoritative Source: WB-012-INVESTIGATION-A-RESULT.md
+
 **Classification:** Investigation Result — Workstream WB-012
 **Investigation:** Investigation A (Mediation Invocation & Provenance)
 **Date:** 2026-07-19

@@ -1,5 +1,8 @@
 # Closure Report — RFC-0037 §2 Integrated Amendment
 
+Classification: Operational
+Authoritative Source: CLOSURE-REPORT-RFC-0037-S2.md
+
 **Classification:** Operational — closure-condition resolution and authorization record
 **Purpose:** Resolve the four closure conditions from `docs/NORMATIVE-CONTENT-REVIEW-RFC-0037-S2.md` §10; record disposition and authorization state
 **Date started:** 2026-07-19

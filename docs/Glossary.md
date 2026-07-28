@@ -4,7 +4,7 @@ Classification: Normative
 Authoritative Source: Glossary.md
 Requirement-ID: GOV-GLOS-001
 
-This glossary defines terminology used across the Platform Architecture Specification and all 41 RFCs. Where a term has a normative meaning in this specification, the normative meaning takes precedence over any casual reading.
+This candidate glossary defines terminology used across the Platform Architecture Specification and all 41 legacy RFC proposals. Terms remain subject to the same evidence-gated reconciliation as their owning RFCs.
 
 Each entry carries metadata for governance tooling. See `tools/verify-glossary.py` for CI enforcement of provenance consistency.
 
@@ -926,5 +926,6 @@ Allowed synonyms: bundle (preferred)
 Forbidden synonyms: None
 Rationale: Wedge was used in early drafts. Bundle is the preferred term per RFC-0037 and RFC-0038.
 Notes: Superseded By: Bundle.
+Superseded By: Bundle (capability)
 ```
 **Definition:** *See* Bundle.

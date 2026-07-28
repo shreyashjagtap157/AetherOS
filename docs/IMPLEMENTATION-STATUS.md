@@ -11,13 +11,18 @@ This document tracks the implementation status of every component in the platfor
 
 | Document | Status | Notes |
 |----------|--------|-------|
-| `Platform-Architecture-Specification-v1.1.md` | **Frozen** | v1.1; no further architectural iteration |
+| `Platform-Architecture-Specification-v1.1.md` | **Validation Candidate** | Current baseline; evidence-driven amendments remain expected before freeze |
 | `Governance-RFC.md` | **Frozen** | Amendment process defined |
 | `Profiles-Specification.md` | **Frozen** | 5 profiles defined |
 | `Glossary.md` | **Frozen** | 100+ terms |
 | `REVIEWER-GUIDE.md` | **Active** | Mandatory review workflow, Impact Matrix |
 | `Hardware-Support-RFC.md` | **Active** | Phase 1–5 hardware support; RISC-V reference platform |
-| `IMPLEMENTATION-ROADMAP.md` | **Revised** | Revised per architectural review: RISC-V reference, proof-driven design, GPU substrate-neutral, Phase 5 as experimental |
+| `IMPLEMENTATION-ROADMAP.md` | **Revised 2026-07-27** | Evidence-gated, multi-year programme with brutally honest baseline and stop/review triggers |
+| `PRODUCT-FEASIBILITY-AND-SCOPE.md` | **Active** | Product priorities, installer composition, feasibility, AI verification limits, production definition |
+| `COMPATIBILITY-STRATEGY.md` | **Active** | C0–C9 claim tiers; native, Linux, Windows, Android, VM, container, and driver lanes |
+| `PERSISTENCE-AND-EXTERNAL-EFFECTS.md` | **Research Baseline** | Batched audit commitments, outbox protocol, irreversible-effect semantics |
+| `UASA_COMPREHENSIVE_RESEARCH_REVIEW_PACKET.md` | **Imported from main** | Informative 2026-07-27 research handoff; reported results are not independently reproduced |
+| `UASA-INTEGRATION-STATUS.md` | **Integration Review Active** | Cross-impact mapping, ZNS gates, work packages, and evidence boundary defined |
 | `IMPLEMENTATION-STATUS.md` | **Active** | Live status tracker |
 | `PRE-IMPLEMENTATION-DEPENDENCY-MATRIX.md` | **Active (Revision 2)** | INTF-000 capability enforcement substrate resolved; 14 blocking requirements; 7 cross-RFC interfaces; three-track dependency model; Implementation Contracts layer; corrected boot ordering (HAL-BOOT → Minimum Executor) |
 | `INTF-000-CAPABILITY-ENFORCEMENT-SUBSTRATE-DECISION.md` | **Accepted** | Two-layer architecture (Native Capability Provider reserved for Phase 3+; Software Capability Provider for Phase 1); the unblocked architecturally-binding decision |
@@ -110,8 +115,6 @@ This document tracks the implementation status of every component in the platfor
 |-----|-------|--------|--------|
 | RFC-0042 | Cohort Update Governance | **Not started** | Profile update and rollback |
 | RFC-0043 | Capability Rights Algebra | **Not started** | Formal capability derivation rules |
-| RFC-0042 | Cohort Update Governance | **Not started** | Profile update and rollback |
-| RFC-0043 | Capability Rights Algebra | **Not started** | Formal capability derivation rules |
 | RFC-Q1 | Quantum Execution Provider Contract | **Deferred** | Experimental research interface |
 | RFC-N1 | Neuromorphic Provider Interface | **Deferred** | Experimental research interface |
 | RFC-P1 | Photonic Storage and Network Provider | **Deferred** | Experimental research interface |
@@ -147,10 +150,12 @@ This document tracks the implementation status of every component in the platfor
 | Test Category | Status | Notes |
 |-------------|--------|-------|
 | Execution Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
-| State Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
+| State Architecture CTS | **Prototype started** | Failure-atomic commit and uncertain-effect recovery cases implemented; no production storage provider |
 | Communication Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Observability Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
-| Cross-Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
+| Capability reference CTS | **Prototype implemented** | Eight executable cases: attenuation, transfer, lineage revocation, forged/stale-handle rejection, foreign-bootstrap rejection, unregistered-domain rejection, and revoked-parent rejection |
+| Reference CTS runner | **Twelve cases passing** | Eight capability cases and four transactional-state/external-effect recovery cases; this remains prototype evidence, not kernel conformance |
+| Cross-Architecture CTS | **Partially prototyped** | Host abstract model and table-backed software provider only; kernel/hardware paths do not exist |
 | Hardware Provider CTS | **Not implemented** | Fixtures declared in Hardware-Support-RFC; code not written |
 
 ---
@@ -176,8 +181,8 @@ This document tracks the implementation status of every component in the platfor
 
 ## Last Updated
 
-This document reflects the state after the v1.1 architecture freeze and the drafting of the three pre-Phase 1 RFCs (ALLOC-001, COMPILER-001, DRIVER-001). All 41 original RFCs plus 3 new pre-Phase 1 RFCs are written as specifications. No CTS code, no HAL implementations, no hardware provider code exists yet.
+This document reflects executable Phase A work on 2026-07-28. `reference/` now contains capability semantics, a table-backed Software Capability Provider, a prototype append-only transaction/effect model, deterministic crash recovery, and a ten-case machine-readable CTS runner. Bootstrap witnesses are bound to their authority universe; stale generations, duplicate operations/mutations, and transaction replay fail closed. The transaction format and checksum are test mechanisms, not a production storage format or cryptographic commitment. There is still no kernel, HAL, driver, filesystem implementation, runtime, benchmark programme, or machine proof. UASA implementation results remain reported rather than independently reproduced.
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-06-09 (RFCs drafted)
+**Last Updated:** 2026-07-28 (capability plus transaction/effect recovery reference slices)

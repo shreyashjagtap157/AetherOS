@@ -60,21 +60,22 @@ These are drawn from `IMPLEMENTATION-ROADMAP.md` Section 2 and from `00-RFC-Inde
 
 **Why this is a precondition, not a downstream concern:**
 - `RFC-ALLOC-001` (memory / DMA / authority allocation) needs to know how allocation-capability tokens are sealed and verified.
-- `RFC-COMPILER-001` (ABI / capability passing / register convention) needs to know whether capabilities are architectural hardware entities or software-mediated 96-byte tokens. The decision drives register convention, faulting representation, and entry/exit protocol.
+- `RFC-COMPILER-001` needs provider-neutral semantics while allowing compact software handles and native tagged capabilities to use different live ABIs. Canonical records are not call-frame values.
 - `RFC-DRIVER-001` (MMIO / DMA / device capability) needs to know whether MMIO/DMA capabilities are mediated by hardware tags or by a software-mediator boundary. The decision also drives IOMMU ownership semantics.
 
 **Resolved decision (see `INTF-000-CAPABILITY-ENFORCEMENT-SUBSTRATE-DECISION.md`):**
 
 The capability system has an architecture-neutral semantic model. Enforcement is delegated to one of two providers selected per deployment:
-- **Native Capability Provider (NCP)** — hardware capability architectures (CHERI-RISC-V when available). Tier A.
-- **Software Capability Provider (SCP)** — software mediation on conventional RV64. Tier B.
+- **Native Capability Provider (NCP)** — tagged hardware capability architectures such as CHERI-RISC-V when available. I-13 constrains semantics, not physical packing. Tier A only with declared hardware assumptions.
+- **Software Capability Provider (SCP)** — protected capability spaces with compact generational handles on conventional RV64. Canonical 96-byte records are confined to explicit serialization/import boundaries. Tier B initially.
 
 Phase 1 implements the SCP, retained as a removable layered extension when NCP becomes available in Phase 3+. The capability token format (`RFC-0037`) is unchanged.
 
 **Implementation components:**
 - Capability-mediator shim (the trust anchor above which AetherOS code is substrate-neutral)
 - Provider-selection registry (declared per I-11 in conformance declaration)
-- Seal verifier (HMAC-SHA-256 truncated to 16 bytes per `RFC-0037.8`)
+- Capability-space lookup and generation/right/type/domain validator on the hot path
+- Canonical-record seal verifier at import/export boundaries (algorithm remains subject to cryptographic review)
 - Domain-bound check (per `RFC-0037.15`)
 - Cross-provider semantic-equivalence tests
 
@@ -641,7 +642,7 @@ This interface specifies how capability tokens (`RFC-0037`) are made unforgeable
 
 - **Unforgeability.** A capability cannot be constructed except by a correctly sealed derivation chain rooted in the platform master seal key. The seal-verification primitive is the only path that turns a byte sequence into a valid capability.
 - **Provenance.** Every new capability has a recorded parent (`rights_derived` counter per `RFC-0037.12`). Revocation walks lineage.
-- **Representation.** AetherOS code holds and passes the canonical 96-byte capability token (`RFC-0037.1`) regardless of provider. The active provider may use a different in-register representation (e.g., 128-bit architectural capability register under NCP) as long as canonical-form round-trip is available.
+- **Representation.** Provider-independent semantics do not require a common live layout. SCP code passes compact domain-local generational handles; NCP code may pass tagged native capabilities. The canonical `RFC-0037` record exists only at explicit import/export, persistence, audit, or transfer boundaries.
 - **Derivation.** Right-narrowing is sealed-signed; resulting token has incremented `rights_derived` counter. Derived rights must be a subset of parent rights.
 - **Revocation.** Per `RFC-0039`. Provider must invalidate tokens whose lineage contains a revoked ancestor.
 - **Address interaction.** Provider does not derive authority from address bits; provider does not derive address from authority bits. I-13 must hold at the provider boundary.
@@ -666,7 +667,7 @@ This interface specifies how capability tokens (`RFC-0037`) are made unforgeable
 - Which allocator-call sites construct the first token of a kind? — `RFC-ALLOC-001`.
 - Which provider token is presented to a driver? — `RFC-DRIVER-001`.
 
-**Status:** RESOLVED. Recorded in `INTF-000-CAPABILITY-ENFORCEMENT-SUBSTRATE-DECISION.md`. No further interface negotiation required at this level.
+**Status:** REOPENED FOR PROTOTYPE VALIDATION. The semantic direction is recorded in `INTF-000-CAPABILITY-ENFORCEMENT-SUBSTRATE-DECISION.md`; handle layout, generation width, revocation structure, canonical cryptography, and CHERI equivalence require Phase A evidence.
 
 ---
 
