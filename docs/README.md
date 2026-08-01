@@ -23,6 +23,7 @@ Top-level documents (read in order):
 | `Glossary.md` | Terminology used across all documents. |
 | `Platform-Architecture-Specification-v1.1.md` | Validation-candidate constitutional baseline. |
 | `PRODUCT-FEASIBILITY-AND-SCOPE.md` | Honest product priorities, limits, installation composition, and production criteria. |
+| `VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md` | Product plan from an empty 0.0.0 baseline through minimal 1.0.0, complete 2.0.0, and later evolution. |
 | `COMPATIBILITY-STRATEGY.md` | C0–C9 compatibility claims and implementation lanes. |
 | `PERSISTENCE-AND-EXTERNAL-EFFECTS.md` | Efficient audit commitments and non-rollbackable I/O semantics. |
 | `UASA-INTEGRATION-STATUS.md` | Filesystem integration status and required evidence. |
@@ -63,7 +64,7 @@ Peer architecture subdirectories:
 The v1.1 text is the current constitutional baseline and a **validation candidate**. The legacy RFC corpus is Proposed until executable models, CTS fixtures, prototypes, and measured evidence justify acceptance. Specifications are not implementation evidence.
 
 This suite does **not** contain:
-- Working code
+- A working kernel or production OS implementation
 - Compiler implementations
 - Hardware schematics
 - Performance benchmarks
@@ -71,6 +72,7 @@ This suite does **not** contain:
 These belong in separate implementation repositories.
 
 This suite **does** contain:
+- Host-side executable reference models under `../reference/`
 - A validation-candidate architectural specification
 - 41 normative RFCs
 - A verification methodology

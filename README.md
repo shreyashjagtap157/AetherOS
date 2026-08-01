@@ -10,8 +10,8 @@ The repository contains the specification suite — **not** a working kernel, co
 |-----------------------------------|-----------------------------------------------------------------------|
 | Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
 | RFC corpus                        | **41 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
-| Conformance Test Suite            | Methodology frozen; executable suite not started                       |
-| Implementation                    | Phase 1 (QEMU RISC-V64 reference vertical slice) **not started**       |
+| Conformance Test Suite            | **12-case host reference prototype passing**; no kernel CTS yet          |
+| Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
 | Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |
 | Compatibility strategy           | Active; see `docs/COMPATIBILITY-STRATEGY.md`                           |
 | UASA storage integration         | Review packet imported from `main`; implementation evidence pending |
@@ -24,6 +24,8 @@ AetherOS/
 ├── reference/   Executable capability reference model and CTS prototype
 └── .kilo/       Local editor / agent configuration
 ```
+
+Run **`./check.sh`** for the complete local documentation and host-reference validation gate. The pinned Rust toolchain is declared in `rust-toolchain.toml`.
 
 The canonical entry point is **[`docs/README.md`](docs/README.md)**. From there the reading order is:
 
@@ -50,7 +52,8 @@ Supporting materials live alongside the specs:
 - `docs/REVISION-HISTORY.md` — what changed across architecture versions
 - `docs/CHANGELOG.md` — suite-level change log
 - `docs/Hardware-Support-RFC.md` — hardware provider architecture
-- `docs/IMPLEMENTATION-ROADMAP.md` / `IMPLEMENTATION-STATUS.md` — phased implementation plan and live status
+- `docs/VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md` — product releases from 0.0.0 through 2.x
+- `docs/IMPLEMENTATION-ROADMAP.md` / `IMPLEMENTATION-STATUS.md` — phase gates and live status
 - `docs/PRE-IMPLEMENTATION-DEPENDENCY-MATRIX.md` — interfaces blocking Phase 1
 - `docs/generated/` — tool-emitted artifacts (e.g. `DECISION-INDEX.md`); never edited by hand
 - `docs/tools/` — Python scripts and `repository-policy.yaml` consumed by the repo's governance / verification toolchain
@@ -66,7 +69,7 @@ Supporting materials live alongside the specs:
 
 It is **not**:
 
-- A kernel, bootloader, hypervisor, driver, or any working code.
+- A kernel, bootloader, hypervisor, driver, or production implementation. The `reference/` host models are working prototype code.
 - A compiler or runtime implementation.
 - A hardware schematic, SoC design, or benchmark suite.
 - An application ABI or wire-format protocol (those live in the RFCs that define them).

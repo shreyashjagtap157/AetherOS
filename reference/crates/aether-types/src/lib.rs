@@ -180,6 +180,8 @@ impl Handle {
 /// Stable semantic failures shared by the model and provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapError {
+    /// Bootstrap witness belongs to a different authority universe.
+    WrongBootstrap,
     /// Handle bits are malformed or belong to another provider.
     MalformedHandle,
     /// Handle is meaningful only in another domain.
@@ -198,4 +200,22 @@ pub enum CapError {
     Type,
     /// Table cannot represent another entry.
     Exhausted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handle_round_trip_preserves_every_field() {
+        let domain = DomainId::new(0xabcd).unwrap();
+        let handle = Handle::encode(domain, 0x00ab_cdef, 0x1234).unwrap();
+        assert_eq!(handle.decode(), Some((domain, 0x00ab_cdef, 0x1234)));
+    }
+
+    #[test]
+    fn malformed_handle_and_unknown_right_are_rejected() {
+        assert_eq!(Handle::from_untrusted(0).decode(), None);
+        assert_eq!(Rights::from_bits(1 << 15), None);
+    }
 }

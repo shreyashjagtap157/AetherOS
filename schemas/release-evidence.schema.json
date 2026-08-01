@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aetheros.invalid/schemas/release-evidence.schema.json",
+  "title": "AetherOS reference release evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "product_version", "source", "toolchain", "checks", "files"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "product_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "source_date_epoch", "dirty"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_date_epoch": {"type": "integer", "minimum": 0},
+        "dirty": {"type": "boolean"}
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "required": ["rustc", "cargo", "python"]
+    },
+    "checks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

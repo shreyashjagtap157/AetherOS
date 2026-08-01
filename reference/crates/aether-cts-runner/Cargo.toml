@@ -8,8 +8,8 @@ rust-version.workspace = true
 [dependencies]
 aether-cap-model = { path = "../aether-cap-model" }
 aether-capspace = { path = "../aether-capspace" }
+aether-state-model = { path = "../aether-state-model" }
 aether-types = { path = "../aether-types" }
 
 [lints]
 workspace = true
-

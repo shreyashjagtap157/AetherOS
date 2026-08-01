@@ -9,7 +9,7 @@ Status: Validation Roadmap
 
 ## 1. Brutally honest baseline
 
-There is currently no kernel, bootloader, HAL, driver, runtime, filesystem implementation, executable CTS, benchmark, formal machine proof, supported hardware configuration, or application compatibility result in this repository. Forty-one architecture RFCs and three draft implementation-boundary RFCs are design inputs, not implementation evidence. The architecture is a validation candidate, not frozen fact.
+There is currently no kernel, bootloader, HAL, target driver, target runtime, filesystem implementation, benchmark programme, formal machine proof, supported hardware configuration, or application compatibility result in this repository. A 12-case executable **host reference CTS prototype** exists; it is not target-kernel or product conformance. Forty-one architecture RFCs and three draft implementation-boundary RFCs are design inputs, not implementation evidence. The architecture is a validation candidate, not frozen fact.
 
 The complete objective resembles a new kernel, distribution, compatibility ecosystem, hypervisor, SDK, driver programme, verification programme, and enterprise product. Even with extensive AI assistance it is a multi-year, likely multi-decade ecosystem effort. AI may accelerate drafting and test generation; it does not supply hardware documentation, redistribution rights, independent review, proof validity, user adoption, or maintenance accountability.
 
@@ -26,7 +26,7 @@ The complete objective resembles a new kernel, distribution, compatibility ecosy
 
 ## 3. Phase A — Specification reconciliation and executable models
 
-**Minimum plausible duration:** 6–18 months after staffing. **Current state:** in progress; the first capability reference/provider/CTS slice exists under `reference/`, while transaction, update, UASA, scheduler, and formal models remain unimplemented.
+**Minimum plausible duration:** 6–18 months after staffing. **Current state:** in progress; the first capability reference/provider/CTS slice exists under `reference/`, and a transaction/external-effect reference slice exists, while composition, update, UASA, scheduler, target-kernel, and formal models remain unimplemented.
 
 Deliverables:
 
@@ -39,6 +39,8 @@ Deliverables:
 7. Establish reproducible toolchains, threat model, TCB budget, ABI evolution policy, benchmark protocol, unsafe-code policy, and supply-chain controls.
 
 **Exit gate:** models pass property tests and injected failures; unresolved contradictions are recorded; the first vertical-slice interfaces are approved. No “frozen” label is restored merely for completing documents.
+
+The product-version realization of these gates is defined in `VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md`.
 
 ## 4. Phase B — QEMU RISC-V64 vertical slice
 

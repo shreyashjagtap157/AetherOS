@@ -3,6 +3,7 @@ members = [
     "crates/aether-types",
     "crates/aether-cap-model",
     "crates/aether-capspace",
+    "crates/aether-state-model",
     "crates/aether-cts-runner",
 ]
 resolver = "3"
@@ -19,4 +20,3 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-missing_errors_doc = "allow"

@@ -2,6 +2,7 @@
 
 use aether_types::{Bounds, CapError, Capability, DomainId, Handle, ObjectType, Rights};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct Entry {
@@ -17,30 +18,40 @@ struct Space {
 }
 
 /// Mutable provider owning every live capability table and revocation lineage.
-#[derive(Default)]
 pub struct CapabilitySystem {
+    universe: Arc<()>,
     spaces: HashMap<DomainId, Space>,
     revoked: HashSet<u64>,
     next_lineage: u64,
 }
 
 /// Linear witness returned only when the explicit provider bootstrap begins.
-pub struct BootstrapAuthority(());
+pub struct BootstrapAuthority(Arc<()>);
+
+impl Default for CapabilitySystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CapabilitySystem {
     /// Creates an empty provider.
     #[must_use]
     pub fn new() -> Self {
         Self {
+            universe: Arc::new(()),
+            spaces: HashMap::new(),
+            revoked: HashSet::new(),
             next_lineage: 1,
-            ..Self::default()
         }
     }
 
     /// Starts a fresh provider authority universe with its bootstrap witness.
     #[must_use]
     pub fn bootstrap() -> (Self, BootstrapAuthority) {
-        (Self::new(), BootstrapAuthority(()))
+        let system = Self::new();
+        let authority = BootstrapAuthority(Arc::clone(&system.universe));
+        (system, authority)
     }
 
     /// Registers a domain. Duplicate registration is harmless.
@@ -49,17 +60,28 @@ impl CapabilitySystem {
     }
 
     /// Creates an origin capability at the explicit bootstrap boundary.
+    ///
+    /// # Errors
+    /// Returns `Missing` for an unregistered domain or `Exhausted` when no
+    /// representable slot remains, and `WrongBootstrap` for a witness from a
+    /// different provider universe.
     pub fn create_root(
         &mut self,
-        _bootstrap: &BootstrapAuthority,
+        bootstrap: &BootstrapAuthority,
         domain: DomainId,
         capability: Capability,
     ) -> Result<Handle, CapError> {
-        let lineage = self.alloc_lineage();
+        if !Arc::ptr_eq(&bootstrap.0, &self.universe) {
+            return Err(CapError::WrongBootstrap);
+        }
+        let lineage = self.alloc_lineage()?;
         self.insert(domain, capability, vec![lineage])
     }
 
     /// Derives a same-domain child.
+    ///
+    /// # Errors
+    /// Returns a typed failure if the parent is invalid or attenuation fails.
     pub fn derive(
         &mut self,
         domain: DomainId,
@@ -67,10 +89,10 @@ impl CapabilitySystem {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Handle, CapError> {
-        let entry = self.resolve(domain, parent)?.clone();
+        let entry = self.resolve_live(domain, parent)?.clone();
         Self::check_narrowing(&entry.capability, rights, bounds)?;
         let mut lineage = entry.lineage;
-        lineage.push(self.alloc_lineage());
+        lineage.push(self.alloc_lineage()?);
         self.insert(
             domain,
             Capability {
@@ -83,6 +105,9 @@ impl CapabilitySystem {
     }
 
     /// Transfers an attenuated child into a destination capability space.
+    ///
+    /// # Errors
+    /// Returns a typed failure if validation, attenuation, or insertion fails.
     pub fn transfer(
         &mut self,
         source: DomainId,
@@ -91,13 +116,13 @@ impl CapabilitySystem {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Handle, CapError> {
-        let entry = self.resolve(source, parent)?.clone();
+        let entry = self.resolve_live(source, parent)?.clone();
         if !entry.capability.rights.contains(Rights::GRANT) {
             return Err(CapError::Rights);
         }
         Self::check_narrowing(&entry.capability, rights, bounds)?;
         let mut lineage = entry.lineage;
-        lineage.push(self.alloc_lineage());
+        lineage.push(self.alloc_lineage()?);
         self.insert(
             destination,
             Capability {
@@ -110,6 +135,9 @@ impl CapabilitySystem {
     }
 
     /// Marks this lineage revoked. Descendants fail because they retain ancestors.
+    ///
+    /// # Errors
+    /// Returns a typed failure if the handle cannot be resolved in the domain.
     pub fn revoke(&mut self, domain: DomainId, handle: Handle) -> Result<(), CapError> {
         let lineage = *self
             .resolve(domain, handle)?
@@ -121,6 +149,10 @@ impl CapabilitySystem {
     }
 
     /// Removes a local handle and advances the slot generation before reuse.
+    ///
+    /// # Errors
+    /// Returns a typed failure for malformed, cross-domain, missing, or stale
+    /// handles.
     pub fn remove(&mut self, domain: DomainId, handle: Handle) -> Result<(), CapError> {
         let (encoded_domain, slot, generation) =
             handle.decode().ok_or(CapError::MalformedHandle)?;
@@ -146,6 +178,10 @@ impl CapabilitySystem {
     }
 
     /// Validates a live handle for a requested operation.
+    ///
+    /// # Errors
+    /// Returns the precise handle, domain, generation, revocation, type,
+    /// rights, or bounds validation failure.
     pub fn authorize(
         &self,
         domain: DomainId,
@@ -192,6 +228,14 @@ impl CapabilitySystem {
         Ok(entry)
     }
 
+    fn resolve_live(&self, domain: DomainId, handle: Handle) -> Result<&Entry, CapError> {
+        let entry = self.resolve(domain, handle)?;
+        if entry.lineage.iter().any(|id| self.revoked.contains(id)) {
+            return Err(CapError::Revoked);
+        }
+        Ok(entry)
+    }
+
     fn check_narrowing(
         parent: &Capability,
         rights: Rights,
@@ -206,10 +250,13 @@ impl CapabilitySystem {
         Ok(())
     }
 
-    fn alloc_lineage(&mut self) -> u64 {
+    fn alloc_lineage(&mut self) -> Result<u64, CapError> {
         let id = self.next_lineage;
-        self.next_lineage += 1;
-        id
+        self.next_lineage = self
+            .next_lineage
+            .checked_add(1)
+            .ok_or(CapError::Exhausted)?;
+        Ok(id)
     }
 
     fn insert(
@@ -335,6 +382,56 @@ mod tests {
                 Rights::READ,
                 bounds(12, 15)
             ),
+            Err(CapError::Revoked)
+        );
+    }
+
+    #[test]
+    fn bootstrap_witness_is_bound_to_its_provider() {
+        let (mut first, first_bootstrap) = CapabilitySystem::bootstrap();
+        let (mut second, second_bootstrap) = CapabilitySystem::bootstrap();
+        first.add_domain(domain(1));
+        second.add_domain(domain(1));
+        assert_eq!(
+            first.create_root(&second_bootstrap, domain(1), root()),
+            Err(CapError::WrongBootstrap)
+        );
+        assert!(
+            first
+                .create_root(&first_bootstrap, domain(1), root())
+                .is_ok()
+        );
+        assert!(
+            second
+                .create_root(&second_bootstrap, domain(1), root())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn lineage_exhaustion_fails_closed() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.next_lineage = u64::MAX;
+        assert_eq!(
+            system.create_root(&bootstrap, domain(1), root()),
+            Err(CapError::Exhausted)
+        );
+    }
+
+    #[test]
+    fn revoked_parent_cannot_derive_or_transfer() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+        let parent = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        system.revoke(domain(1), parent).unwrap();
+        assert_eq!(
+            system.derive(domain(1), parent, Rights::READ, bounds(0, 1)),
+            Err(CapError::Revoked)
+        );
+        assert_eq!(
+            system.transfer(domain(1), parent, domain(2), Rights::READ, bounds(0, 1)),
             Err(CapError::Revoked)
         );
     }

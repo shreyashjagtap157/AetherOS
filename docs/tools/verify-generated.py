@@ -15,7 +15,6 @@ CI gate. Every file under `generated/` must declare complete provenance:
 Exits 0 on success, 1 on fail.
 """
 from pathlib import Path
-import re
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +36,7 @@ def main():
         return 0
     failures = []
     for path in sorted(GENERATED_DIR.glob("*.md")):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         rel = path.relative_to(REPO_ROOT)
         for marker in REQUIRED_MARKERS:
             if marker not in text:

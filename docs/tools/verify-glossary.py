@@ -56,7 +56,7 @@ def load_rfc_index():
         if not rfc_dir.exists():
             continue
         for rfc_file in sorted(rfc_dir.glob("RFC-*.md")):
-            content = rfc_file.read_text()
+            content = rfc_file.read_text(encoding="utf-8")
             num_match = re.search(r"RFC-(\d{4})", rfc_file.name)
             if not num_match:
                 continue
@@ -78,9 +78,6 @@ def check_term(term, fields, rfc_index, term_index):
     last_modified = fields.get("Last modified by RFC", "")
     status = fields.get("Status", "")
     superseded_by = fields.get("Superseded By", "")
-    normative = fields.get("Normative", "")
-    allowed_synonyms = fields.get("Allowed synonyms", "")
-
     def extract_rfc(value):
         refs = RFC_REF_RE.findall(value)
         return refs[-1] if refs else None
@@ -133,7 +130,7 @@ def main():
         print(f"FAIL: {GLOSSARY_PATH} not found.")
         return 1
 
-    glossary_text = GLOSSARY_PATH.read_text()
+    glossary_text = GLOSSARY_PATH.read_text(encoding="utf-8")
     rfc_index = load_rfc_index()
     terms = list(parse_glossary(glossary_text))
 

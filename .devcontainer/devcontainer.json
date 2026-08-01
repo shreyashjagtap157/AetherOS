@@ -1,0 +1,6 @@
+{
+  "name": "AetherOS reproducible reference",
+  "build": {"dockerfile": "Dockerfile", "context": ".."},
+  "remoteUser": "root",
+  "postCreateCommand": "./check.sh"
+}

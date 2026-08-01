@@ -18,6 +18,8 @@ This document tracks the implementation status of every component in the platfor
 | `REVIEWER-GUIDE.md` | **Active** | Mandatory review workflow, Impact Matrix |
 | `Hardware-Support-RFC.md` | **Active** | Phase 1–5 hardware support; RISC-V reference platform |
 | `IMPLEMENTATION-ROADMAP.md` | **Revised 2026-07-27** | Evidence-gated, multi-year programme with brutally honest baseline and stop/review triggers |
+| `VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md` | **Active 2026-08-01** | Product gates from empty 0.0.0 through minimal 1.0.0, complete 2.0.0, and post-2.0 evolution |
+| `DEPENDENCY-AND-SUPPLY-CHAIN-POLICY.md` | **Active prototype policy** | Locked/offline Cargo source and license checks plus deterministic evidence/SBOM generation; advisory mirror and signed provenance remain open |
 | `PRODUCT-FEASIBILITY-AND-SCOPE.md` | **Active** | Product priorities, installer composition, feasibility, AI verification limits, production definition |
 | `COMPATIBILITY-STRATEGY.md` | **Active** | C0–C9 claim tiers; native, Linux, Windows, Android, VM, container, and driver lanes |
 | `PERSISTENCE-AND-EXTERNAL-EFFECTS.md` | **Research Baseline** | Batched audit commitments, outbox protocol, irreversible-effect semantics |
@@ -113,8 +115,8 @@ This document tracks the implementation status of every component in the platfor
 
 | RFC | Title | Status | Blocks |
 |-----|-------|--------|--------|
-| RFC-0042 | Cohort Update Governance | **Not started** | Profile update and rollback |
-| RFC-0043 | Capability Rights Algebra | **Not started** | Formal capability derivation rules |
+| RFC-0042 | Cohort Update Governance | **Draft** | Candidate requirements exist; open decisions and executable evidence block acceptance |
+| RFC-0043 | Capability Rights Algebra | **Draft** | Candidate algebra exists; mechanization and unresolved semantic choices block acceptance |
 | RFC-Q1 | Quantum Execution Provider Contract | **Deferred** | Experimental research interface |
 | RFC-N1 | Neuromorphic Provider Interface | **Deferred** | Experimental research interface |
 | RFC-P1 | Photonic Storage and Network Provider | **Deferred** | Experimental research interface |
@@ -150,10 +152,11 @@ This document tracks the implementation status of every component in the platfor
 | Test Category | Status | Notes |
 |-------------|--------|-------|
 | Execution Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
-| State Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
+| State Architecture CTS | **Prototype started** | Failure-atomic commit and uncertain-effect recovery cases implemented; no production storage provider |
 | Communication Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Observability Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
-| Capability reference CTS | **Prototype implemented** | Five executable differential cases: attenuation, transfer, lineage revocation, forged-handle rejection, stale-generation rejection |
+| Capability reference CTS | **Prototype implemented** | Eight executable cases: attenuation, transfer, lineage revocation, forged/stale-handle rejection, foreign-bootstrap rejection, unregistered-domain rejection, and revoked-parent rejection |
+| Reference CTS runner | **Twelve cases passing** | Eight capability cases and four transactional-state/external-effect recovery cases; this remains prototype evidence, not kernel conformance |
 | Cross-Architecture CTS | **Partially prototyped** | Host abstract model and table-backed software provider only; kernel/hardware paths do not exist |
 | Hardware Provider CTS | **Not implemented** | Fixtures declared in Hardware-Support-RFC; code not written |
 
@@ -180,8 +183,8 @@ This document tracks the implementation status of every component in the platfor
 
 ## Last Updated
 
-This document reflects the 2026-07-28 start of executable Phase A work. The architecture is a validation candidate. `reference/` now contains a dependency-free Rust capability semantic model, table-backed Software Capability Provider prototype, and five-case machine-readable differential CTS runner. There is still no kernel, HAL, driver, transactional-state implementation, filesystem implementation, runtime, benchmark programme, or machine proof. UASA implementation results remain reported rather than independently reproduced.
+This document reflects executable Phase A work reviewed on 2026-08-01. `reference/` now contains capability semantics, a table-backed Software Capability Provider, a prototype append-only transaction/effect model, deterministic crash recovery, and a twelve-case machine-readable CTS runner. Bootstrap witnesses are bound to their authority universe; stale generations, duplicate operations/mutations, and transaction replay fail closed. The transaction format and checksum are test mechanisms, not a production storage format or cryptographic commitment. There is still no kernel, HAL, driver, filesystem implementation, runtime, benchmark programme, or machine proof. UASA implementation results remain reported rather than independently reproduced.
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-07-28 (first executable capability model/provider/CTS prototype)
+**Last Updated:** 2026-08-01 (feasibility review, product-version plan, and reference validation foundation)

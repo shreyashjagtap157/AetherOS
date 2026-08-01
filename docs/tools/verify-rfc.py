@@ -54,7 +54,7 @@ def main():
             continue
         for rfc_file in sorted(rfc_dir.glob("RFC-*.md")):
             rfc_count += 1
-            content = rfc_file.read_text()
+            content = rfc_file.read_text(encoding="utf-8")
 
             if not CLASS_HEADER_RE.search(content):
                 failures.append(

@@ -31,7 +31,7 @@ def main():
         if not rfc_dir.exists():
             continue
         for rfc_file in sorted(rfc_dir.glob("RFC-*.md")):
-            content = rfc_file.read_text()
+            content = rfc_file.read_text(encoding="utf-8")
             if STATUS_RE.search(content):
                 if not DECISION_RECORD_RE.search(content):
                     failures.append(str(rfc_file.relative_to(REPO_ROOT)))

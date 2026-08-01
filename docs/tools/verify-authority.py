@@ -56,7 +56,7 @@ def load_policy():
     # can validate the repository without fetching PyYAML.
     policy = {}
     current = None
-    for raw in POLICY_PATH.read_text().splitlines():
+    for raw in POLICY_PATH.read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
@@ -79,7 +79,7 @@ def main():
     for path in sorted(REPO_ROOT.rglob("*.md")):
         if any(part.startswith(".") for part in path.parts):
             continue
-        documents[path] = path.read_text()
+        documents[path] = path.read_text(encoding="utf-8")
 
     failures = []
     name_index = {p.name: p for p in documents}

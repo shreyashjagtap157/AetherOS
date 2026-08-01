@@ -39,7 +39,7 @@ def collect_records():
         if not rfc_dir.exists():
             continue
         for rfc_file in sorted(rfc_dir.glob("RFC-*.md")):
-            content = rfc_file.read_text()
+            content = rfc_file.read_text(encoding="utf-8")
             sources.append(str(rfc_file.relative_to(REPO_ROOT)))
             match = DECISION_RECORD_RE.search(content)
             if not match:
@@ -103,7 +103,7 @@ def emit(records, sources):
 def main():
     records, sources = collect_records()
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(emit(records, sources))
+    OUT_PATH.write_text(emit(records, sources), encoding="utf-8")
     print(f"Wrote {OUT_PATH} with {len(records)} decisions from {len(sources)} RFCs.")
     return 0
 
