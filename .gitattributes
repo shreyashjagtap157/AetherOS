@@ -1,0 +1,39 @@
+# AetherOS gitattributes - enterprise-grade configuration
+# Enforce LF line endings for all text files
+* text=auto eol=lf
+
+# Documentation
+*.md text eol=lf
+*.txt text eol=lf
+
+# Rust
+*.rs text eol=lf
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf
+
+# Configuration
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+
+# Scripts
+*.sh text eol=lf
+*.py text eol=lf
+
+# Binary assets (if any)
+*.png binary
+*.jpg binary
+*.ico binary
+*.svg binary
+
+# Generated artifacts - never commit
+artifacts/ -text
+*.log -text
+
+# Diff patterns for better reviews
+*.rs diff=rust
+*.md diff=markdown
+*.toml diff=toml
+*.yaml diff=yaml

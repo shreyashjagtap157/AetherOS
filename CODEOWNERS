@@ -1,0 +1,41 @@
+# AetherOS CODEOWNERS
+# These owners will be requested for review when their files are modified
+# GitHub: Settings > Branches > Branch protection rules > Require review from code owners
+
+# Architecture & Governance - require architecture team review
+/docs/Platform-Architecture-Specification-v1.1.md       @architecture-team
+/docs/ARCHITECTURE-GOVERNANCE.md                         @architecture-team
+/docs/Governance-RFC.md                                  @architecture-team
+/docs/RFC-GOV-002.md                                     @architecture-team
+/docs/Profiles-Specification.md                          @architecture-team
+/docs/Conformance-Test-Suite-Methodology.md             @architecture-team
+
+# RFCs - require RFC author + architecture team
+/docs/RFCs/                                              @architecture-team
+
+# Implementation Roadmap & Status - require implementation lead
+/docs/IMPLEMENTATION-ROADMAP.md                          @implementation-lead
+/docs/IMPLEMENTATION-STATUS.md                           @implementation-lead
+/docs/PRE-IMPLEMENTATION-DEPENDENCY-MATRIX.md           @implementation-lead
+/docs/INTF-000-CAPABILITY-ENFORCEMENT-SUBSTRATE-DECISION.md @architecture-team
+
+# Reference Implementation - require implementation team
+/reference/                                              @implementation-team
+/reference/crates/aether-types/                          @implementation-team
+/reference/crates/aether-cap-model/                      @implementation-team
+/reference/crates/aether-capspace/                       @implementation-team
+/reference/crates/aether-state-model/                    @implementation-team
+/reference/crates/aether-cts-runner/                     @implementation-team
+
+# CI/Build - require build engineering
+/.github/workflows/                                      @build-engineering
+/check.sh                                                @build-engineering
+/rust-toolchain.toml                                     @build-engineering
+
+# Security - require security team
+/docs/THREAT-MODEL.md                                    @security-team
+/docs/SECURITY.md                                        @security-team
+
+# AI-native validation - require AI architecture review
+/docs/IMPLEMENTATION-ROADMAP.md                          @ai-architecture-review
+/docs/COMPATIBILITY-STRATEGY.md                          @ai-architecture-review

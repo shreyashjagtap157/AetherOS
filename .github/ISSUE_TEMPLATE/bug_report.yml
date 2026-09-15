@@ -1,0 +1,65 @@
+---
+name: Bug Report
+about: Report a conformance violation, implementation bug, or specification defect
+title: '[BUG] '
+labels: ['bug']
+assignees: ''
+---
+
+## Summary
+
+<!-- One-sentence description of the issue -->
+
+## Classification
+
+<!-- Check all that apply -->
+- [ ] **Conformance violation** - Implementation deviates from RFC MUST requirement
+- [ ] **Specification defect** - RFC is ambiguous, contradictory, or missing requirement
+- [ ] **Implementation bug** - Reference code fails its own invariants
+- [ ] **CTS gap** - Missing test for a MUST requirement
+- [ ] **Verification gap** - Tier A/B claim without evidence
+- [ ] **Governance violation** - Process not followed (missing Decision Record, etc.)
+
+## RFC / Invariant Reference
+
+<!-- Link to specific RFC section or Invariant ID -->
+- RFC: RFC-XXXX §N or `docs/RFCs/.../RFC-XXXX.md`
+- Invariant: I-X (from `Platform-Architecture-Specification-v1.1.md`)
+- CTS Test: CTS-XXXX-XXX
+
+## Reproduction
+
+### Environment
+- Commit: `git rev-parse HEAD`
+- Toolchain: `rustup show active-toolchain` (if implementation)
+- Profile: Embedded | Desktop | Cloud | HPC | Safety-Critical
+
+### Steps
+1. 
+2. 
+3. 
+
+### Expected Behavior
+<!-- What the RFC/invariant says should happen -->
+
+### Actual Behavior
+<!-- What actually happens -->
+
+### Evidence
+<!-- Logs, CTS output, test failures, formal verification counterexamples -->
+
+## Impact Assessment
+
+- **Invariants affected**: I-X, I-Y
+- **RFCs affected**: RFC-XXXX, RFC-YYYY
+- **Profiles affected**: [list]
+- **Severity**: Critical | High | Medium | Low
+- **Exploitable**: Yes / No / Unknown
+
+## Proposed Fix
+
+<!-- If known: specification amendment, implementation fix, CTS addition -->
+
+## Additional Context
+
+<!-- Any other information, configurations, or related issues -->

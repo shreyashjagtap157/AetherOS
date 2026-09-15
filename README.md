@@ -10,6 +10,7 @@ The repository contains the specification suite — **not** a working kernel, co
 |-----------------------------------|-----------------------------------------------------------------------|
 | Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
 | RFC corpus                        | **41 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
+| AI-native validation objective    | **Explicit**; AI-native operation is a conformance scenario, not a new RFC or subsystem |
 | Conformance Test Suite            | **12-case host reference prototype passing**; no kernel CTS yet          |
 | Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
 | Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |

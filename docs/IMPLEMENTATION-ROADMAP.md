@@ -90,6 +90,139 @@ CHERI/native capabilities, CXL, confidential computing, DPU, FPGA, tensor, quant
 
 An initial credible core team needs kernel/architecture, Rust and low-level systems, formal methods, storage, security, toolchain, test/release, and documentation expertise. Broader compatibility and hardware require dedicated driver, graphics, virtualization, networking, filesystems, developer-experience, legal/compliance, SRE, and partner teams. Cost models SHALL include long-term maintenance, security response, CI hardware labs, proof repair, and documentation—not only initial implementation.
 
-## 11. Stop/review triggers
+## 11. AI-native operation — validation objective
+
+AI-native operation is **not** a new architectural primitive, subsystem, or RFC. It is a conformance scenario that forces AetherOS's existing architecture to prove itself under the hardest realistic autonomous workload.
+
+### 11.1 Core position
+
+The architecture **permits** AI operation at the capability-model level. Whether AetherOS **demonstrably provides** AI operation requires an executed vertical scenario with implementation evidence. Until such evidence exists, these two statements must remain distinguished:
+
+```text
+Architecture permits AI operation        — conceptual capability
+AetherOS demonstrably provides AI operation — requires executed scenario
+```
+
+The objective is therefore: **AI-native operation must be an explicit validation objective of AetherOS, even if it is not a separate architectural subsystem or RFC.**
+
+### 11.2 Required demonstration scenario
+
+A connected, authorized AI must be able to operate the machine through native semantic interfaces. The primary demonstration scenario is:
+
+```text
+AI request: "Inspect the failing test, fix the implementation, run the tests, commit"
+    ↓
+identity/session
+    ↓
+manifest
+    ↓
+capability derivation
+    ↓
+scope/policy
+    ↓
+capability mediation
+    ↓
+execution
+    ↓
+audit
+    ↓
+revocation/recovery
+    ↓
+verifiable result
+```
+
+This scenario is superior to a trivial "create a file" demonstration because it exercises multiple resource classes and authority transitions in one realistic workflow:
+
+```text
+read project
+    ↓
+spawn tools
+    ↓
+write source
+    ↓
+execute compiler/tests
+    ↓
+inspect results
+    ↓
+modify again
+    ↓
+Git operation
+    ↓
+commit
+```
+
+### 11.3 Machine-readable authority provenance
+
+Every AI operation must generate a machine-readable authority provenance graph answering: **"Why was this AI allowed to perform this exact operation?"**
+
+Example structure:
+
+```text
+AI Session
+   │
+   ├── Manifest M-104
+   │       │
+   │       └── Capability C-7
+   │               │
+   │               ├── Resource: project/*
+   │               ├── Operations: read/write
+   │               └── Lifetime: session
+   │
+   └── Request R-8821
+            │
+            └── Mediation Decision D-8821
+                    │
+                    ├── invariant checks
+                    ├── policy checks
+                    ├── scope checks
+                    └── execution provider
+```
+
+Mechanical answer:
+
+```text
+Because:
+Manifest M-104
+→ derived capability C-7
+→ resource scope project/X
+→ operation write
+→ policy P-19
+→ mediation decision D-8821
+→ invariant set {I-2, I-3, I-13}
+```
+
+This is a far stronger AI-security demonstration than showing an agent can operate a desktop UI. The provenance graph must be emitted as part of CTS telemetry (per `Conformance-Test-Suite-Methodology.md` Section 8).
+
+### 11.4 Three-level AI control hierarchy
+
+The hierarchy is progressive loss of semantic certainty. Native control provides structured resources, typed operations, explicit capabilities, and deterministic authorization. UI/vision provides pixels, inferred intent, and simulated input. AetherOS shall make native interfaces preferable wherever available and make lower-level interaction an explicitly identifiable compatibility path.
+
+```text
+Tier 1 — Native semantic control        structured + typed + explicit + deterministic
+        ↓ (loss of semantic certainty)
+Tier 2 — Compatibility/API automation   translated / projected semantics
+        ↓ (loss of semantic certainty)
+Tier 3 — UI/vision automation           pixels + inferred intent + simulated input
+```
+
+### 11.5 Implementation composition
+
+The AI validation scenario uses the existing implementation chain without modification:
+
+`RFC-0002 → RFC-0003 → RFC-0013 → RFC-0034 → RFC-0037 → RFC-0039 → RFC-0040`
+
+No new AI subsystem is created. The scenario is measured against the same invariants, CTS layers, and verification tiers as every other workload.
+
+### 11.6 End state
+
+The computer is directly operable by machine intelligence through native semantic interfaces, but the intelligence never becomes the authority. AetherOS remains the authority boundary. Compatibility and visual automation are available as fallbacks, explicitly identified as lower-certainty paths.
+
+## 12. Stop/review triggers
 
 Review with the project owner before continuing when an invariant forces unacceptable measured overhead; legal terms block a required compatibility target; hardware documentation is unavailable; a legacy behavior would enter the privileged core; proof cost grows faster than the protected risk; UASA semantics conflict with State invariants; or a phase misses its evidence gate twice. The review presents measured alternatives: redesign, isolate, virtualize, recompile, narrow the claim, defer, or explicitly fund the cost.
+
+AI-native validation scenario triggers additional review when:
+- A mediation decision cannot be answered with a provenance graph
+- Tier 3 (UI/vision) becomes the only available AI control path on a native-capable platform
+- The authority provenance graph exceeds observable audit granularity
+- AI operation demonstrates authority escalation outside the capability derivation chain
