@@ -88,9 +88,27 @@ Verification expands in concentric boundaries:
 
 The proof checker, compiler, hardware assumptions, generated code, and unsafe code inventory are explicitly included in each assurance claim.
 
-## 8. Innovation policy
+## 8. AI-native operation as validation objective
+
+AI-native operation is **not** a new architectural primitive, subsystem, or RFC. It is the hardest real-world workload through which AetherOS's existing principles are demonstrated.
+
+The architecture **permits** AI operation at the capability-model level. Whether AetherOS **demonstrably provides** AI operation requires an executed vertical scenario with implementation evidence.
+
+The AI control hierarchy is progressive loss of semantic certainty:
+
+| Tier | Control level | Semantic content | AetherOS posture |
+|------|--------------|-----------------|------------------|
+| Tier 1 | Native semantic control | Structured resource + typed operation + explicit capability + deterministic authorization | Preferred interface wherever available |
+| Tier 2 | Compatibility/API automation | Translated/projected semantics | Identified compatibility path |
+| Tier 3 | UI/vision automation | Pixels + inferred intent + simulated input | Fallback only; lowest certainty |
+
+Every AI operation shall generate a machine-readable authority provenance graph answering "Why was this AI allowed to perform this exact operation?" using manifest → capability derivation → scope/policy → mediation decision → invariant set traceability.
+
+## 9. Innovation policy
 
 New CPU ISAs, CHERI-like capabilities, CXL memory, confidential computing, DPUs, FPGAs, GPUs, tensor accelerators, quantum devices, neuromorphic devices, and photonic devices enter via experimental provider contracts. A provider must declare memory consistency, authority mapping, isolation, failure, cancellation, timing, observability, attestation, update, and fallback semantics. Experimental support is never described as production support until hardware exists, CTS fixtures pass, and a maintainer commits to lifecycle support.
+
+AI-native operation is not an experimental provider. It is a validation objective exercised through existing provider contracts and capability mediation.
 
 ## 9. Production-ready definition
 

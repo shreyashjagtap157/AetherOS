@@ -46,7 +46,19 @@ Initial portable devices are UART, virtio block/net/input/GPU, PCIe enumeration,
 
 Every result records application/device identifier, version, architecture, tier, configuration manifest, test corpus, known deviations, performance overhead, legal prerequisites, last-tested date, maintainer, and evidence links. “Works” without this record is anecdotal.
 
-## 6. Decision gates for compromises
+## 6. AI control hierarchy
+
+AI control interfaces are classified by semantic certainty. Lower tiers are compatibility paths, not alternatives to native AI control.
+
+| Tier | Interface type | Semantic content | AetherOS posture |
+|------|---------------|-----------------|------------------|
+| Tier 1 | Native semantic control | Structured resource, typed operation, explicit capability, deterministic authorization | Preferred wherever available |
+| Tier 2 | Compatibility/API automation | Translated or projected semantics, API-level scheduling | Identified compatibility path |
+| Tier 3 | UI/vision automation | Pixels, inferred intent, simulated input | Fallback only; explicitly lowest certainty |
+
+Every transition downward in this hierarchy is a measurable loss of semantic certainty. AetherOS shall make native interfaces preferable wherever available and shall make lower-level interaction an explicitly identifiable compatibility path rather than an invisible default.
+
+## 7. Decision gates for compromises
 
 When exact behavior conflicts with security, correctness, performance, or licensing, an Architecture Review SHALL present:
 

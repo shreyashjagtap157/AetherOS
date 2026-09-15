@@ -112,6 +112,7 @@ Three classes of conformance evidence are required:
 1. **Run-time evidence.** Observable behaviour recorded during CTS execution. Persisted in conformance-claim fixtures.
 2. **Static evidence.** Specification of invariants, formal proofs, audits. The CTS treats these as inputs but verifies their existence and version.
 3. **Sustainability evidence.** Records that the implementation intends to maintain conformance over time. Includes policies for Tier A maintenance (`RFC-0040`).
+4. **Authority provenance.** For AI-native validation scenarios, every mediation decision SHALL produce a machine-readable provenance graph tracing the decision through manifest → capability derivation → scope/policy → mediation decision → invariant set. This graph answers "Why was this AI allowed to perform this exact operation?" and is part of CTS telemetry per Section 8.
 
 ---
 

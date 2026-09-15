@@ -150,6 +150,37 @@ These RFCs were the three blockers identified in the pre-implementation dependen
 | RFC-0042 | Cohort Update Governance | **Not started** | Profile update and rollback mechanism |
 | RFC-0043 | Capability Rights Algebra | **Not started** | Formal derivation rules for capability rights |
 
+## AI-Native Operation — Conformance Scenario (Not an RFC)
+
+AI-native operation is an explicit validation objective, **not** a new RFC, architectural primitive, or subsystem. It is the hardest real-world workload through which AetherOS's existing architecture is demonstrated.
+
+The demonstration scenario requires:
+
+```text
+AI request → identity/session → manifest → capability derivation → scope/policy →
+capability mediation → execution → audit → revocation/recovery → verifiable result
+```
+
+Every AI operation shall generate a machine-readable authority provenance graph:
+
+```text
+AI Session → Manifest → Capability → Mediation Decision → Invariant set
+```
+
+The implementation uses the existing chain without modification:
+
+`RFC-0002 → RFC-0003 → RFC-0013 → RFC-0034 → RFC-0037 → RFC-0039 → RFC-0040`
+
+AI control hierarchy (progressive loss of semantic certainty):
+
+| Tier | Interface | AetherOS posture |
+|------|-----------|------------------|
+| 1 | Native semantic control | Preferred wherever available |
+| 2 | Compatibility/API automation | Identified compatibility path |
+| 3 | UI/vision automation | Fallback only |
+
+The objective end state: the computer is directly operable by machine intelligence through native semantic interfaces, but AetherOS remains the authority boundary.
+
 ## Future RFCs (Research Extensions — Phase 5)
 
 These RFCs are deferred research extensions, not production milestones:

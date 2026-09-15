@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added (Review Process)
 - `REVIEWER-GUIDE.md` — mandatory pre-review information gathering, Impact Matrix, review confidence levels, file change requirements
 
+### Added (Architecture)
+- AI-native operation as explicit validation objective (not a new RFC or subsystem); defined as hardest real-world workload through which existing AetherOS architecture is demonstrated
+- Three-level AI control hierarchy (Native semantic → Compatibility/API automation → UI/vision) as progressive loss of semantic certainty in `COMPATIBILITY-STRATEGY.md`
+- Machine-readable authority provenance graph requirement for AI operations in `IMPLEMENTATION-ROADMAP.md` and `PRODUCT-FEASIBILITY-AND-SCOPE.md`
+- AI validation scenario requiring native semantic interface operation, not desktop UI automation
+
 ### Added (Implementation)
 - `IMPLEMENTATION-ROADMAP.md` — fully revised phased implementation plan with four major strategic changes:
   * RISC-V64 as reference platform (was: Phase 3 target)

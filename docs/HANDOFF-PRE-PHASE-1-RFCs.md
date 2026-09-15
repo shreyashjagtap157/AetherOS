@@ -492,6 +492,27 @@ All 4 refinements implemented:
 3. All three RFCs drafted: RFC-ALLOC-001, RFC-COMPILER-001, RFC-DRIVER-001
 4. Index and status documents updated
 
+## Phase 5: AI-Native Validation Objective (Converged Position)
+
+The debate on AI-native control plane converged on a architectural interpretation superior to either original position:
+
+**Core concession:** AI-native operation should not become a new architectural primitive or dedicated RFC. It is more powerful as a conformance scenario that forces the existing AetherOS architecture to prove itself.
+
+**Retained requirement:** AI-native operation must be an explicit validation objective, even if it is not a separate architectural subsystem or RFC. The distinction between "architecture permits AI operation" and "AetherOS demonstrably provides AI operation" is preserved — the latter requires implementation evidence.
+
+**Agreed demonstration:** AI request → identity/session → manifest → capability derivation → scope/policy → mediation → execution → audit → revocation/recovery → verifiable result. The scenario "Inspect the failing test, fix the implementation, run the tests, commit" exercises multiple resource classes and authority transitions in one realistic workflow (read project → spawn tools → write source → execute compiler/tests → inspect results → modify again → Git operation → commit).
+
+**Added requirement:** Machine-readable authority provenance graph for every AI operation, answering "Why was this AI allowed to perform this exact operation?" via manifest → capability → mediation decision → invariant set traceability.
+
+**Three-level AI control hierarchy** retained as progressive loss of semantic certainty:
+- Tier 1: Native semantic control (preferred)
+- Tier 2: Compatibility/API automation (identified compatibility path)
+- Tier 3: UI/vision automation (fallback only)
+
+**End state:** The computer is directly operable by machine intelligence through native semantic interfaces, but AetherOS remains the authority boundary. Don't limit the AI interface to desktop UI control.
+
+**Implementation chain:** `RFC-0002 → RFC-0003 → RFC-0013 → RFC-0034 → RFC-0037 → RFC-0039 → RFC-0040` (no new subsystem).
+
 ## Status: What Remains After This Session
 
 **The three RFCs are drafted but NOT yet reviewed by anyone.** The debate with your friend reached agreement on the plan. The next step would be:
