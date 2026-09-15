@@ -1,0 +1,88 @@
+#!/bin/bash
+# Commit-msg hook: enforce architectural amendment commit format
+# AetherOS commits must follow one of these patterns:
+#   docs: <description>                    # Documentation only
+#   rfc: <RFC-ID> <description>           # RFC addition/amendment
+#   impl: <component> <description>       # Reference implementation
+#   cts: <description>                    # Conformance test suite
+#   arch: <description>                   # Architecture amendment (requires RFC)
+#   gov: <description>                    # Governance/process change
+#   fix: <description>                    # Bug fix
+#   refactor: <description>               # Code restructuring
+#   chore: <description>                  # Maintenance
+#   release: <version>                    # Release tag
+
+# Reject: "fix stuff", "update", "wip", "temp", single-word messages
+
+set -euo pipefail
+
+MSG_FILE="$1"
+COMMIT_MSG=$(cat "$MSG_FILE")
+
+# Skip if this is a merge commit or rebase
+if [[ "$COMMIT_MSG" =~ ^Merge\  ]] || [[ "$COMMIT_MSG" =~ ^Rebase\  ]]; then
+    exit 0
+fi
+
+# Pattern: <type>(<scope>): <description>
+# Type must be one of: docs, rfc, impl, cts, arch, gov, fix, refactor, chore, release
+# Description must be > 10 chars and not generic
+VALID_TYPES="docs|rfc|impl|cts|arch|gov|fix|refactor|chore|release"
+PATTERN="^($VALID_TYPES)(\([a-z0-9_-]+\))?: .{10,}$"
+
+if [[ ! "$COMMIT_MSG" =~ $PATTERN ]]; then
+    echo "❌ Invalid commit message format"
+    echo ""
+    echo "Commit message must follow: <type>(<scope>): <description>"
+    echo ""
+    echo "Valid types:"
+    echo "  docs     - Documentation changes"
+    echo "  rfc      - RFC addition or amendment (e.g., rfc(0013): add capability mediation)"
+    echo "  impl     - Reference implementation changes"
+    echo "  cts      - Conformance test suite changes"
+    echo "  arch     - Architecture amendment (requires RFC number in scope)"
+    echo "  gov      - Governance/process changes"
+    echo "  fix      - Bug fixes"
+    echo "  refactor - Code restructuring"
+    echo "  chore    - Maintenance"
+    echo "  release  - Release tags"
+    echo ""
+    echo "Examples:"
+    echo "  rfc(0037): define capability token format"
+    echo "  impl(capspace): add slot reuse with generation tracking"
+    echo "  cts: add authority provenance test case"
+    echo "  arch(invariants): add I-13 address-authority orthogonality"
+    echo "  fix(state-model): handle torn-tail recovery edge case"
+    echo ""
+    echo "Your message: '$COMMIT_MSG'"
+    exit 1
+fi
+
+# Additional checks for specific types
+TYPE=$(echo "$COMMIT_MSG" | sed -E 's/^([a-z]+)(\([^)]+\))?: .*/\1/')
+SCOPE=$(echo "$COMMIT_MSG" | sed -E 's/^[a-z]+(\([^)]+\))?: .*/\1/' | sed 's/[()]//g')
+
+if [[ "$TYPE" == "arch" ]]; then
+    # Architecture amendments must reference an RFC or invariant
+    if [[ ! "$SCOPE" =~ ^(invariants|rfc-[0-9]+|profile|verification)$ ]]; then
+        echo "❌ Architecture amendment must scope to: invariants, rfc-XXXX, profile, or verification"
+        exit 1
+    fi
+fi
+
+if [[ "$TYPE" == "rfc" ]]; then
+    # RFC commits must reference RFC number
+    if [[ ! "$SCOPE" =~ ^[0-9]{4}$ ]] && [[ ! "$SCOPE" =~ ^(ALLOC|COMPILER|DRIVER|GOV)-[0-9]{3}$ ]]; then
+        echo "❌ RFC commit must scope to RFC number (e.g., rfc(0037) or rfc(ALLOC-001))"
+        exit 1
+    fi
+fi
+
+# Reject generic descriptions
+GENERIC_WORDS="^update|^fix stuff|^changes|^wip|^temp|^misc|^minor|^various|^stuff"
+if [[ "$COMMIT_MSG" =~ $GENERIC_WORDS ]]; then
+    echo "❌ Commit message is too generic. Provide a specific description."
+    exit 1
+fi
+
+exit 0

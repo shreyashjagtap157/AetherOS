@@ -1,0 +1,17 @@
+# AetherOS FUNDING
+
+This project is a research specification suite. Funding information will be added when the project transitions to a funded implementation phase.
+
+Current status: **Unfunded research prototype**
+
+For sponsorship inquiries, contact the project maintainer via GitHub.
+
+## Planned Funding Categories
+
+When funding is secured, it will be allocated to:
+- Core kernel/architecture team
+- Formal verification team
+- Driver/hardware enablement team
+- CI/CD infrastructure
+- Security audit and red-team exercises
+- Documentation and developer experience

@@ -1,0 +1,78 @@
+#!/bin/bash
+# Pre-commit hook: validate repository before commit
+# Runs the complete check.sh gate to catch regressions early
+# Install: cp .githooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+echo "🔍 Running pre-commit validation..."
+
+# Check if check.sh exists and is executable
+if [[ ! -x "./check.sh" ]]; then
+    echo "❌ check.sh not found or not executable"
+    exit 1
+fi
+
+# Run documentation validators (fast, no rust toolchain required)
+echo "📋 Running documentation validators..."
+if ! python3 -m tools.verify_authority; then
+    echo "❌ Authority validation failed"
+    exit 1
+fi
+if ! python3 -m tools.verify_decision_records; then
+    echo "❌ Decision record validation failed"
+    exit 1
+fi
+if ! python3 -m tools.verify_generated; then
+    echo "❌ Generated artifacts validation failed"
+    exit 1
+fi
+if ! python3 -m tools.verify_glossary; then
+    echo "❌ Glossary validation failed"
+    exit 1
+fi
+if ! python3 -m tools.verify_rfc; then
+    echo "❌ RFC structural validation failed"
+    exit 1
+fi
+
+echo "✅ Documentation validators passed"
+
+# Run Rust reference validation if toolchain available
+if command -v cargo &> /dev/null; then
+    echo "🦀 Running Rust reference validation..."
+    if ! (cd reference && cargo fmt --all -- --check); then
+        echo "❌ cargo fmt check failed"
+        exit 1
+    fi
+    if ! (cd reference && cargo check --locked --workspace --all-targets --all-features); then
+        echo "❌ cargo check failed"
+        exit 1
+    fi
+    if ! (cd reference && cargo test --locked --workspace --all-features); then
+        echo "❌ cargo test failed"
+        exit 1
+    fi
+    if ! (cd reference && cargo clippy --locked --workspace --all-targets --all-features -- -D warnings); then
+        echo "❌ cargo clippy failed"
+        exit 1
+    fi
+    if ! (cd reference && RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps); then
+        echo "❌ cargo doc failed"
+        exit 1
+    fi
+    if ! (cd reference && cargo run --locked -p aether-cts-runner); then
+        echo "❌ CTS runner failed"
+        exit 1
+    fi
+    echo "✅ Rust reference validation passed"
+else
+    echo "⚠️  Rust toolchain not available; skipping reference validation"
+    echo "   Run './check.sh' in CI or with rustup installed"
+fi
+
+echo "✅ Pre-commit validation complete"
+exit 0

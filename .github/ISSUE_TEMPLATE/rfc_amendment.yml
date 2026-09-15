@@ -1,0 +1,75 @@
+---
+name: RFC Amendment Proposal
+about: Propose an amendment to an existing RFC or a new RFC
+title: '[RFC] '
+labels: ['rfc', 'architecture']
+assignees: ''
+---
+
+## Proposal Type
+
+<!-- Check one -->
+- [ ] **New RFC** (specifies title, invariants, scope)
+- [ ] **Architecture Amendment** (modifies `Platform-Architecture-Specification-v1.1.md`)
+- [ ] **Specification Amendment** (modifies existing RFC)
+- [ ] **Governance Amendment** (modifies `ARCHITECTURE-GOVERNANCE.md`)
+
+## Target Document(s)
+
+- `docs/RFCs/.../RFC-XXXX.md` or
+- `docs/Platform-Architecture-Specification-v1.1.md` or
+- `docs/ARCHITECTURE-GOVERNANCE.md`
+
+## Invariant Impact
+
+<!-- Which of the 13 invariants are affected? -->
+- [ ] I-1 Authority mediation
+- [ ] I-2 No ambient authority
+- [ ] I-3 Least privilege by default
+- [ ] I-4 Observable state transitions
+- [ ] I-5 Transactional persistence
+- [ ] I-6 Cryptographic integrity
+- [ ] I-7 Forward extensibility
+- [ ] I-8 Verifiable core
+- [ ] I-9 Replaceable mechanisms
+- [ ] I-10 Explicit failure semantics
+- [ ] I-11 Declarable profiles
+- [ ] I-12 Origin of authority
+- [ ] I-13 Address–authority orthogonality
+
+## Change Summary
+
+<!-- What changes and why -->
+
+## Evidence Requirements
+
+Per `RFC-GOV-002` / `ARCHITECTURE-GOVERNANCE.md`, amendments require one of:
+- [ ] **Conformance evidence**: Failing CTS test that the amendment enables to pass
+- [ ] **Verification evidence**: Formal proof/model-checking artifact
+- [ ] **Security evidence**: Independent review, red-team result, or vulnerability fix
+
+## Implementation Impact
+
+- [ ] Requires reference implementation changes (`reference/`)
+- [ ] Requires CTS test additions (`reference/crates/aether-cts-runner/`)
+- [ ] Requires formal model updates
+- [ ] Requires documentation updates
+- [ ] No implementation impact (purely editorial/clarification)
+
+## Migration / Compatibility
+
+- **Forward compatible**: Yes / No (explain)
+- **Breaking change**: Yes / No
+- **Profile impact**: Which profiles affected?
+
+## Decision Record
+
+<!-- Will be populated during review per RFC-GOV-002 -->
+- **Decision Record ID**: DR-XXXX
+- **Status**: Proposed | Under Review | Accepted | Rejected
+
+## Related Work
+
+- Observation Records: OBS-XXXX
+- Previous amendments: PR #XXX
+- External references: [links]
