@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AetherOS Contributor Git Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy to ~/.gitconfig or source via `includeIf` for this repo:
+#
+#   [includeIf "gitdir/i:~/src/aetheros/"]
+#     path = ~/src/aetheros/.gitconfig.example
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+[user]
+	name = Your Name
+	email = your@email.here
+
+[core]
+	hooksPath = .githooks
+	longpaths = true
+	whitespace = blank-at-eol,blank-at-eof,space-before-tab,trailing-space,indent-with-non-tab
+	autocrlf = input
+	safecrlf = warn
+
+[push]
+	default = current
+	autoSetupRemote = true
+	followTags = true
+
+[tag]
+	sort = version:refname
+
+[init]
+	defaultBranch = main
+
+[pull]
+	rebase = true
+
+[fetch]
+	prune = true
+	writeCommitGraph = true
+
+[diff]
+	renames = true
+	compactionHeuristic = true
+
+[credential]
+	helper = manager-core
+
+[http]
+	sslVerify = true
+
+[help]
+	autocorrect = 20
+
+[rerere]
+	enabled = true
+	autoUpdate = true
+
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+
+[checkout]
+	autoSetupRemote = true
+
+[status]
+	short = true
+	branch = true
+
+[gc]
+	auto = 256
+	autosoft = 128
+
+[advice]
+	statusHints = false
+	pushNonFastForward = true

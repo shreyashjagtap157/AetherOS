@@ -32,8 +32,9 @@ Cargo.lock text eol=lf
 artifacts/ -text
 *.log -text
 
-# Diff patterns for better reviews
+# Diff drivers for better code review
 *.rs diff=rust
 *.md diff=markdown
 *.toml diff=toml
 *.yaml diff=yaml
+*.yml diff=yaml
