@@ -95,14 +95,25 @@ These three RFCs complete the normative surface required before Phase 1 implemen
 
 ## Total
 
-- Composition: 5
-- Execution: 8
-- State: 9
-- Communication: 7
-- Observability: 6
-- Cross-cutting: 8 (7 RFC files, including RFC-0041 counting the methodology file)
-- Pre-Phase 1: 3 (Draft)
-- **Total: 46**
+**RFC files in `docs/RFCs/` (normative directories):** 42 files
+**Pre-Phase 1 drafts:** 3 files
+**Total RFC files on disk:** 45
+
+| Peer Architecture       | RFC Files |
+|-------------------------|-----------|
+| Composition             | 5         |
+| Execution               | 8         |
+| State                   | 9         |
+| Communication           | 7         |
+| Observability           | 6         |
+| Cross-Cutting           | 7         |
+| Pre-Phase 1 (Draft)     | 3         |
+| **Total files**         | **45**    |
+
+> The methodology file `Conformance-Test-Suite-Methodology.md` at the `docs/`
+> root is the same document as `RFC-0041`. It is listed here separately for
+> navigation convenience but is NOT an additional RFC file. The file count above
+> counts unique files only.
 
 ---
 
