@@ -18,23 +18,23 @@ fi
 
 # Run documentation validators (fast, no rust toolchain required)
 echo "📋 Running documentation validators..."
-if ! python3 -m tools.verify_authority; then
+if ! python3 "$REPO_ROOT/docs/tools/verify-authority.py"; then
     echo "❌ Authority validation failed"
     exit 1
 fi
-if ! python3 -m tools.verify_decision_records; then
+if ! python3 "$REPO_ROOT/docs/tools/verify-decision-records.py"; then
     echo "❌ Decision record validation failed"
     exit 1
 fi
-if ! python3 -m tools.verify_generated; then
+if ! python3 "$REPO_ROOT/docs/tools/verify-generated.py"; then
     echo "❌ Generated artifacts validation failed"
     exit 1
 fi
-if ! python3 -m tools.verify_glossary; then
+if ! python3 "$REPO_ROOT/docs/tools/verify-glossary.py"; then
     echo "❌ Glossary validation failed"
     exit 1
 fi
-if ! python3 -m tools.verify_rfc; then
+if ! python3 "$REPO_ROOT/docs/tools/verify-rfc.py"; then
     echo "❌ RFC structural validation failed"
     exit 1
 fi

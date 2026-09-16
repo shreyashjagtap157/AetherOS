@@ -1,5 +1,8 @@
 # AetherOS Security Policy
 
+Classification: Operational
+Authoritative Source: docs/Platform-Architecture-Specification-v1.1.md
+
 ## Supported Versions
 
 | Version | Supported          |
