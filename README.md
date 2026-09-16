@@ -9,7 +9,7 @@ The repository contains the specification suite — **not** a working kernel, co
 | Item                              | State                                                                 |
 |-----------------------------------|-----------------------------------------------------------------------|
 | Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
-| RFC corpus                        | **41 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
+| RFC corpus                        | **42 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
 | AI-native validation objective    | **Explicit**; AI-native operation is a conformance scenario, not a new RFC or subsystem |
 | Conformance Test Suite            | **12-case host reference prototype passing**; no kernel CTS yet          |
 | Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
@@ -44,7 +44,7 @@ Peer architectures are organised under `docs/RFCs/`:
 | `docs/RFCs/02-State/`                | 9    | RFC-0015 … RFC-0023                                     |
 | `docs/RFCs/03-Communication/`        | 7    | RFC-0024 … RFC-0030                                     |
 | `docs/RFCs/04-Observability/`        | 6    | RFC-0031 … RFC-0036                                     |
-| `docs/RFCs/05-Cross-Cutting/`        | 5    | RFC-0037 … RFC-0041                                     |
+| `docs/RFCs/05-Cross-Cutting/`        | 7    | RFC-0037 … RFC-0043                                     |
 | `docs/RFCs/06-Pre-Phase-1/`          | 3    | RFC-ALLOC-001, RFC-COMPILER-001, RFC-DRIVER-001 (Draft) |
 
 Supporting materials live alongside the specs:

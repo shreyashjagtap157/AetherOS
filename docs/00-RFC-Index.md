@@ -67,7 +67,7 @@ This index enumerates the 41 normative RFCs required by v1 of `Platform-Architec
 | RFC-0035   | Diagnostic Query               | Active        | `RFCs/04-Observability/RFC-0035.md`|
 | RFC-0036   | Observability Conformance      | Active        | `RFCs/04-Observability/RFC-0036.md`|
 
-## Cross-Cutting (5 RFCs)
+## Cross-Cutting (7 RFCs)
 
 | RFC        | Title                                | Status        | Files                              |
 |------------|--------------------------------------|---------------|------------------------------------|
@@ -76,6 +76,8 @@ This index enumerates the 41 normative RFCs required by v1 of `Platform-Architec
 | RFC-0039   | Capability Revocation Protocol       | Active        | `RFCs/05-Cross-Cutting/RFC-0039.md`|
 | RFC-0040   | Verification Tier Methodology        | Active        | `RFCs/05-Cross-Cutting/RFC-0040.md`|
 | RFC-0041   | Conformance Test Suite Methodology   | (See file)    | `RFCs/05-Cross-Cutting/RFC-0041.md`|
+| RFC-0042   | Cohort Update Governance             | Not started   | `RFCs/05-Cross-Cutting/RFC-0042.md`|
+| RFC-0043   | Capability Rights Algebra            | Not started   | `RFCs/05-Cross-Cutting/RFC-0043.md`|
 
 > **Note:** The `Conformance-Test-Suite-Methodology.md` file at the suite root is the same document that would be reproduced in this project numbering as `RFC-0041` if the suite were numbered from RFC-0041 explicitly. The cross-cutting list above contains 5 RFCs; the methodology file is included as the 41st by counting it under the cross-cutting list at the top-level file rather than as a separate RFC. Both numbering schemes are documented.
 
@@ -98,9 +100,9 @@ These three RFCs complete the normative surface required before Phase 1 implemen
 - State: 9
 - Communication: 7
 - Observability: 6
-- Cross-cutting: 6 (including RFC-0041 Counting the methodology file)
+- Cross-cutting: 8 (7 RFC files, including RFC-0041 counting the methodology file)
 - Pre-Phase 1: 3 (Draft)
-- **Total: 44**
+- **Total: 46**
 
 ---
 
@@ -147,8 +149,6 @@ These RFCs were the three blockers identified in the pre-implementation dependen
 
 | RFC | Title | Status | Blocks |
 |-----|-------|--------|--------|
-| RFC-0042 | Cohort Update Governance | **Not started** | Profile update and rollback mechanism |
-| RFC-0043 | Capability Rights Algebra | **Not started** | Formal derivation rules for capability rights |
 
 ## AI-Native Operation — Conformance Scenario (Not an RFC)
 
@@ -187,8 +187,6 @@ These RFCs are deferred research extensions, not production milestones:
 
 | RFC | Title | Status | Blocks |
 |-----|-------|--------|--------|
-| RFC-0042 | Cohort Update Governance | Not started | Profile update and rollback mechanism |
-| RFC-0043 | Capability Rights Algebra | Not started | Formal derivation rules for capability rights |
 | RFC-Q1 | Quantum Execution Provider Contract | Experimental research interface | Phase 5 quantum support |
 | RFC-N1 | Neuromorphic Provider Interface | Experimental research interface | Phase 5 neuromorphic support |
 | RFC-P1 | Photonic Storage and Network Provider | Experimental research interface | Phase 5 photonic support |

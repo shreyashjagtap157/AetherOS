@@ -13,11 +13,16 @@ gate for anyone contributing to AetherOS — human or agent.
 ```sh
 git clone https://github.com/shreyashjagtap157/AetherOS.git
 cd AetherOS
+./bootstrap.sh           # activates hooks and git config
 rustup toolchain install --profile minimal --component rustfmt,clippy
 ```
 
 The pinned toolchain is declared in `rust-toolchain.toml`. Docker users can
 build the reproducible image from `.devcontainer/Dockerfile`.
+
+> **`.git/config` is local state.** A fresh clone does not inherit another
+> developer's `.git/config`. Run `./bootstrap.sh` after cloning to activate
+> hooks (`core.hooksPath`) and apply the project's recommended git settings.
 
 ## Git Workflow
 
@@ -90,47 +95,38 @@ hook rejects a commit.
 
 ## Enterprise Git Configuration
 
-The repository ships with enterprise-grade defaults already applied locally.
-If you clone on a new machine, apply the recommended local settings:
+A fresh clone does **not** inherit `.git/config`. Run `./bootstrap.sh` once
+after cloning to activate hooks and apply all required and recommended settings
+in one step. A fully annotated reference template lives at `.gitconfig.example`,
+with each setting classified as REQUIRED, RECOMMENDED, OPTIONAL, or LOCAL-ONLY
+so contributors can adopt selectively rather than importing a monolithic blob.
 
-```sh
-git config core.hooksPath .githooks
-git config push.default current
-git config push.autoSetupRemote true
-git config push.followTags true
-git config tag.sort version:refname
-git config init.defaultBranch main
-git config pull.rebase true
-git config core.longpaths true
-git config core.whitespace "blank-at-eol,blank-at-eof,space-before-tab,trailing-space,indent-with-non-tab"
-git config http.sslVerify true
-git config rerere.enabled true
-git config rerere.autoupdate true
-git config diff.renames true
-git config diff.compactionHeuristic true
-git config checkout.autoSetupRemote true
-git config status.short true
-git config gc.auto 256
+### Configuration Layers
+
+```text
+Repository policy          →  versioned files (.gitattributes, CODEOWNERS,
+                                    .githooks/, .github/)
+Developer preferences      →  ~/.gitconfig / includeIf / .gitconfig.example
+Repository-local activation →  .git/config (per-clone; set by bootstrap.sh)
+Remote enforcement         →  GitHub branch protection (via setup-branch-protection.sh)
 ```
 
-A reference `.gitconfig` template is provided at `.gitconfig.example`.
-
 ## Branch Protection
+
+> **Current state: NOT ENFORCED on remote.** No branch protection rules exist on the
+> remote `main` branch. The script below provides the automation, but requires
+> an admin to execute it. Until then, `main` is unprotected.
 
 Branch protection rules are managed as code via:
 
 ```sh
-.github/setup-branch-protection.sh
+.github/setup-branch-protection.sh          # apply
+.github/setup-branch-protection.sh --dry-run  # preview
 ```
 
-This script (run by a repo admin) enforces on `main`:
-
-- Require PR with 2 approvals + CODEOWNERS review
-- Require status checks to pass (strict, up-to-date)
-- Require linear history
-- Require signed commits
-- Enforce rules for administrators
-- Auto-delete merged branches
+Each control has an identified rationale in the script's governance table.
+The script is **idempotent** and **self-verifying**: it applies the configuration,
+reads it back from the GitHub API, and asserts the expected state.
 
 ## Useful Commands
 

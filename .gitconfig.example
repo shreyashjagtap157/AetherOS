@@ -6,71 +6,76 @@
 #   [includeIf "gitdir/i:~/src/aetheros/"]
 #     path = ~/src/aetheros/.gitconfig.example
 #
+# Settings are classified:
+#   REQUIRED       — needed for AetherOS hooks and workflow to function
+#   RECOMMENDED    — strongly advised for all contributors
+#   OPTIONAL       — enhances productivity but not required
+#   LOCAL-ONLY     — not portable; set per-machine (excluded here)
 # ─────────────────────────────────────────────────────────────────────────────
 
 [user]
-	name = Your Name
-	email = your@email.here
+	name = Your Name                           # REQUIRED: identify commits
+	email = your@email.here                   # REQUIRED: identify commits
 
 [core]
-	hooksPath = .githooks
-	longpaths = true
-	whitespace = blank-at-eol,blank-at-eof,space-before-tab,trailing-space,indent-with-non-tab
-	autocrlf = input
-	safecrlf = warn
+	hooksPath = .githooks                     # REQUIRED: activates commit-msg and pre-commit hooks
+	longpaths = true                          # RECOMMENDED: Windows path-length compatibility
+	whitespace = blank-at-eol,blank-at-eof,space-before-tab,trailing-space   # RECOMMENDED: catches trailing whitespace and missing newlines
+	autocrlf = input                          # RECOMMENDED: consistent line endings on all platforms
+	safecrlf = warn                           # RECOMMENDED: warns on ambiguous CRLF conversions
 
 [push]
-	default = current
-	autoSetupRemote = true
-	followTags = true
+	default = current                         # RECOMMENDED: push current branch by name
+	autoSetupRemote = true                    # RECOMMENDED: auto-track upstream on first push
+	followTags = true                         # RECOMMENDED: push matching tags with commits
 
 [tag]
-	sort = version:refname
+	sort = version:refname                    # RECOMMENDED: natural version sort for tags
 
 [init]
-	defaultBranch = main
+	defaultBranch = main                     # RECOMMENDED: match AetherOS default branch name
 
 [pull]
-	rebase = true
+	rebase = true                            # RECOMMENDED: linear history, avoids merge bubbles
 
 [fetch]
-	prune = true
-	writeCommitGraph = true
+	prune = true                             # RECOMMENDED: clean stale remote-tracking branches
+	writeCommitGraph = true                  # RECOMMENDED: faster subsequent fetches
 
 [diff]
-	renames = true
-	compactionHeuristic = true
+	renames = true                           # RECOMMENDED: detect renames/copies in diffs
+	compactionHeuristic = true               # RECOMMENDED: more readable diff output
 
 [credential]
-	helper = manager-core
+	helper = manager-core                    # OPTIONAL: credential caching (platform-specific)
 
 [http]
-	sslVerify = true
+	sslVerify = true                         # REQUIRED: enforce TLS verification for git operations
 
 [help]
-	autocorrect = 20
+	autocorrect = 20                         # OPTIONAL: auto-run mistyped commands after 2.0s
 
 [rerere]
-	enabled = true
-	autoUpdate = true
+	enabled = true                           # RECOMMENDED: reuse recorded conflict resolutions
+	autoUpdate = true                        # RECOMMENDED: automatically stage re-resolved conflicts
 
 [filter "lfs"]
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f
-	process = git-lfs filter-process
+	process = git-lfs filter-process         # REQUIRED: project uses git-lfs for binary assets
 	required = true
 
 [checkout]
-	autoSetupRemote = true
+	autoSetupRemote = true                  # RECOMMENDED: auto-configure upstream tracking
 
 [status]
-	short = true
-	branch = true
+	short = true                             # OPTIONAL: concise status output
+	branch = true                            # OPTIONAL: show branch tracking info
 
 [gc]
-	auto = 256
-	autosoft = 128
+	auto = 256                               # OPTIONAL: tune garbage collection thresholds
+	autosoft = 128                           # OPTIONAL: tune garbage collection thresholds
 
 [advice]
-	statusHints = false
-	pushNonFastForward = true
+	statusHints = false                      # OPTIONAL: cleaner status output
+	pushNonFastForward = true               # OPTIONAL: warn before non-ff pushes
