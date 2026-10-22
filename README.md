@@ -1,4 +1,6 @@
-# Current verified status — 22 October 2026
+# AetherOS
+
+## Current verified status — 22 October 2026
 
 > **Project classification: architecture/specification and host-reference prototype, not a working OS kernel.** The README's existing scope statement remains important: this repository is not a bootable kernel, compiler or hardware design. The QEMU RISC-V64 product slice was reported as not started.
 >
