@@ -1,3 +1,12 @@
+# Current verified status — 22 October 2026
+
+> **Project classification: architecture/specification and host-reference prototype, not a working OS kernel.** The README's existing scope statement remains important: this repository is not a bootable kernel, compiler or hardware design. The QEMU RISC-V64 product slice was reported as not started.
+>
+> The latest inspected [reference-validation workflow](https://github.com/shreyashjagtap157/AetherOS/actions/runs/35056857222) failed because `check.sh` attempted to execute `./tools/verify-reproducible-reference.sh`, which returned `Permission denied` (exit code 126). This prevents the intended evidence pipeline from completing. Correct the file mode or invoke the script explicitly through its intended shell, then rerun the entire validation/evidence gate.
+>
+> No GitHub release was found in this audit. Architecture/RFC maturity must be kept separate from implementation and hardware-conformance maturity.
+
+---
 # AetherOS
 
 AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
