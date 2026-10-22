@@ -9,8 +9,6 @@
 > No GitHub release was found in this audit. Architecture/RFC maturity must be kept separate from implementation and hardware-conformance maturity.
 
 ---
-# AetherOS
-
 AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
 
 The repository contains the specification suite — **not** a working kernel, compiler, or hardware design. Implementation repositories will be separate.
