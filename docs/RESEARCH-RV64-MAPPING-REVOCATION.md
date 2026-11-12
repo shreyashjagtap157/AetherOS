@@ -99,7 +99,7 @@ This prototype chooses fail-closed alignment: a map request's resource bounds mu
 
 ## 6. Validation and evidence
 
-The latest PR #8 head `bc21940e911c1a93e5e06f87390a826e77b3eda9` passed the full repository workflow on 2026-11-12:
+PR #8 was merged into `main` as `ac55bb3b6e41da75859a5f2e1ca26436e294d0d3`. The exact PR head passed the full workflow before merge; the resulting main merge commit also passed its push workflow on 2026-11-12:
 
 - Repository validators and supply-chain policy for five packages.
 - Debug and release Rust test suites: `aether-cap-model` 4, `aether-capspace` 28, `aether-state-model` 9 and `aether-types` 2 tests passed.
@@ -107,11 +107,15 @@ The latest PR #8 head `bc21940e911c1a93e5e06f87390a826e77b3eda9` passed the full
 - Formatting, compile/check, Clippy with warnings denied, Rustdoc with warnings denied, reproducibility verification and release-evidence validation (133 files).
 - GitHub Actions evidence artifact retained.
 
-Workflow: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43244849901
+PR-head workflow: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43245270041
 
-Artifact: https://github.com/shreyashjagtap157/AetherOS/actions/artifacts/13955508851
+PR-head artifact: https://github.com/shreyashjagtap157/AetherOS/actions/artifacts/13956687961
 
-Artifact SHA-256: `10cd969cfb65f73012b31502beba1672650f867689319ca3984e29679fcd7342`
+Merged-main workflow: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43245580188
+
+Merged-main artifact: https://github.com/shreyashjagtap157/AetherOS/actions/artifacts/13956776653
+
+Merged-main artifact SHA-256: `f48aa6aa2a30625e35ad2fc23af307f7c6059944dd0e41326a594ff61aed763a`
 
 These results are host-reference evidence only. They do not prove kernel conformance, hardware page-table correctness, actual scheduler integration, concurrent map/dispatch linearization, target-hart discovery, interrupt delivery, memory ordering, worst-case shootdown latency, or formal correctness.
 
