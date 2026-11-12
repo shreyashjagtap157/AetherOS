@@ -1292,9 +1292,11 @@ mod tests {
         );
 
         activate_test_hart(&mut memory, domain, hart);
-        assert!(memory
-            .access(hart, first_asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
     }
 
     #[test]
