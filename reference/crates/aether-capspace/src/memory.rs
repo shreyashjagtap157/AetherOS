@@ -546,11 +546,13 @@ impl MemoryManager {
         let mut incomplete = false;
         for mapping in &invalid_mappings {
             if let Some(record) = self.mappings.get(mapping) {
-                hart_invalidations = hart_invalidations.saturating_add(
-                    self.resident_harts
-                        .get(&record.address_space)
-                        .map_or(0, HashSet::len),
-                );
+                let mut targets = self
+                    .resident_harts
+                    .get(&record.address_space)
+                    .cloned()
+                    .unwrap_or_default();
+                targets.insert(fences.current_hart());
+                hart_invalidations = hart_invalidations.saturating_add(targets.len());
             }
             if self.invalidate_mapping(*mapping, fences).is_err() {
                 incomplete = true;
@@ -986,6 +988,50 @@ mod tests {
         assert_eq!(
             map_request(&mut memory, &capabilities, domain, handle, request),
             Err(MemoryError::MisalignedRange)
+        );
+    }
+
+    #[test]
+    fn map_publishes_page_tables_and_invalidates_the_executing_hart() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let mut fences = FakeFences::default();
+
+        memory
+            .map(
+                &capabilities,
+                domain,
+                handle,
+                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+                &mut fences,
+            )
+            .unwrap();
+
+        assert_eq!(fences.published, 1);
+        assert_eq!(fences.calls, vec![(HartId::new(0), asid, bounds(0x4000, 0x5000))]);
+    }
+
+    #[test]
+    fn failed_map_activation_rolls_back_the_pte() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let mut fences = FakeFences::default();
+        fences.fail_once.insert(HartId::new(0));
+
+        assert_eq!(
+            memory.map(
+                &capabilities,
+                domain,
+                handle,
+                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+                &mut fences,
+            ),
+            Err(MemoryError::MappingActivationFailed)
+        );
+        assert_eq!(memory.pending_invalidation_count(), 0);
+        assert_eq!(
+            memory.access(HartId::new(0), asid, 0x4000, MemoryAccess::Read),
+            Err(MemoryError::Unmapped)
         );
     }
 
