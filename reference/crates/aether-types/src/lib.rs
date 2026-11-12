@@ -47,11 +47,22 @@ impl Rights {
     pub const WRITE: Self = Self(1 << 1);
     /// Invoke an endpoint or operation.
     pub const INVOKE: Self = Self(1 << 2);
-    /// Derive or transfer attenuated authority.
+    /// Provider-reference grant authority for derivation and transfer.
+    ///
+    /// This is a host-model aggregate, not a canonical RFC-0037 token bit.
     pub const GRANT: Self = Self(1 << 3);
+    /// Execute instructions from a memory region.
+    pub const EXECUTE: Self = Self(1 << 4);
+    /// Create or remove an address-space mapping for a memory region.
+    pub const MAP: Self = Self(1 << 5);
     /// Empty rights set.
     pub const NONE: Self = Self(0);
-    const KNOWN: u16 = Self::READ.0 | Self::WRITE.0 | Self::INVOKE.0 | Self::GRANT.0;
+    const KNOWN: u16 = Self::READ.0
+        | Self::WRITE.0
+        | Self::INVOKE.0
+        | Self::GRANT.0
+        | Self::EXECUTE.0
+        | Self::MAP.0;
 
     /// Creates a rights set if every bit is defined.
     #[must_use]
