@@ -150,6 +150,10 @@ pub trait TlbShootdown {
     fn current_hart(&self) -> HartId;
 
     /// Publishes page-table changes for the specified address-space range.
+    ///
+    /// # Errors
+    /// Returns `ShootdownError::Unavailable` if the backend cannot make the
+    /// preceding PTE stores visible to the harts that may use this address space.
     fn publish_page_table_updates(
         &mut self,
         address_space: AddressSpaceId,
@@ -157,6 +161,10 @@ pub trait TlbShootdown {
     ) -> Result<(), ShootdownError>;
 
     /// Invalidates translations on one hart and waits for its acknowledgement.
+    ///
+    /// # Errors
+    /// Returns `ShootdownError::Unavailable` if the target hart does not
+    /// execute and acknowledge the required local translation fence.
     fn invalidate_hart_and_wait(
         &mut self,
         hart: HartId,
@@ -1269,6 +1277,10 @@ mod tests {
         );
     }
 
+    // This is intentionally an end-to-end scenario: keeping setup, mapping,
+    // revocation and postcondition checks together makes the cross-domain
+    // authority propagation invariant directly auditable.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn revocation_invalidates_derived_and_transferred_mappings() {
         let root_rights = Rights::MAP
