@@ -176,6 +176,10 @@ pub enum MemoryError {
     AddressSpaceAlreadyOwned,
     /// The domain is already bound to a different address-space identifier.
     DomainAlreadyAssigned,
+    /// A virtual or resource range is empty or reversed.
+    InvalidRange,
+    /// The virtual range is outside the canonical Sv39 address regions.
+    NonCanonicalVirtualRange,
     /// A virtual or resource range is not aligned to the selected page size.
     MisalignedRange,
     /// Virtual and resource ranges have different lengths.
@@ -653,6 +657,22 @@ impl MemoryManager {
         resource_range: Bounds,
         page_size: PageSize,
     ) -> Result<(), MemoryError> {
+        if virtual_range.start >= virtual_range.end
+            || resource_range.start >= resource_range.end
+        {
+            return Err(MemoryError::InvalidRange);
+        }
+
+        let last_virtual_byte = virtual_range.end - 1;
+        let start_sign = (virtual_range.start >> 38) & 1;
+        let end_sign = (last_virtual_byte >> 38) & 1;
+        if start_sign != end_sign
+            || !Self::is_sv39_canonical(virtual_range.start)
+            || !Self::is_sv39_canonical(last_virtual_byte)
+        {
+            return Err(MemoryError::NonCanonicalVirtualRange);
+        }
+
         let size = page_size.bytes();
         if virtual_range.start % size != 0
             || virtual_range.end % size != 0
@@ -665,6 +685,17 @@ impl MemoryManager {
             return Err(MemoryError::RangeSizeMismatch);
         }
         Ok(())
+    }
+
+    /// Checks the Sv39 sign-extension rule for a 64-bit virtual address.
+    const fn is_sv39_canonical(address: u64) -> bool {
+        let sign = (address >> 38) & 1;
+        let upper = address >> 39;
+        if sign == 0 {
+            upper == 0
+        } else {
+            upper == 0x01ff_ffff
+        }
     }
 
     fn overlaps(left: Bounds, right: Bounds) -> bool {
@@ -975,6 +1006,29 @@ mod tests {
     }
 
     #[test]
+    fn mapping_rejects_noncanonical_and_malformed_ranges() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let mut fences = FakeFences::default();
+
+        let mut request = request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ);
+        request.virtual_range = Bounds {
+            start: 0x5000,
+            end: 0x4000,
+        };
+        assert_eq!(
+            memory.map(&capabilities, domain, handle, request, &mut fences),
+            Err(MemoryError::InvalidRange)
+        );
+
+        request.virtual_range = bounds(0x4000_0000_0000, 0x4000_0000_1000);
+        assert_eq!(
+            memory.map(&capabilities, domain, handle, request, &mut fences),
+            Err(MemoryError::NonCanonicalVirtualRange)
+        );
+    }
+
+    #[test]
     fn mapping_requires_map_right_and_page_aligned_authority() {
         let rights = Rights::READ.union(Rights::WRITE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
@@ -1092,6 +1146,42 @@ mod tests {
             memory.access(hart, asid, 0x9000, MemoryAccess::Read),
             Err(MemoryError::Unmapped)
         );
+    }
+
+    #[test]
+    fn high_canonical_sv39_mapping_is_accepted() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let mut fences = FakeFences::default();
+        let mapping = memory
+            .map(
+                &capabilities,
+                domain,
+                handle,
+                MapRequest {
+                    address_space: asid,
+                    virtual_range: bounds(
+                        0xffff_ffff_ffff_e000,
+                        0xffff_ffff_ffff_f000,
+                    ),
+                    resource_range: bounds(0, 4096),
+                    page_size: PageSize::Base4KiB,
+                    permissions: Rights::READ,
+                },
+                &mut fences,
+            )
+            .unwrap();
+
+        let translated = memory
+            .access(
+                HartId::new(1),
+                asid,
+                0xffff_ffff_ffff_e123,
+                MemoryAccess::Read,
+            )
+            .unwrap();
+        assert_eq!(translated.mapping, mapping);
+        assert_eq!(translated.object_offset, 0x123);
     }
 
     #[test]
