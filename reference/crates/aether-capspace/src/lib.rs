@@ -8,7 +8,19 @@ use std::sync::Arc;
 struct Entry {
     generation: u16,
     capability: Capability,
-    lineage: Vec<u64>,
+    lineage_id: u64,
+}
+
+/// One node in the capability derivation/transfer graph.
+///
+/// Descendant edges are retained after a local handle is removed while live
+/// descendants still depend on the node for ancestor revocation.
+#[derive(Default)]
+struct RevocationNode {
+    parent: Option<u64>,
+    children: Vec<u64>,
+    revoked: bool,
+    live: bool,
 }
 
 #[derive(Default)]
@@ -21,7 +33,7 @@ struct Space {
 pub struct CapabilitySystem {
     universe: Arc<()>,
     spaces: HashMap<DomainId, Space>,
-    revoked: HashSet<u64>,
+    revocation_nodes: HashMap<u64, RevocationNode>,
     next_lineage: u64,
 }
 
@@ -41,7 +53,7 @@ impl CapabilitySystem {
         Self {
             universe: Arc::new(()),
             spaces: HashMap::new(),
-            revoked: HashSet::new(),
+            revocation_nodes: HashMap::new(),
             next_lineage: 1,
         }
     }
@@ -74,8 +86,8 @@ impl CapabilitySystem {
         if !Arc::ptr_eq(&bootstrap.0, &self.universe) {
             return Err(CapError::WrongBootstrap);
         }
-        let lineage = self.alloc_lineage()?;
-        self.insert(domain, capability, vec![lineage])
+        let lineage_id = self.alloc_lineage()?;
+        self.insert(domain, capability, lineage_id, None)
     }
 
     /// Derives a same-domain child.
@@ -91,8 +103,8 @@ impl CapabilitySystem {
     ) -> Result<Handle, CapError> {
         let entry = self.resolve_live(domain, parent)?.clone();
         Self::check_narrowing(&entry.capability, rights, bounds)?;
-        let mut lineage = entry.lineage;
-        lineage.push(self.alloc_lineage()?);
+        let parent_lineage = entry.lineage_id;
+        let lineage_id = self.alloc_lineage()?;
         self.insert(
             domain,
             Capability {
@@ -100,7 +112,8 @@ impl CapabilitySystem {
                 bounds,
                 ..entry.capability
             },
-            lineage,
+            lineage_id,
+            Some(parent_lineage),
         )
     }
 
@@ -121,8 +134,8 @@ impl CapabilitySystem {
             return Err(CapError::Rights);
         }
         Self::check_narrowing(&entry.capability, rights, bounds)?;
-        let mut lineage = entry.lineage;
-        lineage.push(self.alloc_lineage()?);
+        let parent_lineage = entry.lineage_id;
+        let lineage_id = self.alloc_lineage()?;
         self.insert(
             destination,
             Capability {
@@ -130,7 +143,8 @@ impl CapabilitySystem {
                 bounds,
                 ..entry.capability
             },
-            lineage,
+            lineage_id,
+            Some(parent_lineage),
         )
     }
 
@@ -139,13 +153,8 @@ impl CapabilitySystem {
     /// # Errors
     /// Returns a typed failure if the handle cannot be resolved in the domain.
     pub fn revoke(&mut self, domain: DomainId, handle: Handle) -> Result<(), CapError> {
-        let lineage = *self
-            .resolve(domain, handle)?
-            .lineage
-            .last()
-            .ok_or(CapError::Missing)?;
-        self.revoked.insert(lineage);
-        Ok(())
+        let lineage_id = self.resolve(domain, handle)?.lineage_id;
+        self.revoke_subtree(lineage_id)
     }
 
     /// Removes a local handle and advances the slot generation before reuse.
@@ -159,22 +168,30 @@ impl CapabilitySystem {
         if encoded_domain != domain {
             return Err(CapError::WrongDomain);
         }
-        let space = self.spaces.get_mut(&domain).ok_or(CapError::Missing)?;
-        let index = usize::try_from(slot).map_err(|_| CapError::Missing)?;
-        let entry = space.slots.get(index).ok_or(CapError::Missing)?;
-        let entry = entry.as_ref().ok_or_else(|| {
-            if space.generations[index] == generation {
-                CapError::Missing
-            } else {
-                CapError::Stale
+        let lineage_id = {
+            let space = self.spaces.get_mut(&domain).ok_or(CapError::Missing)?;
+            let index = usize::try_from(slot).map_err(|_| CapError::Missing)?;
+            let entry = space.slots.get(index).ok_or(CapError::Missing)?;
+            let entry = entry.as_ref().ok_or_else(|| {
+                if space.generations[index] == generation {
+                    CapError::Missing
+                } else {
+                    CapError::Stale
+                }
+            })?;
+            if entry.generation != generation {
+                return Err(CapError::Stale);
             }
-        })?;
-        if entry.generation != generation {
-            return Err(CapError::Stale);
-        }
-        space.slots[index] = None;
-        space.generations[index] = next_generation(generation);
-        Ok(())
+
+            let lineage_id = entry.lineage_id;
+            if !self.revocation_nodes.contains_key(&lineage_id) {
+                return Err(CapError::Missing);
+            }
+            space.slots[index] = None;
+            space.generations[index] = next_generation(generation);
+            lineage_id
+        };
+        self.retire_lineage(lineage_id)
     }
 
     /// Validates a live handle for a requested operation.
@@ -191,7 +208,7 @@ impl CapabilitySystem {
         bounds: Bounds,
     ) -> Result<Capability, CapError> {
         let entry = self.resolve(domain, handle)?;
-        if entry.lineage.iter().any(|id| self.revoked.contains(id)) {
+        if self.is_revoked(entry.lineage_id)? {
             return Err(CapError::Revoked);
         }
         if entry.capability.object_type != object_type {
@@ -230,10 +247,87 @@ impl CapabilitySystem {
 
     fn resolve_live(&self, domain: DomainId, handle: Handle) -> Result<&Entry, CapError> {
         let entry = self.resolve(domain, handle)?;
-        if entry.lineage.iter().any(|id| self.revoked.contains(id)) {
+        if self.is_revoked(entry.lineage_id)? {
             return Err(CapError::Revoked);
         }
         Ok(entry)
+    }
+
+    fn is_revoked(&self, lineage_id: u64) -> Result<bool, CapError> {
+        self.revocation_nodes
+            .get(&lineage_id)
+            .map(|node| node.revoked)
+            .ok_or(CapError::Missing)
+    }
+
+    /// Eagerly marks a capability and its complete derivation/transfer subtree.
+    ///
+    /// The closure is collected and validated before any node is mutated, so a
+    /// missing graph node cannot leave a partially applied revocation.
+    /// Authorization checks one node instead of walking every ancestor.
+    /// Revocation work is proportional to the affected subtree and is
+    /// deliberately iterative to avoid recursive stack growth.
+    fn revoke_subtree(&mut self, root: u64) -> Result<(), CapError> {
+        let mut pending = vec![root];
+        let mut affected = HashSet::new();
+
+        while let Some(lineage_id) = pending.pop() {
+            if !affected.insert(lineage_id) {
+                continue;
+            }
+            let node = self
+                .revocation_nodes
+                .get(&lineage_id)
+                .ok_or(CapError::Missing)?;
+            pending.extend(node.children.iter().copied());
+        }
+
+        for lineage_id in affected {
+            let node = self
+                .revocation_nodes
+                .get_mut(&lineage_id)
+                .ok_or(CapError::Missing)?;
+            node.revoked = true;
+        }
+        Ok(())
+    }
+
+    /// Retires lineage metadata when a handle is removed, preserving any
+    /// ancestor node still required by live descendants.
+    fn retire_lineage(&mut self, lineage_id: u64) -> Result<(), CapError> {
+        self.revocation_nodes
+            .get_mut(&lineage_id)
+            .ok_or(CapError::Missing)?
+            .live = false;
+
+        let mut candidate = Some(lineage_id);
+        while let Some(current) = candidate {
+            let (parent, can_prune) = {
+                let node = self
+                    .revocation_nodes
+                    .get(&current)
+                    .ok_or(CapError::Missing)?;
+                (node.parent, !node.live && node.children.is_empty())
+            };
+            if !can_prune {
+                break;
+            }
+
+            self.revocation_nodes
+                .remove(&current)
+                .ok_or(CapError::Missing)?;
+            if let Some(parent_id) = parent {
+                self.revocation_nodes
+                    .get_mut(&parent_id)
+                    .ok_or(CapError::Missing)?
+                    .children
+                    .retain(|child| *child != current);
+                candidate = Some(parent_id);
+            } else {
+                candidate = None;
+            }
+        }
+        Ok(())
     }
 
     fn check_narrowing(
@@ -263,8 +357,16 @@ impl CapabilitySystem {
         &mut self,
         domain: DomainId,
         capability: Capability,
-        lineage: Vec<u64>,
+        lineage_id: u64,
+        parent_lineage: Option<u64>,
     ) -> Result<Handle, CapError> {
+        if self.revocation_nodes.contains_key(&lineage_id) {
+            return Err(CapError::Exhausted);
+        }
+        if parent_lineage.is_some_and(|parent| !self.revocation_nodes.contains_key(&parent)) {
+            return Err(CapError::Missing);
+        }
+
         let space = self.spaces.get_mut(&domain).ok_or(CapError::Missing)?;
         let index = if let Some(index) =
             space.slots.iter().enumerate().find_map(|(index, entry)| {
@@ -280,17 +382,36 @@ impl CapabilitySystem {
             space.slots.len() - 1
         };
         let generation = space.generations[index];
-        space.slots[index] = Some(Entry {
-            generation,
-            capability,
-            lineage,
-        });
-        Handle::encode(
+        let handle = Handle::encode(
             domain,
             u32::try_from(index).map_err(|_| CapError::Exhausted)?,
             generation,
         )
-        .ok_or(CapError::Exhausted)
+        .ok_or(CapError::Exhausted)?;
+
+        space.slots[index] = Some(Entry {
+            generation,
+            capability,
+            lineage_id,
+        });
+
+        self.revocation_nodes.insert(
+            lineage_id,
+            RevocationNode {
+                parent: parent_lineage,
+                live: true,
+                ..RevocationNode::default()
+            },
+        );
+        if let Some(parent) = parent_lineage {
+            self.revocation_nodes
+                .get_mut(&parent)
+                .ok_or(CapError::Missing)?
+                .children
+                .push(lineage_id);
+        }
+
+        Ok(handle)
     }
 }
 
@@ -384,6 +505,194 @@ mod tests {
             ),
             Err(CapError::Revoked)
         );
+    }
+
+    #[test]
+    fn revoking_a_child_invalidates_only_its_own_subtree() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+
+        let root = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let branch = system
+            .derive(
+                domain(1),
+                root,
+                Rights::READ.union(Rights::GRANT),
+                bounds(0, 4096),
+            )
+            .unwrap();
+        let descendant = system
+            .derive(domain(1), branch, Rights::READ, bounds(0, 1024))
+            .unwrap();
+        let transferred = system
+            .transfer(domain(1), branch, domain(2), Rights::READ, bounds(0, 512))
+            .unwrap();
+        let sibling = system
+            .derive(domain(1), root, Rights::READ, bounds(1024, 2048))
+            .unwrap();
+
+        system.revoke(domain(1), branch).unwrap();
+
+        assert_eq!(
+            system.authorize(
+                domain(1),
+                branch,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1)
+            ),
+            Err(CapError::Revoked)
+        );
+        assert_eq!(
+            system.authorize(
+                domain(1),
+                descendant,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1)
+            ),
+            Err(CapError::Revoked)
+        );
+        assert_eq!(
+            system.authorize(
+                domain(2),
+                transferred,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1)
+            ),
+            Err(CapError::Revoked)
+        );
+        assert!(
+            system
+                .authorize(
+                    domain(1),
+                    root,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(0, 1)
+                )
+                .is_ok()
+        );
+        assert!(
+            system
+                .authorize(
+                    domain(1),
+                    sibling,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(1024, 1025)
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn removed_intermediate_handle_remains_in_ancestor_revocation_graph() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        let root = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let intermediate = system
+            .derive(
+                domain(1),
+                root,
+                Rights::READ.union(Rights::GRANT),
+                bounds(0, 4096),
+            )
+            .unwrap();
+        let intermediate_lineage = system.resolve(domain(1), intermediate).unwrap().lineage_id;
+        let descendant = system
+            .derive(domain(1), intermediate, Rights::READ, bounds(0, 1024))
+            .unwrap();
+
+        system.remove(domain(1), intermediate).unwrap();
+        assert!(system.revocation_nodes.contains_key(&intermediate_lineage));
+        system.revoke(domain(1), root).unwrap();
+
+        assert_eq!(
+            system.authorize(
+                domain(1),
+                descendant,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1)
+            ),
+            Err(CapError::Revoked)
+        );
+    }
+
+    #[test]
+    fn retired_lineage_metadata_is_reclaimed_after_last_descendant() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        let root = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let intermediate = system
+            .derive(
+                domain(1),
+                root,
+                Rights::READ.union(Rights::GRANT),
+                bounds(0, 4096),
+            )
+            .unwrap();
+        let descendant = system
+            .derive(domain(1), intermediate, Rights::READ, bounds(0, 1024))
+            .unwrap();
+
+        assert_eq!(system.revocation_nodes.len(), 3);
+        system.remove(domain(1), intermediate).unwrap();
+        assert_eq!(system.revocation_nodes.len(), 3);
+        system.remove(domain(1), descendant).unwrap();
+        assert_eq!(system.revocation_nodes.len(), 1);
+        system.remove(domain(1), root).unwrap();
+        assert!(system.revocation_nodes.is_empty());
+    }
+
+    #[test]
+    fn deep_derivation_revocation_uses_iterative_graph_walk() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        let mut chain = vec![system.create_root(&bootstrap, domain(1), root()).unwrap()];
+
+        for _ in 0..128 {
+            let parent = *chain.last().unwrap();
+            let child = system
+                .derive(
+                    domain(1),
+                    parent,
+                    Rights::READ.union(Rights::GRANT),
+                    bounds(0, 4096),
+                )
+                .unwrap();
+            chain.push(child);
+        }
+
+        let revoke_at = 64;
+        system.revoke(domain(1), chain[revoke_at]).unwrap();
+
+        for (index, handle) in chain.iter().copied().enumerate() {
+            let requested_rights = if index == 0 {
+                Rights::READ
+            } else {
+                Rights::READ.union(Rights::GRANT)
+            };
+            let result = system.authorize(
+                domain(1),
+                handle,
+                ObjectType::Memory,
+                requested_rights,
+                bounds(0, 1),
+            );
+            if index < revoke_at {
+                assert!(result.is_ok(), "ancestor {index} was unexpectedly revoked");
+            } else {
+                assert_eq!(
+                    result,
+                    Err(CapError::Revoked),
+                    "descendant {index} survived"
+                );
+            }
+        }
     }
 
     #[test]

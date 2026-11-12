@@ -1,12 +1,12 @@
 # AetherOS
 
-## Current verified status — 22 October 2026
+## Current verified status — 12 November 2026 (PR-branch evidence)
 
-> **Project classification: architecture/specification and host-reference prototype, not a working OS kernel.** The README's existing scope statement remains important: this repository is not a bootable kernel, compiler or hardware design. The QEMU RISC-V64 product slice was reported as not started.
+> **Project classification: architecture/specification and host-reference prototype, not a working OS kernel.** There is still no bootable kernel, compiler, hardware design or QEMU RISC-V64 product slice in this repository.
 >
-> The latest inspected [reference-validation workflow](https://github.com/shreyashjagtap157/AetherOS/actions/runs/35056857222) failed because `check.sh` attempted to execute `./tools/verify-reproducible-reference.sh`, which returned `Permission denied` (exit code 126). This prevents the intended evidence pipeline from completing. Correct the file mode or invoke the script explicitly through its intended shell, then rerun the entire validation/evidence gate.
+> The earlier reproducibility-gate failure is corrected on [PR #7](https://github.com/shreyashjagtap157/AetherOS/pull/7): the helper is invoked through POSIX `sh`. The same PR now includes an experimental indexed capability-revocation graph and a descendant-subtree differential CTS case. Its latest [reference-validation workflow](https://github.com/shreyashjagtap157/AetherOS/actions/runs/43227538622) passed: 10 capability-provider unit tests, 13 host CTS cases, reproducibility checks, and release-evidence validation for 130 files.
 >
-> No GitHub release was found in this audit. Architecture/RFC maturity must be kept separate from implementation and hardware-conformance maturity.
+> **These results are on the PR branch only and are not yet part of `main`.** The 12-case main-branch host reference baseline remains distinct from the 13-case PR evidence. No kernel CTS, hardware qualification, formal proof, or production release is claimed.
 
 ---
 AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
@@ -20,7 +20,7 @@ The repository contains the specification suite — **not** a working kernel, co
 | Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
 | RFC corpus                        | **42 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
 | AI-native validation objective    | **Explicit**; AI-native operation is a conformance scenario, not a new RFC or subsystem |
-| Conformance Test Suite            | **12-case host reference prototype passing**; no kernel CTS yet          |
+| Conformance Test Suite            | **12 cases on main; 13 validated on PR #7 branch**; no kernel CTS yet     |
 | Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
 | Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |
 | Compatibility strategy           | Active; see `docs/COMPATIBILITY-STRATEGY.md`                           |
@@ -61,6 +61,7 @@ Supporting materials live alongside the specs:
 - `docs/Glossary.md` — terminology used across all documents
 - `docs/REVISION-HISTORY.md` — what changed across architecture versions
 - `docs/CHANGELOG.md` — suite-level change log
+- `docs/RESEARCH-REVOCATION-IMPLEMENTATION.md` — research and implementation decision for the host capability provider's revocation graph
 - `docs/Hardware-Support-RFC.md` — hardware provider architecture
 - `docs/VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md` — product releases from 0.0.0 through 2.x
 - `docs/IMPLEMENTATION-ROADMAP.md` / `IMPLEMENTATION-STATUS.md` — phase gates and live status

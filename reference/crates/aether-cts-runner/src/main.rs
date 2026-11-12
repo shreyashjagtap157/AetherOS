@@ -12,6 +12,10 @@ fn main() {
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
         ("CTS-CAP-REVOKE-001", revoke_across_transfer()),
+        (
+            "CTS-CAP-REVOKE-SUBTREE-001",
+            revoke_only_descendant_subtree(),
+        ),
         ("CTS-CAP-FORGE-001", reject_forged_integer()),
         ("CTS-CAP-STALE-001", reject_stale_generation()),
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
@@ -211,6 +215,99 @@ fn revoke_across_transfer() -> Result<(), &'static str> {
             bounds(0, 1),
         ),
     )
+}
+
+fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
+    let (mut model, model_bootstrap, mut system, system_bootstrap) = pair();
+    let model_root = model
+        .create_root(&model_bootstrap, domain(1), root())
+        .map_err(|_| "model root failed")?;
+    let system_root = system
+        .create_root(&system_bootstrap, domain(1), root())
+        .map_err(|_| "provider root failed")?;
+
+    let model_branch = model
+        .derive(
+            domain(1),
+            model_root,
+            Rights::READ.union(Rights::GRANT),
+            bounds(0, 4096),
+        )
+        .map_err(|_| "model branch derivation failed")?;
+    let system_branch = system
+        .derive(
+            domain(1),
+            system_root,
+            Rights::READ.union(Rights::GRANT),
+            bounds(0, 4096),
+        )
+        .map_err(|_| "provider branch derivation failed")?;
+
+    let model_descendant = model
+        .derive(domain(1), model_branch, Rights::READ, bounds(0, 1024))
+        .map_err(|_| "model descendant derivation failed")?;
+    let system_descendant = system
+        .derive(domain(1), system_branch, Rights::READ, bounds(0, 1024))
+        .map_err(|_| "provider descendant derivation failed")?;
+
+    let model_transfer = model
+        .transfer(
+            domain(1),
+            model_branch,
+            domain(2),
+            Rights::READ,
+            bounds(0, 512),
+        )
+        .map_err(|_| "model transfer failed")?;
+    let system_transfer = system
+        .transfer(
+            domain(1),
+            system_branch,
+            domain(2),
+            Rights::READ,
+            bounds(0, 512),
+        )
+        .map_err(|_| "provider transfer failed")?;
+
+    let model_sibling = model
+        .derive(domain(1), model_root, Rights::READ, bounds(1024, 2048))
+        .map_err(|_| "model sibling derivation failed")?;
+    let system_sibling = system
+        .derive(domain(1), system_root, Rights::READ, bounds(1024, 2048))
+        .map_err(|_| "provider sibling derivation failed")?;
+
+    model
+        .revoke(domain(1), model_branch)
+        .map_err(|_| "model subtree revoke failed")?;
+    system
+        .revoke(domain(1), system_branch)
+        .map_err(|_| "provider subtree revoke failed")?;
+
+    for (model_handle, system_handle, test_domain, request_bounds) in [
+        (model_branch, system_branch, domain(1), bounds(0, 1)),
+        (model_descendant, system_descendant, domain(1), bounds(0, 1)),
+        (model_transfer, system_transfer, domain(2), bounds(0, 1)),
+        (model_root, system_root, domain(1), bounds(0, 1)),
+        (model_sibling, system_sibling, domain(1), bounds(1024, 1025)),
+    ] {
+        compare_auth(
+            model.authorize(
+                test_domain,
+                model_handle,
+                ObjectType::Memory,
+                Rights::READ,
+                request_bounds,
+            ),
+            system.authorize(
+                test_domain,
+                system_handle,
+                ObjectType::Memory,
+                Rights::READ,
+                request_bounds,
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 fn reject_forged_integer() -> Result<(), &'static str> {
