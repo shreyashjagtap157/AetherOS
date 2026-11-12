@@ -318,6 +318,10 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
 struct ImmediateFences;
 
 impl TlbShootdown for ImmediateFences {
+    fn current_hart(&self) -> HartId {
+        HartId::new(0)
+    }
+
     fn publish_page_table_updates(
         &mut self,
         _address_space: AddressSpaceId,
@@ -361,6 +365,7 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
     memory
         .register_address_space(owner, asid)
         .map_err(|_| "address-space registration failed")?;
+    let mut fences = ImmediateFences;
     memory
         .map(
             &capabilities,
@@ -373,6 +378,7 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
                 page_size: PageSize::Base4KiB,
                 permissions: Rights::READ,
             },
+            &mut fences,
         )
         .map_err(|_| "capability-authorized page mapping failed")?;
 
@@ -386,7 +392,6 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
         return Err("read-only mapping allowed a store");
     }
 
-    let mut fences = ImmediateFences;
     memory
         .revoke_capability(&mut capabilities, owner, handle, &mut fences)
         .map_err(|_| "revocation did not complete after hart invalidation")?;
