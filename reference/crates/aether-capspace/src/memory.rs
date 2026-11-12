@@ -173,8 +173,14 @@ pub enum ShootdownError {
     Unavailable,
 }
 
-/// Backend contract for publishing page-table writes and invalidating local
-/// and remote translation caches.
+/// Backend contract for address-space activation, page-table publication, and
+/// local/remote translation-cache invalidation.
+///
+/// `activate_address_space_and_wait` must select the registered page-table root
+/// and ASID for the target hart and complete the required local translation
+/// synchronization before returning. The dispatch caller must not release the
+/// target thread to execution until this call succeeds. The backend must be able
+/// to re-establish a known translation state after a previous activation failed.
 ///
 /// `current_hart` identifies the hart executing the page-table operation.
 /// `publish_page_table_updates` must make PTE stores visible before any
@@ -185,6 +191,17 @@ pub enum ShootdownError {
 pub trait TlbShootdown {
     /// Returns the hart executing the mapping or revocation operation.
     fn current_hart(&self) -> HartId;
+
+    /// Selects the registered page-table root and ASID on one hart, then waits
+    /// for local activation and the required local translation synchronization.
+    ///
+    /// # Errors
+    /// Returns `ShootdownError::Unavailable` when activation does not complete.
+    fn activate_address_space_and_wait(
+        &mut self,
+        hart: HartId,
+        address_space: AddressSpaceId,
+    ) -> Result<(), ShootdownError>;
 
     /// Publishes page-table changes for the specified address-space range.
     ///
@@ -221,6 +238,10 @@ pub enum MemoryError {
     AddressSpaceAlreadyOwned,
     /// The domain is already bound to a different address-space identifier.
     DomainAlreadyAssigned,
+    /// The requested address space is not active on the executing hart.
+    AddressSpaceNotActive,
+    /// Address-space activation failed and the hart remains quarantined.
+    AddressSpaceActivationFailed,
     /// A virtual or resource range is empty or reversed.
     InvalidRange,
     /// The virtual range is outside the canonical Sv39 address regions.
@@ -304,7 +325,13 @@ pub struct MemoryManager {
     page_table: HashMap<PteKey, Pte>,
     mappings: HashMap<MappingId, MappingRecord>,
     tlb: HashMap<(HartId, PteKey), Pte>,
+    /// Harts that may retain translations for an address space, including
+    /// harts activated for dispatch before their first simulated memory access.
     resident_harts: HashMap<AddressSpaceId, HashSet<HartId>>,
+    /// Address space currently selected on each hart for dispatch/execution.
+    active_harts: HashMap<HartId, AddressSpaceId>,
+    /// Harts whose last activation may have partially changed hardware state.
+    activation_quarantine: HashSet<HartId>,
     pending: HashMap<MappingId, PendingInvalidation>,
     blocked_harts: HashSet<HartId>,
     next_mapping_id: u64,
@@ -319,6 +346,8 @@ impl Default for MemoryManager {
             mappings: HashMap::new(),
             tlb: HashMap::new(),
             resident_harts: HashMap::new(),
+            active_harts: HashMap::new(),
+            activation_quarantine: HashSet::new(),
             pending: HashMap::new(),
             blocked_harts: HashSet::new(),
             next_mapping_id: 1,
@@ -356,6 +385,71 @@ impl MemoryManager {
         self.domain_asids.insert(domain, address_space);
         self.asid_domains.insert(address_space, domain);
         Ok(())
+    }
+
+    /// Activates a domain's address space at the dispatch boundary.
+    ///
+    /// The caller must not let the dispatched thread execute until this method
+    /// returns `Ok`. A hart is recorded as potentially resident before invoking
+    /// the backend because a failed activation may have partially changed the
+    /// hardware translation state. Such a hart is quarantined until a later
+    /// activation succeeds. Residency is retained across context switches so
+    /// later map/unmap/revocation operations still invalidate stale ASID entries.
+    ///
+    /// # Errors
+    /// Returns `AddressSpaceMissing` for an unregistered domain,
+    /// `ShootdownPending` while this hart or target address space has an
+    /// incomplete invalidation, or `AddressSpaceActivationFailed` when the
+    /// backend cannot complete activation. A failed activation never authorizes
+    /// simulated execution.
+    pub fn activate_for_dispatch(
+        &mut self,
+        domain: DomainId,
+        hart: HartId,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<AddressSpaceId, MemoryError> {
+        let address_space = *self
+            .domain_asids
+            .get(&domain)
+            .ok_or(MemoryError::AddressSpaceMissing)?;
+
+        if self.pending.values().any(|pending| {
+            pending.address_space == address_space || pending.pending_harts.contains(&hart)
+        }) {
+            return Err(MemoryError::ShootdownPending);
+        }
+
+        if self.active_harts.get(&hart) == Some(&address_space)
+            && !self.activation_quarantine.contains(&hart)
+        {
+            return Ok(address_space);
+        }
+
+        self.resident_harts
+            .entry(address_space)
+            .or_default()
+            .insert(hart);
+        if let Some(previous) = self.active_harts.remove(&hart) {
+            self.resident_harts
+                .entry(previous)
+                .or_default()
+                .insert(hart);
+        }
+
+        match fences.activate_address_space_and_wait(hart, address_space) {
+            Ok(()) => {
+                self.active_harts.insert(hart, address_space);
+                self.activation_quarantine.remove(&hart);
+                self.refresh_blocked_harts();
+                Ok(address_space)
+            }
+            Err(_) => {
+                self.active_harts.remove(&hart);
+                self.activation_quarantine.insert(hart);
+                self.refresh_blocked_harts();
+                Err(MemoryError::AddressSpaceActivationFailed)
+            }
+        }
     }
 
     /// Creates a hardware-style mapping after validating the Software
@@ -492,6 +586,9 @@ impl MemoryManager {
             })
         {
             return Err(MemoryError::ShootdownPending);
+        }
+        if self.active_harts.get(&hart) != Some(&address_space) {
+            return Err(MemoryError::AddressSpaceNotActive);
         }
 
         let (key, pte) = self
@@ -947,6 +1044,8 @@ impl MemoryManager {
 
     fn refresh_blocked_harts(&mut self) {
         self.blocked_harts.clear();
+        self.blocked_harts
+            .extend(self.activation_quarantine.iter().copied());
         for pending in self.pending.values() {
             self.blocked_harts
                 .extend(pending.pending_harts.iter().copied());
@@ -963,13 +1062,28 @@ mod tests {
     #[derive(Default)]
     struct FakeFences {
         fail_once: HashSet<HartId>,
+        fail_activation_once: HashSet<HartId>,
         published: usize,
+        activations: Vec<(HartId, AddressSpaceId)>,
         calls: Vec<(HartId, AddressSpaceId, Bounds)>,
     }
 
     impl TlbShootdown for FakeFences {
         fn current_hart(&self) -> HartId {
             HartId::new(0)
+        }
+
+        fn activate_address_space_and_wait(
+            &mut self,
+            hart: HartId,
+            address_space: AddressSpaceId,
+        ) -> Result<(), ShootdownError> {
+            self.activations.push((hart, address_space));
+            if self.fail_activation_once.remove(&hart) {
+                Err(ShootdownError::Unavailable)
+            } else {
+                Ok(())
+            }
         }
 
         fn publish_page_table_updates(
@@ -1044,6 +1158,12 @@ mod tests {
         )
     }
 
+    fn activate_test_hart(memory: &mut MemoryManager, domain: DomainId, hart: HartId) {
+        memory
+            .activate_for_dispatch(domain, hart, &mut FakeFences::default())
+            .expect("dispatch address-space activation should succeed");
+    }
+
     fn map_request(
         memory: &mut MemoryManager,
         capabilities: &CapabilitySystem,
@@ -1075,6 +1195,125 @@ mod tests {
             page_size,
             permissions,
         }
+    }
+
+    #[test]
+    fn dispatch_activation_is_required_and_registers_residency_before_first_access() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let hart = HartId::new(9);
+        assert_eq!(
+            memory.access(hart, asid, 0x4000, MemoryAccess::Read),
+            Err(MemoryError::AddressSpaceNotActive)
+        );
+
+        let mut fences = FakeFences::default();
+        assert_eq!(
+            memory.activate_for_dispatch(domain, hart, &mut fences),
+            Ok(asid)
+        );
+        assert_eq!(fences.activations, vec![(hart, asid)]);
+        assert!(memory
+            .resident_harts
+            .get(&asid)
+            .is_some_and(|harts| harts.contains(&hart)));
+
+        memory
+            .map(
+                &capabilities,
+                domain,
+                handle,
+                request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
+                &mut fences,
+            )
+            .unwrap();
+        assert!(fences
+            .calls
+            .contains(&(hart, asid, bounds(0x4000, 0x5000))));
+        assert!(memory
+            .access(hart, asid, 0x4000, MemoryAccess::Read)
+            .is_ok());
+    }
+
+    #[test]
+    fn dispatch_switch_reactivates_address_space_before_access() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, first_asid) = setup(rights);
+        let second_domain = domain(2);
+        let second_asid = AddressSpaceId::new(8);
+        memory
+            .register_address_space(second_domain, second_asid)
+            .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(first_asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
+        )
+        .unwrap();
+
+        let hart = HartId::new(10);
+        activate_test_hart(&mut memory, domain, hart);
+        assert!(memory
+            .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+            .is_ok());
+        activate_test_hart(&mut memory, second_domain, hart);
+        assert_eq!(
+            memory.access(hart, first_asid, 0x4000, MemoryAccess::Read),
+            Err(MemoryError::AddressSpaceNotActive)
+        );
+        assert_eq!(memory.active_harts.get(&hart), Some(&second_asid));
+        assert!(memory
+            .resident_harts
+            .get(&first_asid)
+            .is_some_and(|harts| harts.contains(&hart)));
+        assert!(memory
+            .resident_harts
+            .get(&second_asid)
+            .is_some_and(|harts| harts.contains(&hart)));
+
+        activate_test_hart(&mut memory, domain, hart);
+        assert!(memory
+            .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+            .is_ok());
+    }
+
+    #[test]
+    fn failed_dispatch_activation_quarantines_hart_until_retry_succeeds() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
+        )
+        .unwrap();
+
+        let hart = HartId::new(11);
+        let mut fences = FakeFences::default();
+        fences.fail_activation_once.insert(hart);
+        assert_eq!(
+            memory.activate_for_dispatch(domain, hart, &mut fences),
+            Err(MemoryError::AddressSpaceActivationFailed)
+        );
+        assert_eq!(
+            memory.access(hart, asid, 0x4000, MemoryAccess::Read),
+            Err(MemoryError::ShootdownPending)
+        );
+        assert_eq!(memory.active_harts.get(&hart), None);
+        assert!(memory.activation_quarantine.contains(&hart));
+
+        assert_eq!(
+            memory.activate_for_dispatch(domain, hart, &mut fences),
+            Ok(asid)
+        );
+        assert!(!memory.activation_quarantine.contains(&hart));
+        assert!(memory
+            .access(hart, asid, 0x4000, MemoryAccess::Read)
+            .is_ok());
     }
 
     #[test]
@@ -1158,6 +1397,7 @@ mod tests {
             Err(MemoryError::MappingActivationFailed)
         );
         assert_eq!(memory.pending_invalidation_count(), 0);
+        activate_test_hart(&mut memory, domain, HartId::new(0));
         assert_eq!(
             memory.access(HartId::new(0), asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::Unmapped)
@@ -1216,6 +1456,7 @@ mod tests {
         )
         .unwrap();
         let hart = HartId::new(1);
+        activate_test_hart(&mut memory, domain, hart);
         assert_eq!(
             memory
                 .access(hart, asid, 0x4000, MemoryAccess::Read)
@@ -1258,6 +1499,7 @@ mod tests {
         )
         .unwrap();
         let hart = HartId::new(1);
+        activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
                 .access(hart, asid, 0x4000, MemoryAccess::Execute)
@@ -1294,6 +1536,7 @@ mod tests {
             )
             .unwrap();
 
+        activate_test_hart(&mut memory, domain, HartId::new(1));
         let translated = memory
             .access(
                 HartId::new(1),
@@ -1330,6 +1573,7 @@ mod tests {
             .unwrap();
         let mut memory = MemoryManager::new();
         memory.register_address_space(domain, asid).unwrap();
+        activate_test_hart(&mut memory, domain, HartId::new(1));
 
         for (index, page_size) in [PageSize::Base4KiB, PageSize::Large2MiB, PageSize::Huge1GiB]
             .into_iter()
@@ -1467,6 +1711,8 @@ mod tests {
 
         let first_hart = HartId::new(1);
         let second_hart = HartId::new(2);
+        activate_test_hart(&mut memory, first_domain, first_hart);
+        activate_test_hart(&mut memory, second_domain, second_hart);
         assert!(
             memory
                 .access(first_hart, first_asid, 0x4000, MemoryAccess::Read)
@@ -1534,6 +1780,7 @@ mod tests {
         )
         .unwrap();
         let hart = HartId::new(5);
+        activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
                 .access(hart, asid, 0x4000, MemoryAccess::Read)
@@ -1574,6 +1821,7 @@ mod tests {
         )
         .unwrap();
         let hart = HartId::new(3);
+        activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
                 .access(hart, asid, 0x4000, MemoryAccess::Read)
@@ -1587,6 +1835,10 @@ mod tests {
             Err(MemoryError::ShootdownPending)
         );
         assert_eq!(memory.pending_invalidation_count(), 1);
+        assert_eq!(
+            memory.activate_for_dispatch(domain, hart, &mut fences),
+            Err(MemoryError::ShootdownPending)
+        );
         assert_eq!(
             memory.access(hart, asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::ShootdownPending)
@@ -1621,6 +1873,7 @@ mod tests {
         )
         .unwrap();
         let hart = HartId::new(4);
+        activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
                 .access(hart, asid, 0x4000, MemoryAccess::Read)
