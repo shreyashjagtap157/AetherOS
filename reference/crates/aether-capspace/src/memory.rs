@@ -1291,7 +1291,7 @@ mod tests {
                 .is_some_and(|harts| harts.contains(&hart))
         );
 
-        activate_test_hart(&mut memory, domain, hart);
+        activate_test_hart(&mut memory, first_domain, hart);
         assert!(
             memory
                 .access(hart, first_asid, 0x4000, MemoryAccess::Read)
