@@ -1184,6 +1184,26 @@ mod tests {
     }
 
     #[test]
+    fn requested_pte_rights_must_all_be_granted_by_the_capability() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let mut fences = FakeFences::default();
+        let permissions = PtePermissions::READ.union(PtePermissions::WRITE);
+        assert_eq!(
+            memory.map(
+                &capabilities,
+                domain,
+                handle,
+                request(asid, 0x4000, 0, PageSize::Base4KiB, permissions),
+                &mut fences,
+            ),
+            Err(MemoryError::Capability(CapError::Rights))
+        );
+        assert!(memory.mappings.is_empty());
+        assert!(memory.page_table.is_empty());
+    }
+
+    #[test]
     fn pte_permissions_are_checked_independently_of_capability_lookup() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::WRITE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
@@ -1221,7 +1241,7 @@ mod tests {
 
     #[test]
     fn execute_is_a_distinct_page_permission_and_unmapped_addresses_fault() {
-        let rights = Rights::MAP.union(Rights::READ).union(Rights::EXECUTE);
+        let rights = Rights::MAP.union(Rights::EXECUTE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
         map_request(
             &mut memory,
