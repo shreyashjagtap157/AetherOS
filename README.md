@@ -4,9 +4,9 @@
 
 > **Project classification: architecture/specification and host-reference prototype, not a working OS kernel.** There is still no bootable kernel, compiler, hardware design or QEMU RISC-V64 product slice in this repository.
 >
-> The earlier reproducibility-gate failure is corrected on [PR #7](https://github.com/shreyashjagtap157/AetherOS/pull/7): the helper is invoked through POSIX `sh`. The same PR now includes an experimental indexed capability-revocation graph and a descendant-subtree differential CTS case. Its latest [reference-validation workflow](https://github.com/shreyashjagtap157/AetherOS/actions/runs/43227538622) passed: 10 capability-provider unit tests, 13 host CTS cases, reproducibility checks, and release-evidence validation for 130 files.
+> The earlier reproducibility-gate failure is corrected on [PR #7](https://github.com/shreyashjagtap157/AetherOS/pull/7): the helper is invoked through POSIX `sh`. PR #7 also adds the indexed capability-revocation graph. [PR #8](https://github.com/shreyashjagtap157/AetherOS/pull/8) adds a host reference model for capability-authorized RV64/Sv39 mappings, separate PTE permissions, and local/remote translation-invalidation completion. Its latest [reference-validation workflow](https://github.com/shreyashjagtap157/AetherOS/actions/runs/43236550746) passed: 25 capability-space unit tests, 14 host CTS cases, reproducibility checks, and release-evidence validation for 132 files.
 >
-> **These results are on the PR branch only and are not yet part of `main`.** The 12-case main-branch host reference baseline remains distinct from the 13-case PR evidence. No kernel CTS, hardware qualification, formal proof, or production release is claimed.
+> **These results are on the PR branch only and are not yet part of `main`.** Main remains at the 12-case host reference baseline. PR #7 has 13 cases; PR #8 has 14 cases including the new memory-mapping/revocation case. No kernel CTS, hardware qualification, formal proof, or production release is claimed.
 
 ---
 AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
@@ -20,7 +20,7 @@ The repository contains the specification suite — **not** a working kernel, co
 | Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
 | RFC corpus                        | **42 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
 | AI-native validation objective    | **Explicit**; AI-native operation is a conformance scenario, not a new RFC or subsystem |
-| Conformance Test Suite            | **12 cases on main; 13 validated on PR #7 branch**; no kernel CTS yet     |
+| Conformance Test Suite            | **12 cases on main; 13 on PR #7; 14 on PR #8**; no kernel CTS yet         |
 | Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
 | Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |
 | Compatibility strategy           | Active; see `docs/COMPATIBILITY-STRATEGY.md`                           |
@@ -62,6 +62,7 @@ Supporting materials live alongside the specs:
 - `docs/REVISION-HISTORY.md` — what changed across architecture versions
 - `docs/CHANGELOG.md` — suite-level change log
 - `docs/RESEARCH-REVOCATION-IMPLEMENTATION.md` — research and implementation decision for the host capability provider's revocation graph
+- `docs/RESEARCH-RV64-MAPPING-REVOCATION.md` — capability-authorized memory mapping, PTE permissions, and RISC-V shootdown research
 - `docs/Hardware-Support-RFC.md` — hardware provider architecture
 - `docs/VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md` — product releases from 0.0.0 through 2.x
 - `docs/IMPLEMENTATION-ROADMAP.md` / `IMPLEMENTATION-STATUS.md` — phase gates and live status
