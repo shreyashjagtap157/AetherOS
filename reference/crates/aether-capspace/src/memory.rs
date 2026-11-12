@@ -436,19 +436,16 @@ impl MemoryManager {
                 .insert(hart);
         }
 
-        match fences.activate_address_space_and_wait(hart, address_space) {
-            Ok(()) => {
-                self.active_harts.insert(hart, address_space);
-                self.activation_quarantine.remove(&hart);
-                self.refresh_blocked_harts();
-                Ok(address_space)
-            }
-            Err(_) => {
-                self.active_harts.remove(&hart);
-                self.activation_quarantine.insert(hart);
-                self.refresh_blocked_harts();
-                Err(MemoryError::AddressSpaceActivationFailed)
-            }
+        if let Ok(()) = fences.activate_address_space_and_wait(hart, address_space) {
+            self.active_harts.insert(hart, address_space);
+            self.activation_quarantine.remove(&hart);
+            self.refresh_blocked_harts();
+            Ok(address_space)
+        } else {
+            self.active_harts.remove(&hart);
+            self.activation_quarantine.insert(hart);
+            self.refresh_blocked_harts();
+            Err(MemoryError::AddressSpaceActivationFailed)
         }
     }
 
