@@ -1,6 +1,10 @@
 //! Minimal machine-readable capability conformance runner.
 
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
+use aether_capspace::memory::{
+    AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
+    ShootdownError, TlbShootdown,
+};
 use aether_capspace::{BootstrapAuthority as SystemBootstrap, CapabilitySystem};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -21,6 +25,14 @@ fn main() {
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
         ("CTS-CAP-DOMAIN-001", reject_unregistered_destination()),
         ("CTS-CAP-REVOKED-DERIVE-001", reject_revoked_parent_use()),
+        (
+            "CTS-EXEC-MAP-REVOKE-001",
+            mapping_permissions_and_revocation(),
+        ),
+        (
+            "CTS-EXEC-DISP-ADDRSPACE-001",
+            dispatch_address_space_activation(),
+        ),
         ("CTS-STATE-ATOMIC-001", state_commit_is_failure_atomic()),
         (
             "CTS-EFFECT-UNCERTAIN-001",
@@ -307,6 +319,198 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
             ),
         )?;
     }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ImmediateFences {
+    activations: Vec<(HartId, AddressSpaceId)>,
+    invalidations: Vec<(HartId, AddressSpaceId, Bounds)>,
+}
+
+impl TlbShootdown for ImmediateFences {
+    fn current_hart(&self) -> HartId {
+        HartId::new(0)
+    }
+
+    fn activate_address_space_and_wait(
+        &mut self,
+        hart: HartId,
+        address_space: AddressSpaceId,
+    ) -> Result<(), ShootdownError> {
+        self.activations.push((hart, address_space));
+        Ok(())
+    }
+
+    fn publish_page_table_updates(
+        &mut self,
+        _address_space: AddressSpaceId,
+        _virtual_range: Bounds,
+    ) -> Result<(), ShootdownError> {
+        Ok(())
+    }
+
+    fn invalidate_hart_and_wait(
+        &mut self,
+        hart: HartId,
+        address_space: AddressSpaceId,
+        virtual_range: Bounds,
+    ) -> Result<(), ShootdownError> {
+        self.invalidations
+            .push((hart, address_space, virtual_range));
+        Ok(())
+    }
+}
+
+fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
+    let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
+    let owner = domain(1);
+    let asid = AddressSpaceId::new(7);
+    capabilities.add_domain(owner);
+    let handle = capabilities
+        .create_root(
+            &bootstrap,
+            owner,
+            Capability {
+                object: ObjectId(99),
+                object_type: ObjectType::Memory,
+                rights: Rights::MAP
+                    .union(Rights::READ)
+                    .union(Rights::WRITE)
+                    .union(Rights::GRANT),
+                bounds: bounds(0, 4096),
+            },
+        )
+        .map_err(|_| "memory capability bootstrap failed")?;
+
+    let mut memory = MemoryManager::new();
+    memory
+        .register_address_space(owner, asid)
+        .map_err(|_| "address-space registration failed")?;
+    let mut fences = ImmediateFences::default();
+    let hart = HartId::new(1);
+    memory
+        .activate_for_dispatch(owner, hart, &mut fences)
+        .map_err(|_| "dispatch address-space activation failed")?;
+    memory
+        .map(
+            &capabilities,
+            owner,
+            handle,
+            MapRequest {
+                address_space: asid,
+                virtual_range: bounds(0x4000, 0x5000),
+                resource_range: bounds(0, 4096),
+                page_size: PageSize::Base4KiB,
+                permissions: PtePermissions::READ,
+            },
+            &mut fences,
+        )
+        .map_err(|_| "capability-authorized page mapping failed")?;
+
+    memory
+        .access(hart, asid, 0x4000, MemoryAccess::Read)
+        .map_err(|_| "read access should be permitted by the PTE")?;
+    if memory.access(hart, asid, 0x4000, MemoryAccess::Write)
+        != Err(aether_capspace::memory::MemoryError::ProtectionFault)
+    {
+        return Err("read-only mapping allowed a store");
+    }
+
+    memory
+        .revoke_capability(&mut capabilities, owner, handle, &mut fences)
+        .map_err(|_| "revocation did not complete after hart invalidation")?;
+    if memory.access(hart, asid, 0x4000, MemoryAccess::Read)
+        != Err(aether_capspace::memory::MemoryError::Unmapped)
+    {
+        return Err("revoked mapping remained accessible");
+    }
+    Ok(())
+}
+
+fn dispatch_address_space_activation() -> Result<(), &'static str> {
+    let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
+    let owner = domain(1);
+    let other = domain(2);
+    let first_asid = AddressSpaceId::new(17);
+    let second_asid = AddressSpaceId::new(18);
+    capabilities.add_domain(owner);
+    capabilities.add_domain(other);
+    let handle = capabilities
+        .create_root(
+            &bootstrap,
+            owner,
+            Capability {
+                object: ObjectId(101),
+                object_type: ObjectType::Memory,
+                rights: Rights::MAP.union(Rights::READ),
+                bounds: bounds(0, 4096),
+            },
+        )
+        .map_err(|_| "memory capability bootstrap failed")?;
+
+    let mut memory = MemoryManager::new();
+    memory
+        .register_address_space(owner, first_asid)
+        .map_err(|_| "first address-space registration failed")?;
+    memory
+        .register_address_space(other, second_asid)
+        .map_err(|_| "second address-space registration failed")?;
+
+    let hart = HartId::new(7);
+    if memory.access(hart, first_asid, 0x4000, MemoryAccess::Read)
+        != Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
+    {
+        return Err("memory access was allowed before dispatch activation");
+    }
+
+    let mut fences = ImmediateFences::default();
+    memory
+        .activate_for_dispatch(owner, hart, &mut fences)
+        .map_err(|_| "first dispatch activation failed")?;
+    if fences.activations != vec![(hart, first_asid)] {
+        return Err("backend did not receive the address-space activation");
+    }
+
+    memory
+        .map(
+            &capabilities,
+            owner,
+            handle,
+            MapRequest {
+                address_space: first_asid,
+                virtual_range: bounds(0x4000, 0x5000),
+                resource_range: bounds(0, 4096),
+                page_size: PageSize::Base4KiB,
+                permissions: PtePermissions::READ,
+            },
+            &mut fences,
+        )
+        .map_err(|_| "mapping after dispatch activation failed")?;
+    if !fences
+        .invalidations
+        .contains(&(hart, first_asid, bounds(0x4000, 0x5000)))
+    {
+        return Err("mapping activation omitted a dispatched but not-yet-accessing hart");
+    }
+    memory
+        .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+        .map_err(|_| "activated address-space access failed")?;
+
+    memory
+        .activate_for_dispatch(other, hart, &mut fences)
+        .map_err(|_| "address-space switch failed")?;
+    if memory.access(hart, first_asid, 0x4000, MemoryAccess::Read)
+        != Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
+    {
+        return Err("previous address space remained executable after switch");
+    }
+    memory
+        .activate_for_dispatch(owner, hart, &mut fences)
+        .map_err(|_| "migration back to the first address space failed")?;
+    memory
+        .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+        .map_err(|_| "address space was not accessible after reactivation")?;
     Ok(())
 }
 
