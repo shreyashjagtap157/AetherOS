@@ -9,7 +9,7 @@ Status: Validation Roadmap
 
 ## 1. Brutally honest baseline
 
-There is currently no kernel, bootloader, HAL, target driver, target runtime, filesystem implementation, benchmark programme, formal machine proof, supported hardware configuration, or application compatibility result in this repository. A 12-case executable **host reference CTS prototype** exists; it is not target-kernel or product conformance. Forty-one architecture RFCs and three draft implementation-boundary RFCs are design inputs, not implementation evidence. The architecture is a validation candidate, not frozen fact.
+There is currently no kernel, bootloader, HAL, target driver, target runtime, filesystem implementation, benchmark programme, formal machine proof, supported hardware configuration, or application compatibility result in this repository. The main-branch baseline has a 12-case executable **host reference CTS prototype**; PR #7 adds a 13th differential subtree-revocation case and a revised provider prototype, with CI evidence on that branch only. Neither is target-kernel or product conformance. Forty-one architecture RFCs and three draft implementation-boundary RFCs are design inputs, not implementation evidence. The architecture is a validation candidate, not frozen fact.
 
 The complete objective resembles a new kernel, distribution, compatibility ecosystem, hypervisor, SDK, driver programme, verification programme, and enterprise product. Even with extensive AI assistance it is a multi-year, likely multi-decade ecosystem effort. AI may accelerate drafting and test generation; it does not supply hardware documentation, redistribution rights, independent review, proof validity, user adoption, or maintenance accountability.
 
