@@ -25,7 +25,10 @@ fn main() {
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
         ("CTS-CAP-DOMAIN-001", reject_unregistered_destination()),
         ("CTS-CAP-REVOKED-DERIVE-001", reject_revoked_parent_use()),
-        ("CTS-EXEC-MAP-REVOKE-001", mapping_permissions_and_revocation()),
+        (
+            "CTS-EXEC-MAP-REVOKE-001",
+            mapping_permissions_and_revocation(),
+        ),
         ("CTS-STATE-ATOMIC-001", state_commit_is_failure_atomic()),
         (
             "CTS-EFFECT-UNCERTAIN-001",
