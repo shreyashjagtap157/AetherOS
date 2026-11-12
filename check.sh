@@ -16,7 +16,7 @@ fi
 "$PYTHON" -m py_compile docs/tools/*.py tools/*.py
 "$PYTHON" tools/verify-supply-chain.py
 ./reference/check.sh
-./tools/verify-reproducible-reference.sh
+sh ./tools/verify-reproducible-reference.sh
 "$PYTHON" tools/generate-release-evidence.py --version 0.0.1 --checks-completed
 "$PYTHON" tools/verify-release-evidence.py
 git diff --check
