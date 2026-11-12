@@ -155,8 +155,8 @@ This document tracks the implementation status of every component in the platfor
 | State Architecture CTS | **Prototype started** | Failure-atomic commit and uncertain-effect recovery cases implemented; no production storage provider |
 | Communication Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Observability Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
-| Capability reference CTS | **Prototype implemented** | Eight executable cases: attenuation, transfer, lineage revocation, forged/stale-handle rejection, foreign-bootstrap rejection, unregistered-domain rejection, and revoked-parent rejection |
-| Reference CTS runner | **Twelve cases passing** | Eight capability cases and four transactional-state/external-effect recovery cases; this remains prototype evidence, not kernel conformance |
+| Capability reference CTS | **Prototype implemented** | Nine executable cases on PR #7: attenuation, transfer, subtree-scoped lineage revocation across domains, forged/stale-handle rejection, foreign-bootstrap rejection, unregistered-domain rejection, and revoked-parent rejection |
+| Reference CTS runner | **Thirteen cases passing on PR #7** | Nine capability cases and four transactional-state/external-effect recovery cases; main remains at 12 until merge. This remains prototype evidence, not kernel conformance |
 | Cross-Architecture CTS | **Partially prototyped** | Host abstract model and table-backed software provider only; kernel/hardware paths do not exist |
 | Hardware Provider CTS | **Not implemented** | Fixtures declared in Hardware-Support-RFC; code not written |
 
@@ -183,8 +183,8 @@ This document tracks the implementation status of every component in the platfor
 
 ## Last Updated
 
-This document reflects executable Phase A work reviewed on 2026-08-01. `reference/` now contains capability semantics, a table-backed Software Capability Provider, a prototype append-only transaction/effect model, deterministic crash recovery, and a twelve-case machine-readable CTS runner. Bootstrap witnesses are bound to their authority universe; stale generations, duplicate operations/mutations, and transaction replay fail closed. The transaction format and checksum are test mechanisms, not a production storage format or cryptographic commitment. There is still no kernel, HAL, driver, filesystem implementation, runtime, benchmark programme, or machine proof. UASA implementation results remain reported rather than independently reproduced.
+This document distinguishes the merged main baseline from in-review implementation evidence. On PR #7, `aether-capspace` replaces copied ancestor vectors with a parent/child revocation graph, eagerly marks a revoked subtree, and reclaims retired lineage metadata when no live descendants remain. The independent ancestry-based `aether-cap-model` remains unchanged as a semantic oracle. PR-branch CI passed 10 capability-provider unit tests and the 13-case runner, as well as formatting, build, Clippy, Rustdoc, reproducibility, supply-chain and release-evidence checks. These results are not yet merged to main and remain host-reference evidence only. There is still no kernel, HAL, driver, filesystem implementation, runtime, benchmark programme, formal machine proof, or hardware qualification. UASA implementation results remain reported rather than independently reproduced.
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-08-01 (feasibility review, product-version plan, and reference validation foundation)
+**Last Updated:** 2026-11-12 (PR-branch capability-revocation implementation and expanded host CTS evidence; not yet merged)
