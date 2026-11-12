@@ -151,12 +151,13 @@ This document tracks the implementation status of every component in the platfor
 
 | Test Category | Status | Notes |
 |-------------|--------|-------|
-| Execution Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
+| Execution Architecture CTS | **Not implemented as a full architecture suite** | PR #8 adds one host reference memory-mapping/revocation case; fixtures and remaining execution semantics are still not implemented |
 | State Architecture CTS | **Prototype started** | Failure-atomic commit and uncertain-effect recovery cases implemented; no production storage provider |
 | Communication Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Observability Architecture CTS | **Not implemented** | Fixtures declared in RFCs; code not written |
 | Capability reference CTS | **Prototype implemented** | Nine executable cases on PR #7: attenuation, transfer, subtree-scoped lineage revocation across domains, forged/stale-handle rejection, foreign-bootstrap rejection, unregistered-domain rejection, and revoked-parent rejection |
-| Reference CTS runner | **Thirteen cases passing on PR #7** | Nine capability cases and four transactional-state/external-effect recovery cases; main remains at 12 until merge. This remains prototype evidence, not kernel conformance |
+| Reference CTS runner | **Fourteen cases passing on PR #8** | Ten capability/memory cases and four transactional-state/external-effect recovery cases; main remains at 12, PR #7 at 13 until merge. This remains prototype evidence, not kernel conformance |
+| RV64/Sv39 memory-mapping model | **Host reference prototype on PR #8** | Capability-gated MAP plus R/W/X PTE permissions, 4 KiB/2 MiB/1 GiB mapping, canonical-range checks, mapping activation/rollback, unmap and retryable shootdown model; not a kernel MMU or hardware implementation |
 | Cross-Architecture CTS | **Partially prototyped** | Host abstract model and table-backed software provider only; kernel/hardware paths do not exist |
 | Hardware Provider CTS | **Not implemented** | Fixtures declared in Hardware-Support-RFC; code not written |
 
@@ -183,8 +184,8 @@ This document tracks the implementation status of every component in the platfor
 
 ## Last Updated
 
-This document distinguishes the merged main baseline from in-review implementation evidence. On PR #7, `aether-capspace` replaces copied ancestor vectors with a parent/child revocation graph, eagerly marks a revoked subtree, and reclaims retired lineage metadata when no live descendants remain. The independent ancestry-based `aether-cap-model` remains unchanged as a semantic oracle. PR-branch CI passed 10 capability-provider unit tests and the 13-case runner, as well as formatting, build, Clippy, Rustdoc, reproducibility, supply-chain and release-evidence checks. These results are not yet merged to main and remain host-reference evidence only. There is still no kernel, HAL, driver, filesystem implementation, runtime, benchmark programme, formal machine proof, or hardware qualification. UASA implementation results remain reported rather than independently reproduced.
+This document distinguishes the merged main baseline from in-review implementation evidence. PR #7 adds the indexed capability-revocation graph and keeps the ancestry-based `aether-cap-model` unchanged as a semantic oracle. PR #8 adds an experimental memory manager that checks SCP mapping authority separately from typed PTE R/W/X permissions, models Sv39 page sizes/canonical addresses, and requires completed local/remote translation invalidation before map/unmap/revocation completion. Its host test backend is not a kernel page-table or real TLB implementation; scheduler-integrated hart membership, concurrency, global mappings, ASID lifecycle, physical memory, PMP/PMA/IOMMU, and formal proofs remain open. CI on PR #8 passed 25 `aether-capspace` tests in debug and release, 14 host CTS cases, strict Clippy, Rustdoc, reproducibility, supply-chain checks, and release-evidence validation for 132 files. These results are not yet merged to main and remain host-reference evidence only. There is still no kernel, HAL, driver, filesystem implementation, runtime, benchmark programme, formal machine proof, or hardware qualification. UASA implementation results remain reported rather than independently reproduced.
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-11-12 (PR-branch capability-revocation implementation and expanded host CTS evidence; not yet merged)
+**Last Updated:** 2026-11-12 (PR #8 RV64/Sv39 host mapping model, typed PTE permissions and 14-case CTS; not yet merged)
