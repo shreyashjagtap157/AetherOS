@@ -136,14 +136,19 @@ pub enum ShootdownError {
     Unavailable,
 }
 
-/// Backend contract for publishing page-table writes and invalidating a hart.
+/// Backend contract for publishing page-table writes and invalidating local
+/// and remote translation caches.
 ///
-/// `publish_page_table_updates` must make preceding PTE stores visible before
-/// invalidation requests are delivered (for example, using the required local
-/// data fence). `invalidate_hart_and_wait` must not return success until the
-/// target hart has executed the matching local SFENCE.VMA and acknowledged
-/// completion. A bare notification or "IPI sent" result is not sufficient.
+/// `current_hart` identifies the hart executing the page-table operation.
+/// `publish_page_table_updates` must make PTE stores visible before any
+/// translation invalidation (for example, with the required data fence).
+/// `invalidate_hart_and_wait` must execute SFENCE.VMA on the target hart and
+/// must not return success until that hart acknowledges completion. A remote
+/// SBI RFENCE success indicating only that an IPI was sent is not sufficient.
 pub trait TlbShootdown {
+    /// Returns the hart executing the mapping or revocation operation.
+    fn current_hart(&self) -> HartId;
+
     /// Publishes page-table changes for the specified address-space range.
     fn publish_page_table_updates(
         &mut self,
@@ -192,6 +197,9 @@ pub enum MemoryError {
     ProtectionFault,
     /// One or more required hart invalidations have not been acknowledged.
     ShootdownPending,
+    /// A new mapping's translation publication/invalidation failed; the
+    /// mapping was rolled back and no mapping was installed.
+    MappingActivationFailed,
     /// Mapping identifiers cannot be represented any further.
     MappingIdExhausted,
 }
@@ -306,16 +314,21 @@ impl MemoryManager {
     ///
     /// The capability must grant MAP plus every requested PTE permission.
     /// The page table then enforces READ/WRITE/EXECUTE on each simulated access.
+    /// PTE publication and local/remote translation invalidation complete before
+    /// the new mapping is returned to its caller.
     ///
     /// # Errors
     /// Returns a capability, alignment, overlap, address-space, rights, or
-    /// representability error without partially installing PTEs.
+    /// representability error without partially installing PTEs. If translation
+    /// activation fails, the new PTEs are rolled back; incomplete rollback
+    /// remains quarantined and returns `ShootdownPending`.
     pub fn map(
         &mut self,
         capabilities: &CapabilitySystem,
         domain: DomainId,
         handle: Handle,
         request: MapRequest,
+        fences: &mut impl TlbShootdown,
     ) -> Result<MappingId, MemoryError> {
         if self.domain_asids.get(&domain) != Some(&request.address_space) {
             return Err(MemoryError::AddressSpaceMissing);
@@ -397,6 +410,15 @@ impl MemoryManager {
                 invalidated: false,
             },
         );
+
+        if self.activate_mapping(mapping, fences).is_err() {
+            return match self.invalidate_mapping(mapping, fences) {
+                Ok(()) => Err(MemoryError::MappingActivationFailed),
+                Err(MemoryError::ShootdownPending) => Err(MemoryError::ShootdownPending),
+                Err(error) => Err(error),
+            };
+        }
+
         Ok(mapping)
     }
 
@@ -690,6 +712,40 @@ impl MemoryManager {
         None
     }
 
+    /// Publishes a newly installed mapping and flushes both the executing hart
+    /// and every hart known to have run this address space.
+    fn activate_mapping(
+        &mut self,
+        mapping: MappingId,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<(), MemoryError> {
+        let record = *self
+            .mappings
+            .get(&mapping)
+            .ok_or(MemoryError::MappingMissing)?;
+
+        fences
+            .publish_page_table_updates(record.address_space, record.virtual_range)
+            .map_err(|_| MemoryError::ShootdownPending)?;
+
+        let mut targets = self
+            .resident_harts
+            .get(&record.address_space)
+            .cloned()
+            .unwrap_or_default();
+        targets.insert(fences.current_hart());
+
+        for hart in targets {
+            fences
+                .invalidate_hart_and_wait(hart, record.address_space, record.virtual_range)
+                .map_err(|_| MemoryError::ShootdownPending)?;
+            self.tlb.retain(|(cached_hart, _), pte| {
+                !(*cached_hart == hart && pte.mapping == mapping)
+            });
+        }
+        Ok(())
+    }
+
     fn invalidate_mapping(
         &mut self,
         mapping: MappingId,
@@ -722,11 +778,12 @@ impl MemoryManager {
             stored.invalidated = true;
         }
 
-        let pending_harts = self
+        let mut pending_harts = self
             .resident_harts
             .get(&record.address_space)
             .cloned()
             .unwrap_or_default();
+        pending_harts.insert(fences.current_hart());
         self.pending.insert(
             mapping,
             PendingInvalidation {
@@ -822,6 +879,10 @@ mod tests {
     }
 
     impl TlbShootdown for FakeFences {
+        fn current_hart(&self) -> HartId {
+            HartId::new(0)
+        }
+
         fn publish_page_table_updates(
             &mut self,
             _address_space: AddressSpaceId,
@@ -878,6 +939,22 @@ mod tests {
         (capabilities, bootstrap, memory, handle, domain, address_space)
     }
 
+    fn map_request(
+        memory: &mut MemoryManager,
+        capabilities: &CapabilitySystem,
+        domain: DomainId,
+        handle: Handle,
+        request: MapRequest,
+    ) -> Result<MappingId, MemoryError> {
+        memory.map(
+            capabilities,
+            domain,
+            handle,
+            request,
+            &mut FakeFences::default(),
+        )
+    }
+
     fn request(
         address_space: AddressSpaceId,
         virtual_start: u64,
@@ -901,13 +978,13 @@ mod tests {
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
         let mut request = request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ);
         assert_eq!(
-            memory.map(&capabilities, domain, handle, request),
+            map_request(&mut memory, &capabilities, domain, handle, request),
             Err(MemoryError::Capability(CapError::Rights))
         );
 
         request.resource_range = bounds(1, 4097);
         assert_eq!(
-            memory.map(&capabilities, domain, handle, request),
+            map_request(&mut memory, &capabilities, domain, handle, request),
             Err(MemoryError::MisalignedRange)
         );
     }
@@ -916,8 +993,7 @@ mod tests {
     fn pte_permissions_are_checked_independently_of_capability_lookup() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::WRITE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        let mapping = memory
-            .map(
+        let mapping = map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
@@ -937,7 +1013,7 @@ mod tests {
             Err(MemoryError::ProtectionFault)
         );
         assert_eq!(
-            memory.map(
+            map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
@@ -951,8 +1027,7 @@ mod tests {
     fn execute_is_a_distinct_page_permission_and_unmapped_addresses_fault() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::EXECUTE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
@@ -1008,8 +1083,7 @@ mod tests {
         {
             let bytes = page_size.bytes();
             let virtual_base = bytes * (u64::try_from(index).unwrap() + 1);
-            memory
-                .map(
+            map_request(&mut memory, 
                     &capabilities,
                     domain,
                     handle,
@@ -1089,24 +1163,21 @@ mod tests {
             )
             .unwrap();
 
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 first_domain,
                 branch,
                 request(first_asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
             )
             .unwrap();
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 second_domain,
                 transferred,
                 request(second_asid, 0x8000, 0, PageSize::Base4KiB, Rights::READ),
             )
             .unwrap();
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 first_domain,
                 sibling,
@@ -1131,8 +1202,8 @@ mod tests {
             .revoke_capability(&mut capabilities, first_domain, branch, &mut fences)
             .unwrap();
         assert_eq!(report.mappings_invalidated, 2);
-        assert_eq!(report.hart_invalidations, 2);
-        assert_eq!(fences.calls.len(), 2);
+        assert_eq!(report.hart_invalidations, 4);
+        assert_eq!(fences.calls.len(), 4);
         assert_eq!(
             memory.access(first_hart, first_asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::Unmapped)
@@ -1158,16 +1229,14 @@ mod tests {
                 bounds(0, 4096),
             )
             .unwrap();
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
             )
             .unwrap();
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 domain,
                 child,
@@ -1194,8 +1263,7 @@ mod tests {
     fn failed_hart_fence_blocks_access_until_retry_acknowledges() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::GRANT);
         let (mut capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
@@ -1231,16 +1299,14 @@ mod tests {
     fn explicit_unmap_flushes_only_the_selected_mapping() {
         let rights = Rights::MAP.union(Rights::READ);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        let first = memory
-            .map(
+        let first = map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
             )
             .unwrap();
-        memory
-            .map(
+        map_request(&mut memory, 
                 &capabilities,
                 domain,
                 handle,
@@ -1264,6 +1330,6 @@ mod tests {
         assert!(memory
             .access(hart, asid, 0x5000, MemoryAccess::Read)
             .is_ok());
-        assert_eq!(fences.calls.len(), 1);
+        assert_eq!(fences.calls.len(), 2);
     }
 }
