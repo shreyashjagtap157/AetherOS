@@ -356,7 +356,8 @@ impl TlbShootdown for ImmediateFences {
         address_space: AddressSpaceId,
         virtual_range: Bounds,
     ) -> Result<(), ShootdownError> {
-        self.invalidations.push((hart, address_space, virtual_range));
+        self.invalidations
+            .push((hart, address_space, virtual_range));
         Ok(())
     }
 }
