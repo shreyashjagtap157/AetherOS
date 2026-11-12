@@ -12,7 +12,10 @@ fn main() {
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
         ("CTS-CAP-REVOKE-001", revoke_across_transfer()),
-        ("CTS-CAP-REVOKE-SUBTREE-001", revoke_only_descendant_subtree()),
+        (
+            "CTS-CAP-REVOKE-SUBTREE-001",
+            revoke_only_descendant_subtree(),
+        ),
         ("CTS-CAP-FORGE-001", reject_forged_integer()),
         ("CTS-CAP-STALE-001", reject_stale_generation()),
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
@@ -248,10 +251,22 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
         .map_err(|_| "provider descendant derivation failed")?;
 
     let model_transfer = model
-        .transfer(domain(1), model_branch, domain(2), Rights::READ, bounds(0, 512))
+        .transfer(
+            domain(1),
+            model_branch,
+            domain(2),
+            Rights::READ,
+            bounds(0, 512),
+        )
         .map_err(|_| "model transfer failed")?;
     let system_transfer = system
-        .transfer(domain(1), system_branch, domain(2), Rights::READ, bounds(0, 512))
+        .transfer(
+            domain(1),
+            system_branch,
+            domain(2),
+            Rights::READ,
+            bounds(0, 512),
+        )
         .map_err(|_| "provider transfer failed")?;
 
     let model_sibling = model
