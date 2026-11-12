@@ -674,7 +674,11 @@ mod tests {
             if index < revoke_at {
                 assert!(result.is_ok(), "ancestor {index} was unexpectedly revoked");
             } else {
-                assert_eq!(result, Err(CapError::Revoked), "descendant {index} survived");
+                assert_eq!(
+                    result,
+                    Err(CapError::Revoked),
+                    "descendant {index} survived"
+                );
             }
         }
     }
