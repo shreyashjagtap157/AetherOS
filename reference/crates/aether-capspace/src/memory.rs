@@ -1217,10 +1217,12 @@ mod tests {
             Ok(asid)
         );
         assert_eq!(fences.activations, vec![(hart, asid)]);
-        assert!(memory
-            .resident_harts
-            .get(&asid)
-            .is_some_and(|harts| harts.contains(&hart)));
+        assert!(
+            memory
+                .resident_harts
+                .get(&asid)
+                .is_some_and(|harts| harts.contains(&hart))
+        );
 
         memory
             .map(
@@ -1231,12 +1233,12 @@ mod tests {
                 &mut fences,
             )
             .unwrap();
-        assert!(fences
-            .calls
-            .contains(&(hart, asid, bounds(0x4000, 0x5000))));
-        assert!(memory
-            .access(hart, asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
+        assert!(fences.calls.contains(&(hart, asid, bounds(0x4000, 0x5000))));
+        assert!(
+            memory
+                .access(hart, asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1253,29 +1255,41 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(first_asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
+            request(
+                first_asid,
+                0x4000,
+                0,
+                PageSize::Base4KiB,
+                PtePermissions::READ,
+            ),
         )
         .unwrap();
 
         let hart = HartId::new(10);
         activate_test_hart(&mut memory, domain, hart);
-        assert!(memory
-            .access(hart, first_asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
         activate_test_hart(&mut memory, second_domain, hart);
         assert_eq!(
             memory.access(hart, first_asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::AddressSpaceNotActive)
         );
         assert_eq!(memory.active_harts.get(&hart), Some(&second_asid));
-        assert!(memory
-            .resident_harts
-            .get(&first_asid)
-            .is_some_and(|harts| harts.contains(&hart)));
-        assert!(memory
-            .resident_harts
-            .get(&second_asid)
-            .is_some_and(|harts| harts.contains(&hart)));
+        assert!(
+            memory
+                .resident_harts
+                .get(&first_asid)
+                .is_some_and(|harts| harts.contains(&hart))
+        );
+        assert!(
+            memory
+                .resident_harts
+                .get(&second_asid)
+                .is_some_and(|harts| harts.contains(&hart))
+        );
 
         activate_test_hart(&mut memory, domain, hart);
         assert!(memory
@@ -1315,9 +1329,11 @@ mod tests {
             Ok(asid)
         );
         assert!(!memory.activation_quarantine.contains(&hart));
-        assert!(memory
-            .access(hart, asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
     }
 
     #[test]
