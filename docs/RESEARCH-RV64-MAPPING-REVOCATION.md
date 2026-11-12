@@ -2,7 +2,7 @@
 
 Classification: Operational
 Authoritative Source: RFC-0009, RFC-0013, RFC-0037, RFC-0039 and the accepted INTF-000 capability-enforcement substrate decision
-Status: Experimental host-reference implementation decision
+Status: Experimental host-reference implementation decision; per-access authority revalidation implemented on the current development branch
 Last reviewed: 2026-11-12
 
 ## 1. Scope and decision boundary
@@ -72,9 +72,16 @@ The complete PTE set and mapping authority record are prepared before installati
 
 ### 4.3 Per-access enforcement
 
-The access operation first requires that the requested address space is the one successfully activated on the supplied hart for dispatch. It then models a hardware translation lookup through the host page-table model or a per-hart TLB cache, checks the cached PTE's R/W/X permission, and returns the mapped object and offset.
+The access operation first requires that the requested address space is the one successfully activated on the supplied hart for dispatch. It then resolves the address through the host page-table model or per-hart TLB cache, recovers the mapping's recorded domain and capability handle, computes the exact one-byte resource range, and revalidates that live handle for `MAP` plus the operation-specific `READ`, `WRITE`, or `EXECUTE` right. Only after that current authority check succeeds does the model enforce the PTE's independent R/W/X permission.
 
-It intentionally does not consult the capability table on every simulated load/store. Capability mediation authorizes the mapping; PTE permissions enforce subsequent memory accesses. This is the practical conventional-RV64 mechanism that the host reference can model without claiming that the CPU understands the SCP's private handle table.
+This deliberately keeps two checks separate:
+
+- The capability provider proves that the mapping authority is still live, belongs to the mapping's domain, names the mapped Memory object, and covers the exact resource byte with the required rights.
+- The PTE model proves that the mapped page itself allows the requested hardware access type.
+
+A cached PTE is therefore not treated as sufficient authority by itself. The regression test revokes the live capability directly while leaving the simulated TLB entry cached; the next access must fail with `CapError::Revoked`. This is host-reference enforcement at the trusted access boundary, not proof that a real CPU consults AetherOS capability tables. A production provider must implement an unbypassable mediation mechanism while preserving the same authority/PTE separation.
+
+The current host `Capability` record does not yet model token expiry or usage counters, so RFC-0013.4's lifetime and usage-bound criteria remain open. Concurrent access/revocation linearization is also not implemented; this access revalidation closes the sequential stale-authority path only.
 
 ### 4.4 Dispatch activation and residency
 
