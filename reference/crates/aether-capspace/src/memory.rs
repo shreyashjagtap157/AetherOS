@@ -241,7 +241,6 @@ struct PendingInvalidation {
 /// Host-side model of capability-authorized mappings, PTE permissions and TLB
 /// invalidation. It intentionally models only one provider and one host memory
 /// object abstraction; it is not a target page-table implementation.
-#[derive(Default)]
 pub struct MemoryManager {
     domain_asids: HashMap<DomainId, AddressSpaceId>,
     asid_domains: HashMap<AddressSpaceId, DomainId>,
@@ -254,14 +253,27 @@ pub struct MemoryManager {
     next_mapping_id: u64,
 }
 
+impl Default for MemoryManager {
+    fn default() -> Self {
+        Self {
+            domain_asids: HashMap::new(),
+            asid_domains: HashMap::new(),
+            page_table: HashMap::new(),
+            mappings: HashMap::new(),
+            tlb: HashMap::new(),
+            resident_harts: HashMap::new(),
+            pending: HashMap::new(),
+            blocked_harts: HashSet::new(),
+            next_mapping_id: 1,
+        }
+    }
+}
+
 impl MemoryManager {
     /// Creates an empty memory-mapping model.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            next_mapping_id: 1,
-            ..Self::default()
-        }
+        Self::default()
     }
 
     /// Assigns one unique address-space identifier to a domain.
@@ -530,6 +542,46 @@ impl MemoryManager {
             mappings_invalidated: invalid_mappings.len(),
             hart_invalidations,
         })
+    }
+
+    /// Removes a capability handle and all mappings created directly from it.
+    ///
+    /// Descendant capabilities are not revoked by handle removal; their mappings
+    /// remain valid. Use `revoke_capability` when the entire descendant subtree
+    /// must be invalidated.
+    ///
+    /// # Errors
+    /// Returns a capability error or `ShootdownPending` if translation
+    /// invalidation has not completed on every resident hart.
+    pub fn remove_capability(
+        &mut self,
+        capabilities: &mut CapabilitySystem,
+        domain: DomainId,
+        handle: Handle,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<usize, MemoryError> {
+        capabilities.remove(domain, handle)?;
+
+        let mappings: Vec<MappingId> = self
+            .mappings
+            .iter()
+            .filter_map(|(mapping, record)| {
+                (record.domain == domain && record.handle == handle).then_some(*mapping)
+            })
+            .collect();
+
+        let count = mappings.len();
+        let mut incomplete = false;
+        for mapping in mappings {
+            if self.invalidate_mapping(mapping, fences).is_err() {
+                incomplete = true;
+            }
+        }
+        if incomplete {
+            Err(MemoryError::ShootdownPending)
+        } else {
+            Ok(count)
+        }
     }
 
     /// Retries incomplete page-table publication and hart-fence operations.
@@ -922,6 +974,60 @@ mod tests {
     }
 
     #[test]
+    fn all_sv39_leaf_page_sizes_keep_exact_object_offsets() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        // Replace the test fixture's 2 MiB capability with one spanning a
+        // 1 GiB region so all Sv39 leaf sizes can be exercised.
+        let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
+        capabilities.add_domain(domain);
+        let handle = capabilities
+            .create_root(
+                &bootstrap,
+                domain,
+                Capability {
+                    object: ObjectId(42),
+                    object_type: ObjectType::Memory,
+                    rights,
+                    bounds: bounds(0, 1024 * 1024 * 1024),
+                },
+            )
+            .unwrap();
+        let mut memory = MemoryManager::new();
+        memory.register_address_space(domain, asid).unwrap();
+
+        for (index, page_size) in [
+            PageSize::Base4KiB,
+            PageSize::Large2MiB,
+            PageSize::Huge1GiB,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let bytes = page_size.bytes();
+            let virtual_base = bytes * (u64::try_from(index).unwrap() + 1);
+            memory
+                .map(
+                    &capabilities,
+                    domain,
+                    handle,
+                    request(asid, virtual_base, 0, page_size, Rights::READ),
+                )
+                .unwrap();
+            let access = memory
+                .access(
+                    HartId::new(1),
+                    asid,
+                    virtual_base + bytes - 1,
+                    MemoryAccess::Read,
+                )
+                .unwrap();
+            assert_eq!(access.object, ObjectId(42));
+            assert_eq!(access.object_offset, bytes - 1);
+        }
+    }
+
+    #[test]
     fn address_space_identifiers_are_unique_per_domain() {
         let mut memory = MemoryManager::new();
         memory
@@ -1036,6 +1142,50 @@ mod tests {
         assert!(memory
             .access(first_hart, first_asid, 0x5000, MemoryAccess::Read)
             .is_ok());
+    }
+
+    #[test]
+    fn removing_a_handle_unmaps_only_its_direct_mapping() {
+        let rights = Rights::MAP.union(Rights::READ).union(Rights::GRANT);
+        let (mut capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let child = capabilities
+            .derive(
+                domain,
+                handle,
+                Rights::MAP.union(Rights::READ),
+                bounds(0, 4096),
+            )
+            .unwrap();
+        memory
+            .map(
+                &capabilities,
+                domain,
+                handle,
+                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+            )
+            .unwrap();
+        memory
+            .map(
+                &capabilities,
+                domain,
+                child,
+                request(asid, 0x5000, 0, PageSize::Base4KiB, Rights::READ),
+            )
+            .unwrap();
+        let hart = HartId::new(5);
+        assert!(memory.access(hart, asid, 0x4000, MemoryAccess::Read).is_ok());
+        assert!(memory.access(hart, asid, 0x5000, MemoryAccess::Read).is_ok());
+
+        let mut fences = FakeFences::default();
+        assert_eq!(
+            memory.remove_capability(&mut capabilities, domain, handle, &mut fences),
+            Ok(1)
+        );
+        assert_eq!(
+            memory.access(hart, asid, 0x4000, MemoryAccess::Read),
+            Err(MemoryError::Unmapped)
+        );
+        assert!(memory.access(hart, asid, 0x5000, MemoryAccess::Read).is_ok());
     }
 
     #[test]
