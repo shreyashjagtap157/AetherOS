@@ -1,6 +1,10 @@
 //! Minimal machine-readable capability conformance runner.
 
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
+use aether_capspace::memory::{
+    AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, ShootdownError,
+    TlbShootdown,
+};
 use aether_capspace::{BootstrapAuthority as SystemBootstrap, CapabilitySystem};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -21,6 +25,7 @@ fn main() {
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
         ("CTS-CAP-DOMAIN-001", reject_unregistered_destination()),
         ("CTS-CAP-REVOKED-DERIVE-001", reject_revoked_parent_use()),
+        ("CTS-EXEC-MAP-REVOKE-001", mapping_permissions_and_revocation()),
         ("CTS-STATE-ATOMIC-001", state_commit_is_failure_atomic()),
         (
             "CTS-EFFECT-UNCERTAIN-001",
@@ -306,6 +311,89 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
                 request_bounds,
             ),
         )?;
+    }
+    Ok(())
+}
+
+struct ImmediateFences;
+
+impl TlbShootdown for ImmediateFences {
+    fn publish_page_table_updates(
+        &mut self,
+        _address_space: AddressSpaceId,
+        _virtual_range: Bounds,
+    ) -> Result<(), ShootdownError> {
+        Ok(())
+    }
+
+    fn invalidate_hart_and_wait(
+        &mut self,
+        _hart: HartId,
+        _address_space: AddressSpaceId,
+        _virtual_range: Bounds,
+    ) -> Result<(), ShootdownError> {
+        Ok(())
+    }
+}
+
+fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
+    let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
+    let owner = domain(1);
+    let asid = AddressSpaceId::new(7);
+    capabilities.add_domain(owner);
+    let handle = capabilities
+        .create_root(
+            &bootstrap,
+            owner,
+            Capability {
+                object: ObjectId(99),
+                object_type: ObjectType::Memory,
+                rights: Rights::MAP
+                    .union(Rights::READ)
+                    .union(Rights::WRITE)
+                    .union(Rights::GRANT),
+                bounds: bounds(0, 4096),
+            },
+        )
+        .map_err(|_| "memory capability bootstrap failed")?;
+
+    let mut memory = MemoryManager::new();
+    memory
+        .register_address_space(owner, asid)
+        .map_err(|_| "address-space registration failed")?;
+    memory
+        .map(
+            &capabilities,
+            owner,
+            handle,
+            MapRequest {
+                address_space: asid,
+                virtual_range: bounds(0x4000, 0x5000),
+                resource_range: bounds(0, 4096),
+                page_size: PageSize::Base4KiB,
+                permissions: Rights::READ,
+            },
+        )
+        .map_err(|_| "capability-authorized page mapping failed")?;
+
+    let hart = HartId::new(1);
+    memory
+        .access(hart, asid, 0x4000, MemoryAccess::Read)
+        .map_err(|_| "read access should be permitted by the PTE")?;
+    if memory.access(hart, asid, 0x4000, MemoryAccess::Write)
+        != Err(aether_capspace::memory::MemoryError::ProtectionFault)
+    {
+        return Err("read-only mapping allowed a store");
+    }
+
+    let mut fences = ImmediateFences;
+    memory
+        .revoke_capability(&mut capabilities, owner, handle, &mut fences)
+        .map_err(|_| "revocation did not complete after hart invalidation")?;
+    if memory.access(hart, asid, 0x4000, MemoryAccess::Read)
+        != Err(aether_capspace::memory::MemoryError::Unmapped)
+    {
+        return Err("revoked mapping remained accessible");
     }
     Ok(())
 }
