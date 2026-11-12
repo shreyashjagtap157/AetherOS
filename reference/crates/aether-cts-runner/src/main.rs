@@ -2,8 +2,8 @@
 
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
 use aether_capspace::memory::{
-    AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, ShootdownError,
-    TlbShootdown,
+    AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
+    ShootdownError, TlbShootdown,
 };
 use aether_capspace::{BootstrapAuthority as SystemBootstrap, CapabilitySystem};
 use aether_state_model::{
@@ -379,7 +379,7 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
                 virtual_range: bounds(0x4000, 0x5000),
                 resource_range: bounds(0, 4096),
                 page_size: PageSize::Base4KiB,
-                permissions: Rights::READ,
+                permissions: PtePermissions::READ,
             },
             &mut fences,
         )
