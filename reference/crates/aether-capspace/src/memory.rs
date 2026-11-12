@@ -657,9 +657,7 @@ impl MemoryManager {
         resource_range: Bounds,
         page_size: PageSize,
     ) -> Result<(), MemoryError> {
-        if virtual_range.start >= virtual_range.end
-            || resource_range.start >= resource_range.end
-        {
+        if virtual_range.start >= virtual_range.end || resource_range.start >= resource_range.end {
             return Err(MemoryError::InvalidRange);
         }
 
@@ -772,9 +770,8 @@ impl MemoryManager {
             fences
                 .invalidate_hart_and_wait(hart, record.address_space, record.virtual_range)
                 .map_err(|_| MemoryError::ShootdownPending)?;
-            self.tlb.retain(|(cached_hart, _), pte| {
-                !(*cached_hart == hart && pte.mapping == mapping)
-            });
+            self.tlb
+                .retain(|(cached_hart, _), pte| !(*cached_hart == hart && pte.mapping == mapping));
         }
         Ok(())
     }
@@ -874,10 +871,9 @@ impl MemoryManager {
             }
         }
 
-        let completed = self
-            .pending
-            .get(&mapping)
-            .is_some_and(|pending| !pending.publication_pending && pending.pending_harts.is_empty());
+        let completed = self.pending.get(&mapping).is_some_and(|pending| {
+            !pending.publication_pending && pending.pending_harts.is_empty()
+        });
         if completed {
             self.pending.remove(&mapping);
             self.mappings.remove(&mapping);
@@ -950,7 +946,14 @@ mod tests {
 
     fn setup(
         rights: Rights,
-    ) -> (CapabilitySystem, BootstrapAuthority, MemoryManager, Handle, DomainId, AddressSpaceId) {
+    ) -> (
+        CapabilitySystem,
+        BootstrapAuthority,
+        MemoryManager,
+        Handle,
+        DomainId,
+        AddressSpaceId,
+    ) {
         let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
         let domain = domain(1);
         let address_space = AddressSpaceId::new(7);
@@ -968,8 +971,17 @@ mod tests {
             )
             .unwrap();
         let mut memory = MemoryManager::new();
-        memory.register_address_space(domain, address_space).unwrap();
-        (capabilities, bootstrap, memory, handle, domain, address_space)
+        memory
+            .register_address_space(domain, address_space)
+            .unwrap();
+        (
+            capabilities,
+            bootstrap,
+            memory,
+            handle,
+            domain,
+            address_space,
+        )
     }
 
     fn map_request(
@@ -1062,7 +1074,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(fences.published, 1);
-        assert_eq!(fences.calls, vec![(HartId::new(0), asid, bounds(0x4000, 0x5000))]);
+        assert_eq!(
+            fences.calls,
+            vec![(HartId::new(0), asid, bounds(0x4000, 0x5000))]
+        );
     }
 
     #[test]
@@ -1093,13 +1108,14 @@ mod tests {
     fn pte_permissions_are_checked_independently_of_capability_lookup() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::WRITE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        let mapping = map_request(&mut memory, 
-                &capabilities,
-                domain,
-                handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
+        let mapping = map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
         let hart = HartId::new(1);
         assert_eq!(
             memory
@@ -1113,7 +1129,8 @@ mod tests {
             Err(MemoryError::ProtectionFault)
         );
         assert_eq!(
-            map_request(&mut memory, 
+            map_request(
+                &mut memory,
                 &capabilities,
                 domain,
                 handle,
@@ -1127,17 +1144,20 @@ mod tests {
     fn execute_is_a_distinct_page_permission_and_unmapped_addresses_fault() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::EXECUTE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        map_request(&mut memory, 
-                &capabilities,
-                domain,
-                handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::EXECUTE),
-            )
-            .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::EXECUTE),
+        )
+        .unwrap();
         let hart = HartId::new(1);
-        assert!(memory
-            .access(hart, asid, 0x4000, MemoryAccess::Execute)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x4000, MemoryAccess::Execute)
+                .is_ok()
+        );
         assert_eq!(
             memory.access(hart, asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::ProtectionFault)
@@ -1160,10 +1180,7 @@ mod tests {
                 handle,
                 MapRequest {
                     address_space: asid,
-                    virtual_range: bounds(
-                        0xffff_ffff_ffff_e000,
-                        0xffff_ffff_ffff_f000,
-                    ),
+                    virtual_range: bounds(0xffff_ffff_ffff_e000, 0xffff_ffff_ffff_f000),
                     resource_range: bounds(0, 4096),
                     page_size: PageSize::Base4KiB,
                     permissions: Rights::READ,
@@ -1209,23 +1226,20 @@ mod tests {
         let mut memory = MemoryManager::new();
         memory.register_address_space(domain, asid).unwrap();
 
-        for (index, page_size) in [
-            PageSize::Base4KiB,
-            PageSize::Large2MiB,
-            PageSize::Huge1GiB,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, page_size) in [PageSize::Base4KiB, PageSize::Large2MiB, PageSize::Huge1GiB]
+            .into_iter()
+            .enumerate()
         {
             let bytes = page_size.bytes();
             let virtual_base = bytes * (u64::try_from(index).unwrap() + 1);
-            map_request(&mut memory, 
-                    &capabilities,
-                    domain,
-                    handle,
-                    request(asid, virtual_base, 0, page_size, Rights::READ),
-                )
-                .unwrap();
+            map_request(
+                &mut memory,
+                &capabilities,
+                domain,
+                handle,
+                request(asid, virtual_base, 0, page_size, Rights::READ),
+            )
+            .unwrap();
             let access = memory
                 .access(
                     HartId::new(1),
@@ -1299,39 +1313,48 @@ mod tests {
             )
             .unwrap();
 
-        map_request(&mut memory, 
-                &capabilities,
-                first_domain,
-                branch,
-                request(first_asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
-        map_request(&mut memory, 
-                &capabilities,
-                second_domain,
-                transferred,
-                request(second_asid, 0x8000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
-        map_request(&mut memory, 
-                &capabilities,
-                first_domain,
-                sibling,
-                request(first_asid, 0x5000, 4096, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            first_domain,
+            branch,
+            request(first_asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            second_domain,
+            transferred,
+            request(second_asid, 0x8000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            first_domain,
+            sibling,
+            request(first_asid, 0x5000, 4096, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
 
         let first_hart = HartId::new(1);
         let second_hart = HartId::new(2);
-        assert!(memory
-            .access(first_hart, first_asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
-        assert!(memory
-            .access(first_hart, first_asid, 0x5000, MemoryAccess::Read)
-            .is_ok());
-        assert!(memory
-            .access(second_hart, second_asid, 0x8000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(first_hart, first_asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
+        assert!(
+            memory
+                .access(first_hart, first_asid, 0x5000, MemoryAccess::Read)
+                .is_ok()
+        );
+        assert!(
+            memory
+                .access(second_hart, second_asid, 0x8000, MemoryAccess::Read)
+                .is_ok()
+        );
 
         let mut fences = FakeFences::default();
         let report = memory
@@ -1348,9 +1371,11 @@ mod tests {
             memory.access(second_hart, second_asid, 0x8000, MemoryAccess::Read),
             Err(MemoryError::Unmapped)
         );
-        assert!(memory
-            .access(first_hart, first_asid, 0x5000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(first_hart, first_asid, 0x5000, MemoryAccess::Read)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1365,23 +1390,33 @@ mod tests {
                 bounds(0, 4096),
             )
             .unwrap();
-        map_request(&mut memory, 
-                &capabilities,
-                domain,
-                handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
-        map_request(&mut memory, 
-                &capabilities,
-                domain,
-                child,
-                request(asid, 0x5000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            child,
+            request(asid, 0x5000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
         let hart = HartId::new(5);
-        assert!(memory.access(hart, asid, 0x4000, MemoryAccess::Read).is_ok());
-        assert!(memory.access(hart, asid, 0x5000, MemoryAccess::Read).is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
+        assert!(
+            memory
+                .access(hart, asid, 0x5000, MemoryAccess::Read)
+                .is_ok()
+        );
 
         let mut fences = FakeFences::default();
         assert_eq!(
@@ -1392,24 +1427,31 @@ mod tests {
             memory.access(hart, asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::Unmapped)
         );
-        assert!(memory.access(hart, asid, 0x5000, MemoryAccess::Read).is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x5000, MemoryAccess::Read)
+                .is_ok()
+        );
     }
 
     #[test]
     fn failed_hart_fence_blocks_access_until_retry_acknowledges() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::GRANT);
         let (mut capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        map_request(&mut memory, 
-                &capabilities,
-                domain,
-                handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
         let hart = HartId::new(3);
-        assert!(memory
-            .access(hart, asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
 
         let mut fences = FakeFences::default();
         fences.fail_once.insert(hart);
@@ -1435,37 +1477,47 @@ mod tests {
     fn explicit_unmap_flushes_only_the_selected_mapping() {
         let rights = Rights::MAP.union(Rights::READ);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        let first = map_request(&mut memory, 
-                &capabilities,
-                domain,
-                handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
-        map_request(&mut memory, 
-                &capabilities,
-                domain,
-                handle,
-                request(asid, 0x5000, 4096, PageSize::Base4KiB, Rights::READ),
-            )
-            .unwrap();
+        let first = map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
+        map_request(
+            &mut memory,
+            &capabilities,
+            domain,
+            handle,
+            request(asid, 0x5000, 4096, PageSize::Base4KiB, Rights::READ),
+        )
+        .unwrap();
         let hart = HartId::new(4);
-        assert!(memory
-            .access(hart, asid, 0x4000, MemoryAccess::Read)
-            .is_ok());
-        assert!(memory
-            .access(hart, asid, 0x5000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x4000, MemoryAccess::Read)
+                .is_ok()
+        );
+        assert!(
+            memory
+                .access(hart, asid, 0x5000, MemoryAccess::Read)
+                .is_ok()
+        );
 
         let mut fences = FakeFences::default();
-        memory.unmap(&capabilities, domain, handle, first, &mut fences).unwrap();
+        memory
+            .unmap(&capabilities, domain, handle, first, &mut fences)
+            .unwrap();
         assert_eq!(
             memory.access(hart, asid, 0x4000, MemoryAccess::Read),
             Err(MemoryError::Unmapped)
         );
-        assert!(memory
-            .access(hart, asid, 0x5000, MemoryAccess::Read)
-            .is_ok());
+        assert!(
+            memory
+                .access(hart, asid, 0x5000, MemoryAccess::Read)
+                .is_ok()
+        );
         assert_eq!(fences.calls.len(), 2);
     }
 }
