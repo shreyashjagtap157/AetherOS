@@ -96,7 +96,7 @@ The PR #8 branch's CI run on 2026-11-12 passed the full repository workflow:
 - Repository validators and supply-chain policy.
 - Debug and release Rust test suites: aether-cap-model 4, aether-capspace 25, aether-state-model 9 and aether-types 2 tests passed.
 - The 14-case machine-readable host CTS, including CTS-CAP-REVOKE-SUBTREE-001 and CTS-EXEC-MAP-REVOKE-001.
-- Formatting, compile/check, Clippy with warnings denied, Rustdoc with warnings denied, reproducibility verification and release-evidence validation (132 files).
+- Formatting, compile/check, Clippy with warnings denied, Rustdoc with warnings denied, reproducibility verification and release-evidence validation (133 files).
 - A GitHub Actions reference-evidence artifact was retained.
 
 Run: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43236550746
