@@ -1244,7 +1244,8 @@ mod tests {
     #[test]
     fn dispatch_switch_reactivates_address_space_before_access() {
         let rights = Rights::MAP.union(Rights::READ);
-        let (capabilities, _bootstrap, mut memory, handle, first_domain, first_asid) = setup(rights);
+        let (capabilities, _bootstrap, mut memory, handle, first_domain, first_asid) =
+            setup(rights);
         let second_domain = domain(2);
         let second_asid = AddressSpaceId::new(8);
         memory
