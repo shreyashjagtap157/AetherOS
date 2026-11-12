@@ -976,8 +976,10 @@ mod tests {
     #[test]
     fn all_sv39_leaf_page_sizes_keep_exact_object_offsets() {
         let rights = Rights::MAP.union(Rights::READ);
-        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        // Replace the test fixture's 2 MiB capability with one spanning a
+        let domain = domain(1);
+        let asid = AddressSpaceId::new(7);
+        // Use a capability spanning a 1 GiB region so all Sv39 leaf sizes
+        // can be exercised.
         // 1 GiB region so all Sv39 leaf sizes can be exercised.
         let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
         capabilities.add_domain(domain);
