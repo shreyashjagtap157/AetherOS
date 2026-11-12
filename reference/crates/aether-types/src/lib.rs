@@ -36,7 +36,11 @@ pub enum ObjectType {
     State = 3,
 }
 
-/// Compact rights set. Unknown bits are rejected.
+/// Compact host-provider capability-right set. Unknown bits are rejected.
+///
+/// These are semantic labels used inside the executable reference model, not
+/// the canonical RFC-0037 serialized rights bit positions. Canonical import
+/// and export must translate explicitly at the serialization boundary.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct Rights(u16);
 
