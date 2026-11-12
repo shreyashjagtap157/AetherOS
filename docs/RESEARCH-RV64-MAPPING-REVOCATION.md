@@ -99,18 +99,21 @@ This prototype chooses fail-closed alignment: a map request's resource bounds mu
 
 ## 6. Validation and evidence
 
-The PR #8 branch's CI run on 2026-11-12 passed the full repository workflow:
+The latest PR #8 head `bc21940e911c1a93e5e06f87390a826e77b3eda9` passed the full repository workflow on 2026-11-12:
 
-- Repository validators and supply-chain policy.
-- Debug and release Rust test suites: aether-cap-model 4, aether-capspace 25, aether-state-model 9 and aether-types 2 tests passed.
-- The 14-case machine-readable host CTS, including CTS-CAP-REVOKE-SUBTREE-001 and CTS-EXEC-MAP-REVOKE-001.
+- Repository validators and supply-chain policy for five packages.
+- Debug and release Rust test suites: `aether-cap-model` 4, `aether-capspace` 28, `aether-state-model` 9 and `aether-types` 2 tests passed.
+- All 15 machine-readable host CTS cases passed, including `CTS-CAP-REVOKE-SUBTREE-001`, `CTS-EXEC-MAP-REVOKE-001` and `CTS-EXEC-DISP-ADDRSPACE-001`.
 - Formatting, compile/check, Clippy with warnings denied, Rustdoc with warnings denied, reproducibility verification and release-evidence validation (133 files).
-- A GitHub Actions reference-evidence artifact was retained.
+- GitHub Actions evidence artifact retained.
 
-Run: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43236550746
-Artifact: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43236550746/artifacts/13952676587
+Workflow: https://github.com/shreyashjagtap157/AetherOS/actions/runs/43244849901
 
-These results are host-reference evidence on PR #8 only. They do not prove kernel conformance, hardware page-table correctness, target-hart discovery, interrupt delivery, memory ordering, worst-case shootdown latency, or formal correctness.
+Artifact: https://github.com/shreyashjagtap157/AetherOS/actions/artifacts/13955508851
+
+Artifact SHA-256: `10cd969cfb65f73012b31502beba1672650f867689319ca3984e29679fcd7342`
+
+These results are host-reference evidence only. They do not prove kernel conformance, hardware page-table correctness, actual scheduler integration, concurrent map/dispatch linearization, target-hart discovery, interrupt delivery, memory ordering, worst-case shootdown latency, or formal correctness.
 
 ## 7. Explicit exclusions and unresolved engineering work
 
