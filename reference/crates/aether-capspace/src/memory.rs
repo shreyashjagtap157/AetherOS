@@ -81,6 +81,43 @@ pub enum MemoryAccess {
     Execute,
 }
 
+/// Hardware leaf permissions, deliberately distinct from capability authority.
+///
+/// These bits describe only the RISC-V PTE R/W/X permissions. They are not
+/// RFC-0037 capability-right bits and cannot be used to grant mapping authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PtePermissions(u8);
+
+impl PtePermissions {
+    /// Permit load operations.
+    pub const READ: Self = Self(1 << 0);
+    /// Permit store operations.
+    pub const WRITE: Self = Self(1 << 1);
+    /// Permit instruction fetches.
+    pub const EXECUTE: Self = Self(1 << 2);
+    /// No access permissions.
+    pub const NONE: Self = Self(0);
+    const KNOWN: u8 = Self::READ.0 | Self::WRITE.0 | Self::EXECUTE.0;
+
+    /// Returns the permission bits.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether every requested PTE permission is present.
+    #[must_use]
+    pub const fn contains(self, requested: Self) -> bool {
+        self.0 & requested.0 == requested.0
+    }
+
+    /// Returns the union of PTE permissions.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
 /// Request to map a byte range of a capability-backed object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MapRequest {
@@ -94,7 +131,7 @@ pub struct MapRequest {
     pub page_size: PageSize,
     /// Requested PTE permissions. This must contain only READ, WRITE and/or
     /// EXECUTE; MAP is checked separately as the authority to create the map.
-    pub permissions: Rights,
+    pub permissions: PtePermissions,
 }
 
 /// Stable identifier for a mapping created by this host model.
@@ -235,7 +272,7 @@ struct Pte {
     object: ObjectId,
     resource_base: u64,
     virtual_base: u64,
-    permissions: Rights,
+    permissions: PtePermissions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,7 +283,7 @@ struct MappingRecord {
     virtual_range: Bounds,
     resource_range: Bounds,
     page_size: PageSize,
-    permissions: Rights,
+    permissions: PtePermissions,
     invalidated: bool,
 }
 
@@ -358,7 +395,7 @@ impl MemoryManager {
             return Err(MemoryError::OverlappingMapping);
         }
 
-        let required = Rights::MAP.union(request.permissions);
+        let required = Self::required_capability_rights(request.permissions);
         let capability = capabilities.authorize(
             domain,
             handle,
@@ -469,9 +506,9 @@ impl MemoryManager {
             .insert(hart);
 
         let requested = match operation {
-            MemoryAccess::Read => Rights::READ,
-            MemoryAccess::Write => Rights::WRITE,
-            MemoryAccess::Execute => Rights::EXECUTE,
+            MemoryAccess::Read => PtePermissions::READ,
+            MemoryAccess::Write => PtePermissions::WRITE,
+            MemoryAccess::Execute => PtePermissions::EXECUTE,
         };
         if !pte.permissions.contains(requested) {
             return Err(MemoryError::ProtectionFault);
@@ -513,7 +550,7 @@ impl MemoryManager {
             domain,
             handle,
             ObjectType::Memory,
-            Rights::MAP.union(record.permissions),
+            Self::required_capability_rights(record.permissions),
             record.resource_range,
         )?;
         self.invalidate_mapping(mapping, fences)
@@ -547,7 +584,7 @@ impl MemoryManager {
                     record.domain,
                     record.handle,
                     ObjectType::Memory,
-                    Rights::MAP.union(record.permissions),
+                    Self::required_capability_rights(record.permissions),
                     record.resource_range,
                 );
                 result.is_err().then_some(*mapping_id)
@@ -648,12 +685,27 @@ impl MemoryManager {
         self.pending.len()
     }
 
-    fn validate_permissions(permissions: Rights) -> Result<(), MemoryError> {
-        let pte_rights = Rights::READ.bits() | Rights::WRITE.bits() | Rights::EXECUTE.bits();
-        if permissions.bits() == 0 || permissions.bits() & !pte_rights != 0 {
+    fn required_capability_rights(permissions: PtePermissions) -> Rights {
+        let mut required = Rights::MAP;
+        if permissions.contains(PtePermissions::READ) {
+            required = required.union(Rights::READ);
+        }
+        if permissions.contains(PtePermissions::WRITE) {
+            required = required.union(Rights::WRITE);
+        }
+        if permissions.contains(PtePermissions::EXECUTE) {
+            required = required.union(Rights::EXECUTE);
+        }
+        required
+    }
+
+    fn validate_permissions(permissions: PtePermissions) -> Result<(), MemoryError> {
+        if permissions.bits() == 0 || permissions.bits() & !PtePermissions::KNOWN != 0 {
             return Err(MemoryError::UnsupportedPermissions);
         }
-        if permissions.contains(Rights::WRITE) && !permissions.contains(Rights::READ) {
+        if permissions.contains(PtePermissions::WRITE)
+            && !permissions.contains(PtePermissions::READ)
+        {
             // RISC-V reserves leaf PTEs with W=1 and R=0.
             return Err(MemoryError::InvalidPtePermissions);
         }
@@ -1013,7 +1065,7 @@ mod tests {
         virtual_start: u64,
         resource_start: u64,
         page_size: PageSize,
-        permissions: Rights,
+        permissions: PtePermissions,
     ) -> MapRequest {
         let size = page_size.bytes();
         MapRequest {
@@ -1031,7 +1083,7 @@ mod tests {
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
         let mut fences = FakeFences::default();
 
-        let mut request = request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ);
+        let mut request = request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ);
         request.virtual_range = Bounds {
             start: 0x5000,
             end: 0x4000,
@@ -1052,7 +1104,7 @@ mod tests {
     fn mapping_requires_map_right_and_page_aligned_authority() {
         let rights = Rights::READ.union(Rights::WRITE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
-        let mut request = request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ);
+        let mut request = request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ);
         assert_eq!(
             map_request(&mut memory, &capabilities, domain, handle, request),
             Err(MemoryError::Capability(CapError::Rights))
@@ -1076,7 +1128,7 @@ mod tests {
                 &capabilities,
                 domain,
                 handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+                request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
                 &mut fences,
             )
             .unwrap();
@@ -1100,7 +1152,7 @@ mod tests {
                 &capabilities,
                 domain,
                 handle,
-                request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+                request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
                 &mut fences,
             ),
             Err(MemoryError::MappingActivationFailed)
@@ -1113,6 +1165,25 @@ mod tests {
     }
 
     #[test]
+    fn empty_pte_permissions_are_rejected_without_mapping() {
+        let rights = Rights::MAP.union(Rights::READ);
+        let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
+        let mut fences = FakeFences::default();
+        assert_eq!(
+            memory.map(
+                &capabilities,
+                domain,
+                handle,
+                request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::NONE),
+                &mut fences,
+            ),
+            Err(MemoryError::UnsupportedPermissions)
+        );
+        assert!(memory.mappings.is_empty());
+        assert!(memory.page_table.is_empty());
+    }
+
+    #[test]
     fn pte_permissions_are_checked_independently_of_capability_lookup() {
         let rights = Rights::MAP.union(Rights::READ).union(Rights::WRITE);
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
@@ -1121,7 +1192,7 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+            request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         let hart = HartId::new(1);
@@ -1142,7 +1213,7 @@ mod tests {
                 &capabilities,
                 domain,
                 handle,
-                request(asid, 0x8000, 4096, PageSize::Base4KiB, Rights::WRITE),
+                request(asid, 0x8000, 4096, PageSize::Base4KiB, PtePermissions::WRITE),
             ),
             Err(MemoryError::InvalidPtePermissions)
         );
@@ -1157,7 +1228,7 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::EXECUTE),
+            request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::EXECUTE),
         )
         .unwrap();
         let hart = HartId::new(1);
@@ -1191,7 +1262,7 @@ mod tests {
                     virtual_range: bounds(0xffff_ffff_ffff_e000, 0xffff_ffff_ffff_f000),
                     resource_range: bounds(0, 4096),
                     page_size: PageSize::Base4KiB,
-                    permissions: Rights::READ,
+                    permissions: PtePermissions::READ,
                 },
                 &mut fences,
             )
@@ -1245,7 +1316,7 @@ mod tests {
                 &capabilities,
                 domain,
                 handle,
-                request(asid, virtual_base, 0, page_size, Rights::READ),
+                request(asid, virtual_base, 0, page_size, PtePermissions::READ),
             )
             .unwrap();
             let access = memory
@@ -1330,7 +1401,7 @@ mod tests {
             &capabilities,
             first_domain,
             branch,
-            request(first_asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+            request(first_asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         map_request(
@@ -1338,7 +1409,7 @@ mod tests {
             &capabilities,
             second_domain,
             transferred,
-            request(second_asid, 0x8000, 0, PageSize::Base4KiB, Rights::READ),
+            request(second_asid, 0x8000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         map_request(
@@ -1346,7 +1417,7 @@ mod tests {
             &capabilities,
             first_domain,
             sibling,
-            request(first_asid, 0x5000, 4096, PageSize::Base4KiB, Rights::READ),
+            request(first_asid, 0x5000, 4096, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
 
@@ -1407,7 +1478,7 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+            request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         map_request(
@@ -1415,7 +1486,7 @@ mod tests {
             &capabilities,
             domain,
             child,
-            request(asid, 0x5000, 0, PageSize::Base4KiB, Rights::READ),
+            request(asid, 0x5000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         let hart = HartId::new(5);
@@ -1455,7 +1526,7 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+            request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         let hart = HartId::new(3);
@@ -1494,7 +1565,7 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(asid, 0x4000, 0, PageSize::Base4KiB, Rights::READ),
+            request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         map_request(
@@ -1502,7 +1573,7 @@ mod tests {
             &capabilities,
             domain,
             handle,
-            request(asid, 0x5000, 4096, PageSize::Base4KiB, Rights::READ),
+            request(asid, 0x5000, 4096, PageSize::Base4KiB, PtePermissions::READ),
         )
         .unwrap();
         let hart = HartId::new(4);
