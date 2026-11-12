@@ -1233,7 +1233,13 @@ mod tests {
                 &capabilities,
                 domain,
                 handle,
-                request(asid, 0x8000, 4096, PageSize::Base4KiB, PtePermissions::WRITE),
+                request(
+                    asid,
+                    0x8000,
+                    4096,
+                    PageSize::Base4KiB,
+                    PtePermissions::WRITE
+                ),
             ),
             Err(MemoryError::InvalidPtePermissions)
         );
@@ -1421,7 +1427,13 @@ mod tests {
             &capabilities,
             first_domain,
             branch,
-            request(first_asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
+            request(
+                first_asid,
+                0x4000,
+                0,
+                PageSize::Base4KiB,
+                PtePermissions::READ,
+            ),
         )
         .unwrap();
         map_request(
@@ -1429,7 +1441,13 @@ mod tests {
             &capabilities,
             second_domain,
             transferred,
-            request(second_asid, 0x8000, 0, PageSize::Base4KiB, PtePermissions::READ),
+            request(
+                second_asid,
+                0x8000,
+                0,
+                PageSize::Base4KiB,
+                PtePermissions::READ,
+            ),
         )
         .unwrap();
         map_request(
@@ -1437,7 +1455,13 @@ mod tests {
             &capabilities,
             first_domain,
             sibling,
-            request(first_asid, 0x5000, 4096, PageSize::Base4KiB, PtePermissions::READ),
+            request(
+                first_asid,
+                0x5000,
+                4096,
+                PageSize::Base4KiB,
+                PtePermissions::READ,
+            ),
         )
         .unwrap();
 
