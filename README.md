@@ -6,7 +6,7 @@
 >
 > The reproducibility-gate correction and indexed capability-revocation graph from [PR #7](https://github.com/shreyashjagtap157/AetherOS/pull/7) are merged into `main`. [PR #8](https://github.com/shreyashjagtap157/AetherOS/pull/8) extends the host reference model with capability-authorized RV64/Sv39 mappings, PTE permissions, retryable translation invalidation, and dispatch-facing address-space activation/residency checks. Its latest [reference-validation workflow](https://github.com/shreyashjagtap157/AetherOS/actions/runs/43244849901) passed on head `bc21940`: 28 capability-space tests in both debug and release, 15 machine-readable CTS cases, repository and supply-chain validators, formatting, Clippy, Rustdoc, reproducibility, and release-evidence validation for 133 files. The [evidence artifact](https://github.com/shreyashjagtap157/AetherOS/actions/artifacts/13955508851) is retained.
 >
-> `main` contains the 13-case host-reference baseline; the PR #8 branch contains 15 cases. Neither is a bootable kernel or hardware-qualified implementation. No kernel CTS, real MMU backend, production scheduler, formal proof, or product release is claimed.
+> `main` now contains all 15 host-reference CTS cases following the merges of PR #7 and PR #8. The merge commit's [main-branch validation](https://github.com/shreyashjagtap157/AetherOS/actions/runs/43245580188) passed on `ac55bb3`, including the full test, CTS, formatting, Clippy, Rustdoc, supply-chain, reproducibility and 133-file evidence gates. This is still a host-reference prototype: no kernel CTS, real MMU backend, production scheduler, formal proof, or product release is claimed.
 
 ---
 AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
@@ -20,7 +20,7 @@ The repository contains the specification suite — **not** a working kernel, co
 | Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
 | RFC corpus                        | **42 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
 | AI-native validation objective    | **Explicit**; AI-native operation is a conformance scenario, not a new RFC or subsystem |
-| Conformance Test Suite            | **13 cases on main; 15 on PR #8**; no kernel CTS yet         |
+| Conformance Test Suite            | **15 cases on main (PR #7 and PR #8 merged)**; no kernel CTS yet         |
 | Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
 | Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |
 | Compatibility strategy           | Active; see `docs/COMPATIBILITY-STRATEGY.md`                           |
