@@ -568,10 +568,14 @@ impl MemoryManager {
     /// Simulates a memory operation using the page-table entry or a hart-local
     /// TLB entry. It does not consult the capability table on every access.
     ///
+    /// The hart must first pass `activate_for_dispatch` for this address space.
+    /// This models the rule that dispatch cannot release a thread to execute
+    /// until address-space activation has completed.
+    ///
     /// # Errors
-    /// Returns `ShootdownPending` for a quarantined hart or range,
-    /// `Unmapped` for an absent mapping, or `ProtectionFault` when the PTE
-    /// does not grant the requested access.
+    /// Returns `AddressSpaceNotActive` when this address space is not active on
+    /// the hart, `ShootdownPending` for a quarantined hart or range, `Unmapped`
+    /// for an absent mapping, or `ProtectionFault` when the PTE denies access.
     pub fn access(
         &mut self,
         hart: HartId,
