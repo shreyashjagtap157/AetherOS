@@ -72,9 +72,17 @@ The complete PTE set and mapping authority record are prepared before installati
 
 ### 4.3 Per-access enforcement
 
-The access operation models a hardware translation lookup through the host page-table model or a per-hart TLB cache. It then checks the cached PTE's R/W/X permission and returns the mapped object and offset.
+The access operation first requires that the requested address space is the one successfully activated on the supplied hart for dispatch. It then models a hardware translation lookup through the host page-table model or a per-hart TLB cache, checks the cached PTE's R/W/X permission, and returns the mapped object and offset.
 
 It intentionally does not consult the capability table on every simulated load/store. Capability mediation authorizes the mapping; PTE permissions enforce subsequent memory accesses. This is the practical conventional-RV64 mechanism that the host reference can model without claiming that the CPU understands the SCP's private handle table.
+
+### 4.4 Dispatch activation and residency
+
+The host model exposes `activate_for_dispatch(domain, hart, fences)` as the address-space activation boundary associated with RFC-0008.4 and RFC-0008.7. The caller must not allow the target thread to execute until the activation backend reports success. The model rejects simulated access before activation and after a switch away from that address space.
+
+A hart is recorded as potentially resident **before** the backend activation call, not after the first memory access. This is intentionally conservative: an activation attempt that fails may have partially changed hardware translation state. A failed attempt therefore removes the active designation and quarantines the hart until a later activation succeeds. Residency is retained across context switches and migrations; that may cause extra shootdowns, but avoids incorrectly assuming that a hart has discarded ASID-tagged translations merely because it stopped running a domain.
+
+This is still a host contract and fake-backend test. No scheduler currently invokes it, no cross-thread/interrupt serialization makes dispatch atomic with map/unmap/revocation, and no real `satp` or page-table-root activation exists. RFC-0008's full dispatch protocol and RFC-0009.5 concurrent map/dispatch atomicity are not implemented by this host model.
 
 ### 4.4 Unmap and revocation
 
@@ -106,7 +114,7 @@ These results are host-reference evidence on PR #8 only. They do not prove kerne
 
 ## 7. Explicit exclusions and unresolved engineering work
 
-1. Scheduler/hart membership: the host model remembers harts that have accessed an address space and always includes the current hart. A production kernel needs a scheduler-integrated registry of every hart that may hold or resume with translations for an ASID, including context-switch and migration races.
+1. Scheduler/hart membership: the host model now records a hart as potentially resident at dispatch activation, before its first memory access, and retains residency across switches/migrations. A production kernel still needs a scheduler-integrated registry and serialization that prevents activation/deactivation races with map/unmap/revocation.
 2. Concurrency and linearization: the manager is single-threaded. The production design must make map, unmap, revoke, derive, transfer and dispatch atomic in accordance with RFC-0009.5 and must define their synchronization/linearization points.
 3. Remote completion protocol: a real backend must distinguish request dispatch from remote local-fence completion and must never release quarantined work before every required acknowledgement arrives.
 4. Global translations: the host model does not model the PTE G bit or global mappings. Production domain mappings must either prohibit global PTEs or define the broader invalidation semantics required for them.
