@@ -535,7 +535,13 @@ mod tests {
         system.revoke(domain(1), branch).unwrap();
 
         assert_eq!(
-            system.authorize(domain(1), branch, ObjectType::Memory, Rights::READ, bounds(0, 1)),
+            system.authorize(
+                domain(1),
+                branch,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1)
+            ),
             Err(CapError::Revoked)
         );
         assert_eq!(
@@ -560,7 +566,13 @@ mod tests {
         );
         assert!(
             system
-                .authorize(domain(1), root, ObjectType::Memory, Rights::READ, bounds(0, 1))
+                .authorize(
+                    domain(1),
+                    root,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(0, 1)
+                )
                 .is_ok()
         );
         assert!(
