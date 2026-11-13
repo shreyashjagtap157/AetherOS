@@ -108,7 +108,7 @@ impl fmt::Debug for Rights {
 
 /// Scheduling-clock instant supplied by the scheduler/reference harness.
 ///
-//// This is deliberately not backed by a host wall clock. RFC-0037 expiration
+/// This is deliberately not backed by a host wall clock. RFC-0037 expiration
 /// uses scheduling time; the caller must provide the current scheduler value.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchedulingTime(u64);
