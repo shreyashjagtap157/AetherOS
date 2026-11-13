@@ -1,6 +1,7 @@
 //! Minimal machine-readable capability conformance runner.
 
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
+use aether_capspace::runtime::MemoryRuntime;
 use aether_capspace::memory::{
     AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
     ShootdownError, TlbShootdown,
@@ -36,6 +37,10 @@ fn main() {
         (
             "CTS-EXEC-CAP-REVALIDATE-001",
             cached_mapping_requires_live_capability(),
+        ),
+        (
+            "CTS-EXEC-RUNTIME-SERIALIZE-001",
+            serialized_runtime_access_and_revocation(),
         ),
         ("CTS-STATE-ATOMIC-001", state_commit_is_failure_atomic()),
         (
@@ -428,6 +433,67 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
         != Err(aether_capspace::memory::MemoryError::Unmapped)
     {
         return Err("revoked mapping remained accessible");
+    }
+    Ok(())
+}
+
+fn serialized_runtime_access_and_revocation() -> Result<(), &'static str> {
+    let (runtime, bootstrap) = MemoryRuntime::bootstrap();
+    let owner = domain(1);
+    let asid = AddressSpaceId::new(21);
+    runtime
+        .register_domain(owner, asid)
+        .map_err(|_| "serialized runtime domain registration failed")?;
+    let handle = runtime
+        .create_root(
+            &bootstrap,
+            owner,
+            Capability {
+                object: ObjectId(121),
+                object_type: ObjectType::Memory,
+                rights: Rights::MAP.union(Rights::READ),
+                bounds: bounds(0, 4096),
+            },
+        )
+        .map_err(|_| "serialized runtime root capability failed")?;
+    let hart = HartId::new(9);
+    let mut fences = ImmediateFences::default();
+    runtime
+        .activate_for_dispatch(owner, hart, &mut fences)
+        .map_err(|_| "serialized runtime address-space activation failed")?;
+    runtime
+        .map(
+            owner,
+            handle,
+            MapRequest {
+                address_space: asid,
+                virtual_range: bounds(0xa000, 0xb000),
+                resource_range: bounds(0, 4096),
+                page_size: PageSize::Base4KiB,
+                permissions: PtePermissions::READ,
+            },
+            &mut fences,
+        )
+        .map_err(|_| "serialized runtime mapping failed")?;
+    runtime
+        .access(hart, asid, 0xa000, MemoryAccess::Read)
+        .map_err(|_| "serialized runtime initial read failed")?;
+    runtime
+        .revoke_capability(owner, handle, &mut fences)
+        .map_err(|_| "serialized runtime revocation failed")?;
+    if runtime.access(hart, asid, 0xa000, MemoryAccess::Read)
+        != Err(aether_capspace::runtime::RuntimeError::Memory(
+            aether_capspace::memory::MemoryError::Unmapped,
+        ))
+    {
+        return Err("serialized runtime allowed access after completed revocation");
+    }
+    if runtime
+        .pending_invalidation_count()
+        .map_err(|_| "serialized runtime state lock failed")?
+        != 0
+    {
+        return Err("serialized runtime left an invalidation pending after successful revoke");
     }
     Ok(())
 }
