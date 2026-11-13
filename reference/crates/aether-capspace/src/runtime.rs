@@ -12,7 +12,7 @@ use crate::memory::{
     RevocationReport, TlbShootdown, TranslatedAccess,
 };
 use crate::{BootstrapAuthority, CapabilitySystem};
-use aether_types::{Bounds, CapError, Capability, DomainId, Handle, Rights};
+use aether_types::{Bounds, CapError, Capability, CapabilityLifecycle, DomainId, Handle, Rights, SchedulingTime};
 use std::sync::{Mutex, MutexGuard};
 
 struct RuntimeState {
@@ -112,6 +112,18 @@ impl MemoryRuntime {
             .create_root(&bootstrap.0, domain, capability)?)
     }
 
+    /// Creates a root capability with explicit RFC-0037 lifecycle fields.
+    pub fn create_root_with_lifecycle(
+        &self,
+        bootstrap: &RuntimeBootstrapAuthority,
+        domain: DomainId,
+        capability: Capability,
+        lifecycle: CapabilityLifecycle,
+    ) -> Result<Handle, RuntimeError> {
+        let mut state = self.lock()?;
+        Ok(state.capabilities.create_root_with_lifecycle(&bootstrap.0, domain, capability, lifecycle)?)
+    }
+
     /// Derives an attenuated capability within one domain.
     ///
     /// # Errors
@@ -123,8 +135,20 @@ impl MemoryRuntime {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Handle, RuntimeError> {
+        self.derive_at(SchedulingTime::ZERO, domain, parent, rights, bounds)
+    }
+
+    /// Derives a capability using scheduler time for expiry enforcement.
+    pub fn derive_at(
+        &self,
+        now: SchedulingTime,
+        domain: DomainId,
+        parent: Handle,
+        rights: Rights,
+        bounds: Bounds,
+    ) -> Result<Handle, RuntimeError> {
         let mut state = self.lock()?;
-        Ok(state.capabilities.derive(domain, parent, rights, bounds)?)
+        Ok(state.capabilities.derive_at(now, domain, parent, rights, bounds)?)
     }
 
     /// Transfers an attenuated capability into another registered domain.
@@ -139,10 +163,23 @@ impl MemoryRuntime {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Handle, RuntimeError> {
+        self.transfer_at(SchedulingTime::ZERO, source, parent, destination, rights, bounds)
+    }
+
+    /// Transfers a capability using scheduler time for expiry enforcement.
+    pub fn transfer_at(
+        &self,
+        now: SchedulingTime,
+        source: DomainId,
+        parent: Handle,
+        destination: DomainId,
+        rights: Rights,
+        bounds: Bounds,
+    ) -> Result<Handle, RuntimeError> {
         let mut state = self.lock()?;
         Ok(state
             .capabilities
-            .transfer(source, parent, destination, rights, bounds)?)
+            .transfer_at(now, source, parent, destination, rights, bounds)?)
     }
 
     /// Activates a domain's address space at the serialized dispatch boundary.
@@ -175,12 +212,24 @@ impl MemoryRuntime {
         request: MapRequest,
         fences: &mut impl TlbShootdown,
     ) -> Result<MappingId, RuntimeError> {
+        self.map_at(SchedulingTime::ZERO, domain, handle, request, fences)
+    }
+
+    /// Installs a mapping using caller-supplied scheduler time.
+    pub fn map_at(
+        &self,
+        now: SchedulingTime,
+        domain: DomainId,
+        handle: Handle,
+        request: MapRequest,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<MappingId, RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.map(capabilities, domain, handle, request, fences)?)
+        Ok(memory.map_at(now, capabilities, domain, handle, request, fences)?)
     }
 
     /// Performs a memory access with live capability revalidation and PTE
@@ -196,12 +245,25 @@ impl MemoryRuntime {
         virtual_address: u64,
         operation: MemoryAccess,
     ) -> Result<TranslatedAccess, RuntimeError> {
+        self.access_at(SchedulingTime::ZERO, hart, address_space, virtual_address, operation)
+    }
+
+    /// Performs live-authority access checks using caller-supplied scheduler time.
+    pub fn access_at(
+        &self,
+        now: SchedulingTime,
+        hart: HartId,
+        address_space: AddressSpaceId,
+        virtual_address: u64,
+        operation: MemoryAccess,
+    ) -> Result<TranslatedAccess, RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.access(
+        Ok(memory.access_at(
+            now,
             capabilities,
             hart,
             address_space,
@@ -221,12 +283,24 @@ impl MemoryRuntime {
         mapping: MappingId,
         fences: &mut impl TlbShootdown,
     ) -> Result<(), RuntimeError> {
+        self.unmap_at(SchedulingTime::ZERO, domain, handle, mapping, fences)
+    }
+
+    /// Unmaps a mapping using caller-supplied scheduler time.
+    pub fn unmap_at(
+        &self,
+        now: SchedulingTime,
+        domain: DomainId,
+        handle: Handle,
+        mapping: MappingId,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<(), RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.unmap(capabilities, domain, handle, mapping, fences)?)
+        Ok(memory.unmap_at(now, capabilities, domain, handle, mapping, fences)?)
     }
 
     /// Removes one local capability and all mappings created directly from it.
@@ -258,12 +332,35 @@ impl MemoryRuntime {
         handle: Handle,
         fences: &mut impl TlbShootdown,
     ) -> Result<RevocationReport, RuntimeError> {
+        self.revoke_capability_at(SchedulingTime::ZERO, domain, handle, fences)
+    }
+
+    /// Explicitly revokes authority using caller-supplied scheduler time.
+    pub fn revoke_capability_at(
+        &self,
+        now: SchedulingTime,
+        domain: DomainId,
+        handle: Handle,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<RevocationReport, RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.revoke_capability(capabilities, domain, handle, fences)?)
+        Ok(memory.revoke_capability_at(now, capabilities, domain, handle, fences)?)
+    }
+
+    /// Processes due token expirations and invalidates mappings under the
+    /// same runtime serialization boundary as ordinary access and revocation.
+    pub fn expire_due(
+        &self,
+        now: SchedulingTime,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<RevocationReport, RuntimeError> {
+        let mut state = self.lock()?;
+        let RuntimeState { capabilities, memory } = &mut *state;
+        Ok(memory.expire_due(capabilities, now, fences)?)
     }
 
     /// Retries every pending translation invalidation while excluding access
