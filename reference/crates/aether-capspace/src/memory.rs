@@ -1496,7 +1496,13 @@ mod tests {
         assert_eq!(memory.pending_invalidation_count(), 0);
         activate_test_hart(&mut memory, domain, HartId::new(0));
         assert_eq!(
-            memory.access(&capabilities, HartId::new(0), asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                HartId::new(0),
+                asid,
+                0x4000,
+                MemoryAccess::Read
+            ),
             Err(MemoryError::Unmapped)
         );
     }
@@ -1635,7 +1641,8 @@ mod tests {
 
         activate_test_hart(&mut memory, domain, HartId::new(1));
         let translated = memory
-            .access(&capabilities, 
+            .access(
+                &capabilities,
                 HartId::new(1),
                 asid,
                 0xffff_ffff_ffff_e123,
@@ -1687,7 +1694,8 @@ mod tests {
             )
             .unwrap();
             let access = memory
-                .access(&capabilities, 
+                .access(
+                    &capabilities,
                     HartId::new(1),
                     asid,
                     virtual_base + bytes - 1,
@@ -1812,17 +1820,35 @@ mod tests {
         activate_test_hart(&mut memory, second_domain, second_hart);
         assert!(
             memory
-                .access(&capabilities, first_hart, first_asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    first_hart,
+                    first_asid,
+                    0x4000,
+                    MemoryAccess::Read
+                )
                 .is_ok()
         );
         assert!(
             memory
-                .access(&capabilities, first_hart, first_asid, 0x5000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    first_hart,
+                    first_asid,
+                    0x5000,
+                    MemoryAccess::Read
+                )
                 .is_ok()
         );
         assert!(
             memory
-                .access(&capabilities, second_hart, second_asid, 0x8000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    second_hart,
+                    second_asid,
+                    0x8000,
+                    MemoryAccess::Read
+                )
                 .is_ok()
         );
 
@@ -1834,11 +1860,23 @@ mod tests {
         assert_eq!(report.hart_invalidations, 4);
         assert_eq!(fences.calls.len(), 4);
         assert_eq!(
-            memory.access(&capabilities, first_hart, first_asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                first_hart,
+                first_asid,
+                0x4000,
+                MemoryAccess::Read
+            ),
             Err(MemoryError::Unmapped)
         );
         assert_eq!(
-            memory.access(&capabilities, second_hart, second_asid, 0x8000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                second_hart,
+                second_asid,
+                0x8000,
+                MemoryAccess::Read
+            ),
             Err(MemoryError::Unmapped)
         );
         assert!(
