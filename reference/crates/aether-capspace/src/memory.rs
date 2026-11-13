@@ -7,7 +7,7 @@
 //! concurrency, or WCET claim.
 
 use crate::CapabilitySystem;
-use aether_types::{Bounds, CapError, DomainId, Handle, ObjectId, ObjectType, Rights};
+use aether_types::{Bounds, CapError, DomainId, Handle, ObjectId, ObjectType, Rights, SchedulingTime};
 use std::collections::{HashMap, HashSet};
 
 /// Supervisor address-space identifier used by the host reference model.
@@ -471,6 +471,19 @@ impl MemoryManager {
         request: MapRequest,
         fences: &mut impl TlbShootdown,
     ) -> Result<MappingId, MemoryError> {
+        self.map_at(SchedulingTime::ZERO, capabilities, domain, handle, request, fences)
+    }
+
+    /// Scheduling-time-aware mapping entry point.
+    pub fn map_at(
+        &mut self,
+        now: SchedulingTime,
+        capabilities: &CapabilitySystem,
+        domain: DomainId,
+        handle: Handle,
+        request: MapRequest,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<MappingId, MemoryError> {
         if self.domain_asids.get(&domain) != Some(&request.address_space) {
             return Err(MemoryError::AddressSpaceMissing);
         }
@@ -488,7 +501,7 @@ impl MemoryManager {
         }
 
         let required = Self::required_capability_rights(request.permissions);
-        let capability = capabilities.authorize(
+        let capability = capabilities.authorize_at(now,
             domain,
             handle,
             ObjectType::Memory,
@@ -589,6 +602,19 @@ impl MemoryManager {
         virtual_address: u64,
         operation: MemoryAccess,
     ) -> Result<TranslatedAccess, MemoryError> {
+        self.access_at(SchedulingTime::ZERO, capabilities, hart, address_space, virtual_address, operation)
+    }
+
+    /// Scheduling-time-aware access path; expiry is checked on every access.
+    pub fn access_at(
+        &mut self,
+        now: SchedulingTime,
+        capabilities: &CapabilitySystem,
+        hart: HartId,
+        address_space: AddressSpaceId,
+        virtual_address: u64,
+        operation: MemoryAccess,
+    ) -> Result<TranslatedAccess, MemoryError> {
         if self.blocked_harts.contains(&hart)
             || self.pending.values().any(|pending| {
                 pending.address_space == address_space
@@ -632,7 +658,7 @@ impl MemoryManager {
             return Err(MemoryError::Unmapped);
         }
 
-        let authority = capabilities.authorize(
+        let authority = capabilities.authorize_at(now,
             mapping.domain,
             mapping.handle,
             ObjectType::Memory,
@@ -674,6 +700,19 @@ impl MemoryManager {
         mapping: MappingId,
         fences: &mut impl TlbShootdown,
     ) -> Result<(), MemoryError> {
+        self.unmap_at(SchedulingTime::ZERO, capabilities, domain, handle, mapping, fences)
+    }
+
+    /// Scheduling-time-aware unmap entry point.
+    pub fn unmap_at(
+        &mut self,
+        now: SchedulingTime,
+        capabilities: &CapabilitySystem,
+        domain: DomainId,
+        handle: Handle,
+        mapping: MappingId,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<(), MemoryError> {
         let record = *self
             .mappings
             .get(&mapping)
@@ -681,7 +720,7 @@ impl MemoryManager {
         if record.domain != domain || record.handle != handle || record.invalidated {
             return Err(MemoryError::MappingOwnerMismatch);
         }
-        capabilities.authorize(
+        capabilities.authorize_at(now,
             domain,
             handle,
             ObjectType::Memory,
@@ -709,13 +748,25 @@ impl MemoryManager {
         handle: Handle,
         fences: &mut impl TlbShootdown,
     ) -> Result<RevocationReport, MemoryError> {
-        capabilities.revoke(domain, handle)?;
+        self.revoke_capability_at(SchedulingTime::ZERO, capabilities, domain, handle, fences)
+    }
+
+    /// Scheduling-time-aware explicit capability revocation.
+    pub fn revoke_capability_at(
+        &mut self,
+        now: SchedulingTime,
+        capabilities: &mut CapabilitySystem,
+        domain: DomainId,
+        handle: Handle,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<RevocationReport, MemoryError> {
+        capabilities.revoke_at(now, domain, handle)?;;
 
         let invalid_mappings: Vec<MappingId> = self
             .mappings
             .iter()
             .filter_map(|(mapping_id, record)| {
-                let result = capabilities.authorize(
+                let result = capabilities.authorize_at(now,
                     record.domain,
                     record.handle,
                     ObjectType::Memory,
@@ -743,6 +794,59 @@ impl MemoryManager {
             }
         }
 
+        if incomplete {
+            return Err(MemoryError::ShootdownPending);
+        }
+        Ok(RevocationReport {
+            mappings_invalidated: invalid_mappings.len(),
+            hart_invalidations,
+        })
+    }
+
+    /// Processes scheduler-time expirations and revokes every affected subtree.
+    /// Expired mappings are then invalidated and their resident translations
+    /// acknowledged before this method returns successfully.
+    pub fn expire_due(
+        &mut self,
+        capabilities: &mut CapabilitySystem,
+        now: SchedulingTime,
+        fences: &mut impl TlbShootdown,
+    ) -> Result<RevocationReport, MemoryError> {
+        capabilities.expire_due(now)?;
+        let invalid_mappings: Vec<MappingId> = self
+            .mappings
+            .iter()
+            .filter_map(|(mapping_id, record)| {
+                capabilities
+                    .authorize_at(
+                        now,
+                        record.domain,
+                        record.handle,
+                        ObjectType::Memory,
+                        Self::required_capability_rights(record.permissions),
+                        record.resource_range,
+                    )
+                    .is_err()
+                    .then_some(*mapping_id)
+            })
+            .collect();
+
+        let mut hart_invalidations = 0_usize;
+        let mut incomplete = false;
+        for mapping in &invalid_mappings {
+            if let Some(record) = self.mappings.get(mapping) {
+                let mut targets = self
+                    .resident_harts
+                    .get(&record.address_space)
+                    .cloned()
+                    .unwrap_or_default();
+                targets.insert(fences.current_hart());
+                hart_invalidations = hart_invalidations.saturating_add(targets.len());
+            }
+            if self.invalidate_mapping(*mapping, fences).is_err() {
+                incomplete = true;
+            }
+        }
         if incomplete {
             return Err(MemoryError::ShootdownPending);
         }

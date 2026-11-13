@@ -5,7 +5,7 @@ pub mod memory;
 /// Serialized host façade for capability and memory-mapping operations.
 pub mod runtime;
 
-use aether_types::{Bounds, CapError, Capability, DomainId, Handle, ObjectType, Rights};
+use aether_types::{Bounds, CapError, Capability, CapabilityFlags, CapabilityLifecycle, DomainId, Handle, ObjectType, Rights, SchedulingTime};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -13,6 +13,8 @@ use std::sync::Arc;
 struct Entry {
     generation: u16,
     capability: Capability,
+    lifecycle: CapabilityLifecycle,
+    bound_domain: Option<DomainId>,
     lineage_id: u64,
 }
 
@@ -88,11 +90,36 @@ impl CapabilitySystem {
         domain: DomainId,
         capability: Capability,
     ) -> Result<Handle, CapError> {
+        self.create_root_with_lifecycle(
+            bootstrap,
+            domain,
+            capability,
+            CapabilityLifecycle::permanent_revocable(),
+        )
+    }
+
+    /// Creates a root with explicit lifecycle metadata from RFC-0037.
+    ///
+    /// Creation and expiry values are scheduling-clock nanoseconds supplied by
+    /// the caller; this provider never consults a host wall clock. For derived
+    /// and transferred capabilities this reference model conservatively
+    /// inherits the source lifetime and behaviour flags, preventing authority
+    /// from outliving its source. RFC-0037.12 does not explicitly norm expiry
+    /// inheritance, so that policy remains an implementation assumption pending
+    /// normative clarification.
+    pub fn create_root_with_lifecycle(
+        &mut self,
+        bootstrap: &BootstrapAuthority,
+        domain: DomainId,
+        capability: Capability,
+        lifecycle: CapabilityLifecycle,
+    ) -> Result<Handle, CapError> {
         if !Arc::ptr_eq(&bootstrap.0, &self.universe) {
             return Err(CapError::WrongBootstrap);
         }
         let lineage_id = self.alloc_lineage()?;
-        self.insert(domain, capability, lineage_id, None)
+        let bound_domain = lifecycle.flags.contains(CapabilityFlags::BOUND).then_some(domain);
+        self.insert(domain, capability, lifecycle, bound_domain, lineage_id, None)
     }
 
     /// Derives a same-domain child.
@@ -106,7 +133,19 @@ impl CapabilitySystem {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Handle, CapError> {
-        let entry = self.resolve_live(domain, parent)?.clone();
+        self.derive_at(SchedulingTime::ZERO, domain, parent, rights, bounds)
+    }
+
+    /// Derives only when the source is live at the supplied scheduling time.
+    pub fn derive_at(
+        &mut self,
+        now: SchedulingTime,
+        domain: DomainId,
+        parent: Handle,
+        rights: Rights,
+        bounds: Bounds,
+    ) -> Result<Handle, CapError> {
+        let entry = self.resolve_live_at(now, domain, parent)?.clone();
         Self::check_narrowing(&entry.capability, rights, bounds)?;
         let parent_lineage = entry.lineage_id;
         let lineage_id = self.alloc_lineage()?;
@@ -117,6 +156,8 @@ impl CapabilitySystem {
                 bounds,
                 ..entry.capability
             },
+            entry.lifecycle,
+            entry.bound_domain,
             lineage_id,
             Some(parent_lineage),
         )
@@ -134,7 +175,23 @@ impl CapabilitySystem {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Handle, CapError> {
-        let entry = self.resolve_live(source, parent)?.clone();
+        self.transfer_at(SchedulingTime::ZERO, source, parent, destination, rights, bounds)
+    }
+
+    /// Transfers only while the source is live at scheduling time.
+    pub fn transfer_at(
+        &mut self,
+        now: SchedulingTime,
+        source: DomainId,
+        parent: Handle,
+        destination: DomainId,
+        rights: Rights,
+        bounds: Bounds,
+    ) -> Result<Handle, CapError> {
+        let entry = self.resolve_live_at(now, source, parent)?.clone();
+        if entry.lifecycle.flags.contains(CapabilityFlags::BOUND) {
+            return Err(CapError::DomainBound);
+        }
         if !entry.capability.rights.contains(Rights::GRANT) {
             return Err(CapError::Rights);
         }
@@ -148,6 +205,12 @@ impl CapabilitySystem {
                 bounds,
                 ..entry.capability
             },
+            CapabilityLifecycle::new(
+                entry.lifecycle.flags.union(CapabilityFlags::BOUND),
+                entry.lifecycle.creation_timestamp_ns,
+                entry.lifecycle.expires_at_ns,
+            ),
+            Some(destination),
             lineage_id,
             Some(parent_lineage),
         )
@@ -158,7 +221,29 @@ impl CapabilitySystem {
     /// # Errors
     /// Returns a typed failure if the handle cannot be resolved in the domain.
     pub fn revoke(&mut self, domain: DomainId, handle: Handle) -> Result<(), CapError> {
-        let lineage_id = self.resolve(domain, handle)?.lineage_id;
+        self.revoke_at(SchedulingTime::ZERO, domain, handle)
+    }
+
+    /// Explicit revocation requires both CAPF_REVOCABLE and RIGHT_REVOKE.
+    pub fn revoke_at(
+        &mut self,
+        now: SchedulingTime,
+        domain: DomainId,
+        handle: Handle,
+    ) -> Result<(), CapError> {
+        let lineage_id = {
+            let entry = self.resolve(domain, handle)?;
+            if entry.lifecycle.is_expired(now) {
+                return Err(CapError::Expired);
+            }
+            if !entry.lifecycle.flags.contains(CapabilityFlags::REVOCABLE) {
+                return Err(CapError::NotRevocable);
+            }
+            if !entry.capability.rights.contains(Rights::REVOKE) {
+                return Err(CapError::Rights);
+            }
+            entry.lineage_id
+        };
         self.revoke_subtree(lineage_id)
     }
 
@@ -212,7 +297,20 @@ impl CapabilitySystem {
         rights: Rights,
         bounds: Bounds,
     ) -> Result<Capability, CapError> {
-        let entry = self.resolve(domain, handle)?;
+        self.authorize_at(SchedulingTime::ZERO, domain, handle, object_type, rights, bounds)
+    }
+
+    /// Performs authority, lifecycle, and domain checks using scheduling time.
+    pub fn authorize_at(
+        &self,
+        now: SchedulingTime,
+        domain: DomainId,
+        handle: Handle,
+        object_type: ObjectType,
+        rights: Rights,
+        bounds: Bounds,
+    ) -> Result<Capability, CapError> {
+        let entry = self.resolve_live_at(now, domain, handle)?;
         if self.is_revoked(entry.lineage_id)? {
             return Err(CapError::Revoked);
         }
@@ -250,12 +348,51 @@ impl CapabilitySystem {
         Ok(entry)
     }
 
-    fn resolve_live(&self, domain: DomainId, handle: Handle) -> Result<&Entry, CapError> {
+    fn resolve_live_at(
+        &self,
+        now: SchedulingTime,
+        domain: DomainId,
+        handle: Handle,
+    ) -> Result<&Entry, CapError> {
         let entry = self.resolve(domain, handle)?;
+        if entry.lifecycle.is_expired(now) {
+            return Err(CapError::Expired);
+        }
+        if entry.bound_domain.is_some_and(|bound| bound != domain) {
+            return Err(CapError::DomainBound);
+        }
         if self.is_revoked(entry.lineage_id)? {
             return Err(CapError::Revoked);
         }
         Ok(entry)
+    }
+
+    /// Applies automatic expiration revocation to due lineages and descendants.
+    /// Unlike holder-initiated revocation, this system path is not gated by
+    /// CAPF_REVOCABLE or RIGHT_REVOKE.
+    pub fn expire_due(&mut self, now: SchedulingTime) -> Result<usize, CapError> {
+        let mut due = HashSet::new();
+        for space in self.spaces.values() {
+            for entry in space.slots.iter().flatten() {
+                if entry.lifecycle.is_expired(now) && !self.is_revoked(entry.lineage_id)? {
+                    due.insert(entry.lineage_id);
+                }
+            }
+        }
+
+        let roots: Vec<u64> = due
+            .iter()
+            .copied()
+            .filter(|lineage_id| {
+                self.revocation_nodes
+                    .get(lineage_id)
+                    .is_some_and(|node| node.parent.is_none_or(|parent| !due.contains(&parent)))
+            })
+            .collect();
+        for lineage_id in &roots {
+            self.revoke_subtree(*lineage_id)?;
+        }
+        Ok(roots.len())
     }
 
     fn is_revoked(&self, lineage_id: u64) -> Result<bool, CapError> {
@@ -362,6 +499,8 @@ impl CapabilitySystem {
         &mut self,
         domain: DomainId,
         capability: Capability,
+        lifecycle: CapabilityLifecycle,
+        bound_domain: Option<DomainId>,
         lineage_id: u64,
         parent_lineage: Option<u64>,
     ) -> Result<Handle, CapError> {
@@ -397,6 +536,8 @@ impl CapabilitySystem {
         space.slots[index] = Some(Entry {
             generation,
             capability,
+            lifecycle,
+            bound_domain,
             lineage_id,
         });
 
@@ -439,7 +580,7 @@ mod tests {
         Capability {
             object: ObjectId(7),
             object_type: ObjectType::Memory,
-            rights: Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+            rights: Rights::READ.union(Rights::WRITE).union(Rights::GRANT).union(Rights::REVOKE),
             bounds: bounds(0, 4096),
         }
     }
