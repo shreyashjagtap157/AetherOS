@@ -20,7 +20,7 @@ struct RuntimeState {
     memory: MemoryManager,
 }
 
-/// Bootstrap witness scoped to one serialized MemoryRuntime authority universe.
+/// Bootstrap witness scoped to one serialized `MemoryRuntime` authority universe.
 pub struct RuntimeBootstrapAuthority(BootstrapAuthority);
 
 /// Failures produced by the serialized host runtime.
@@ -52,7 +52,7 @@ impl From<MemoryError> for RuntimeError {
 /// mutable reference to either internal manager, so all supported capability
 /// mutations and memory operations share one lock and one linearization order.
 ///
-/// This is stronger than the lower-level MemoryManager API, which remains
+/// This is stronger than the lower-level `MemoryManager` API, which remains
 /// available for focused single-threaded provider tests. Applications using
 /// that lower-level API directly do not inherit this runtime's serialization
 /// guarantee.
@@ -270,8 +270,8 @@ impl MemoryRuntime {
     /// and dispatch through this runtime.
     ///
     /// # Errors
-    /// Returns ShootdownPending until every required acknowledgement arrives,
-    /// or LockPoisoned if the runtime mutex is poisoned.
+    /// Returns `ShootdownPending` until every required acknowledgement arrives,
+    /// or `LockPoisoned` if the runtime mutex is poisoned.
     pub fn retry_pending_shootdowns(
         &self,
         fences: &mut impl TlbShootdown,
@@ -283,7 +283,7 @@ impl MemoryRuntime {
     /// Returns the number of mappings awaiting invalidation.
     ///
     /// # Errors
-    /// Returns LockPoisoned if the runtime mutex is poisoned.
+    /// Returns `LockPoisoned` if the runtime mutex is poisoned.
     pub fn pending_invalidation_count(&self) -> Result<usize, RuntimeError> {
         let state = self.lock()?;
         Ok(state.memory.pending_invalidation_count())
@@ -415,9 +415,9 @@ mod tests {
             racing_access.is_ok()
                 || matches!(
                     racing_access,
-                    Err(RuntimeError::Memory(MemoryError::Capability(
-                        CapError::Revoked
-                    ))) | Err(RuntimeError::Memory(MemoryError::Unmapped))
+                    Err(RuntimeError::Memory(
+                        MemoryError::Capability(CapError::Revoked) | MemoryError::Unmapped
+                    ))
                 ),
             "the racing access must either linearize before revocation or be denied"
         );
@@ -425,10 +425,9 @@ mod tests {
         assert!(
             matches!(
                 runtime.access(hart, address_space, 0x8000, MemoryAccess::Read),
-                Err(RuntimeError::Memory(MemoryError::Unmapped))
-                    | Err(RuntimeError::Memory(MemoryError::Capability(
-                        CapError::Revoked
-                    )))
+                Err(RuntimeError::Memory(
+                    MemoryError::Unmapped | MemoryError::Capability(CapError::Revoked)
+                ))
             ),
             "no access may succeed after revocation has returned"
         );
