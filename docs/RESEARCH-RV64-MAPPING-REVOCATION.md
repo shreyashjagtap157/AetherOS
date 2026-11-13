@@ -2,7 +2,7 @@
 
 Classification: Operational
 Authoritative Source: RFC-0009, RFC-0013, RFC-0037, RFC-0039 and the accepted INTF-000 capability-enforcement substrate decision
-Status: Experimental host-reference implementation decision; per-access authority revalidation implemented on the current development branch
+Status: Experimental host-reference implementation decision; per-access authority revalidation and serialized runtime implemented on current development branch
 Last reviewed: 2026-11-12
 
 ## 1. Scope and decision boundary
@@ -83,6 +83,14 @@ A cached PTE is therefore not treated as sufficient authority by itself. The reg
 
 The current host `Capability` record does not yet model token expiry or usage counters, so RFC-0013.4's lifetime and usage-bound criteria remain open. Concurrent access/revocation linearization is also not implemented; this access revalidation closes the sequential stale-authority path only.
 
+### 4.4 Serialized host runtime
+
+The development branch adds a MemoryRuntime façade that privately owns both the CapabilitySystem and MemoryManager behind one mutex. It exposes the supported capability mutations (root creation, derive, transfer, remove, revoke) and memory operations (map, unmap, dispatch activation, access, invalidation retry) through that shared lock.
+
+The shared lock gives these host façade calls one total order. An access either completes before a concurrent revocation, or observes the revocation/mapping invalidation and fails. The new unit test races an access against subtree revocation and then asserts that no access can succeed after revocation returns. A machine-readable CTS case exercises the serialized runtime path as well.
+
+This is deliberately not a production-kernel locking design. The mutex is blocking and remains held while TlbShootdown callbacks publish PTE updates and wait for target-hart acknowledgements. Production code must not hold an ordinary blocking lock across a potentially waiting dispatch/fence path; it needs an interrupt-safe synchronization and completion protocol with explicitly proved lock ordering and latency. The lower-level MemoryManager and CapabilitySystem remain available for focused tests, but callers bypassing MemoryRuntime do not receive its serialization guarantee.
+
 ### 4.4 Dispatch activation and residency
 
 The host model exposes `activate_for_dispatch(domain, hart, fences)` as the address-space activation boundary associated with RFC-0008.4 and RFC-0008.7. The caller must not allow the target thread to execute until the activation backend reports success. The model rejects simulated access before activation and after a switch away from that address space.
@@ -126,10 +134,12 @@ Merged-main artifact SHA-256: `f48aa6aa2a30625e35ad2fc23af307f7c6059944dd0e41326
 
 These results are host-reference evidence only. They do not prove kernel conformance, hardware page-table correctness, actual scheduler integration, concurrent map/dispatch linearization, target-hart discovery, interrupt delivery, memory ordering, worst-case shootdown latency, or formal correctness.
 
+The live-authority access guard and serialized MemoryRuntime described above are subsequent development-branch additions. They add one unit regression for a revoked capability with a cached translation and two machine-readable CTS cases, bringing that branch to 17 cases. Their latest-head CI validation is pending; the earlier 15-case main/PR validation above does not cover them.
+
 ## 7. Explicit exclusions and unresolved engineering work
 
 1. Scheduler/hart membership: the host model now records a hart as potentially resident at dispatch activation, before its first memory access, and retains residency across switches/migrations. A production kernel still needs a scheduler-integrated registry and serialization that prevents activation/deactivation races with map/unmap/revocation.
-2. Concurrency and linearization: the manager is single-threaded. The production design must make map, unmap, revoke, derive, transfer and dispatch atomic in accordance with RFC-0009.5 and must define their synchronization/linearization points.
+2. Concurrency and linearization: the lower-level manager remains single-threaded. The new host MemoryRuntime façade serializes its supported operations with one blocking mutex, but this is not a production-kernel implementation. The production design must make map, unmap, revoke, derive, transfer and dispatch atomic in accordance with RFC-0009.5, define synchronization/linearization points, and prove interrupt-safe lock ordering and bounded latency.
 3. Remote completion protocol: a real backend must distinguish request dispatch from remote local-fence completion and must never release quarantined work before every required acknowledgement arrives.
 4. Global translations: the host model does not model the PTE G bit or global mappings. Production domain mappings must either prohibit global PTEs or define the broader invalidation semantics required for them.
 5. ASID lifecycle: this model assigns ASIDs manually and does not model hardware ASID width discovery, reuse, generation tagging, rollover or satp transitions.
