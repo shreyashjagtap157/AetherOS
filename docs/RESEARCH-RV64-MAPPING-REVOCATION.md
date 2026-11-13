@@ -91,7 +91,7 @@ The shared lock gives these host façade calls one total order. An access either
 
 This is deliberately not a production-kernel locking design. The mutex is blocking and remains held while TlbShootdown callbacks publish PTE updates and wait for target-hart acknowledgements. Production code must not hold an ordinary blocking lock across a potentially waiting dispatch/fence path; it needs an interrupt-safe synchronization and completion protocol with explicitly proved lock ordering and latency. The lower-level MemoryManager and CapabilitySystem remain available for focused tests, but callers bypassing MemoryRuntime do not receive its serialization guarantee.
 
-### 4.4 Dispatch activation and residency
+### 4.5 Dispatch activation and residency
 
 The host model exposes `activate_for_dispatch(domain, hart, fences)` as the address-space activation boundary associated with RFC-0008.4 and RFC-0008.7. The caller must not allow the target thread to execute until the activation backend reports success. The model rejects simulated access before activation and after a switch away from that address space.
 
@@ -99,7 +99,7 @@ A hart is recorded as potentially resident **before** the backend activation cal
 
 This is still a host contract and fake-backend test. No scheduler currently invokes it, no cross-thread/interrupt serialization makes dispatch atomic with map/unmap/revocation, and no real `satp` or page-table-root activation exists. RFC-0008's full dispatch protocol and RFC-0009.5 concurrent map/dispatch atomicity are not implemented by this host model.
 
-### 4.4 Unmap and revocation
+### 4.6 Unmap and revocation
 
 - Explicit unmap removes the PTEs, publishes the change, and waits for local and known resident-hart invalidations before reporting completion.
 - Removing a capability handle invalidates mappings created directly from that handle; it does not revoke derived capabilities.
