@@ -2,6 +2,8 @@
 
 /// Host reference model for capability-authorized address-space mappings.
 pub mod memory;
+/// Serialized host façade for capability and memory-mapping operations.
+pub mod runtime;
 
 use aether_types::{Bounds, CapError, Capability, DomainId, Handle, ObjectType, Rights};
 use std::collections::{HashMap, HashSet};
