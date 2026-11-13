@@ -1,11 +1,11 @@
 //! Minimal machine-readable capability conformance runner.
 
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
-use aether_capspace::runtime::MemoryRuntime;
 use aether_capspace::memory::{
     AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
     ShootdownError, TlbShootdown,
 };
+use aether_capspace::runtime::MemoryRuntime;
 use aether_capspace::{BootstrapAuthority as SystemBootstrap, CapabilitySystem};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
