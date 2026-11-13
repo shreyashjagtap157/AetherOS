@@ -415,8 +415,9 @@ mod tests {
             racing_access.is_ok()
                 || matches!(
                     racing_access,
-                    Err(RuntimeError::Memory(MemoryError::Capability(CapError::Revoked)))
-                        | Err(RuntimeError::Memory(MemoryError::Unmapped))
+                    Err(RuntimeError::Memory(MemoryError::Capability(
+                        CapError::Revoked
+                    ))) | Err(RuntimeError::Memory(MemoryError::Unmapped))
                 ),
             "the racing access must either linearize before revocation or be denied"
         );
@@ -425,7 +426,9 @@ mod tests {
             matches!(
                 runtime.access(hart, address_space, 0x8000, MemoryAccess::Read),
                 Err(RuntimeError::Memory(MemoryError::Unmapped))
-                    | Err(RuntimeError::Memory(MemoryError::Capability(CapError::Revoked)))
+                    | Err(RuntimeError::Memory(MemoryError::Capability(
+                        CapError::Revoked
+                    )))
             ),
             "no access may succeed after revocation has returned"
         );
