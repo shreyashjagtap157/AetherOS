@@ -59,6 +59,8 @@ impl Rights {
     pub const EXECUTE: Self = Self(1 << 4);
     /// Create or remove an address-space mapping for a memory region.
     pub const MAP: Self = Self(1 << 5);
+    /// Explicit authority to revoke a revocable capability.
+    pub const REVOKE: Self = Self(1 << 6);
     /// Empty rights set.
     pub const NONE: Self = Self(0);
     const KNOWN: u16 = Self::READ.0
@@ -66,7 +68,8 @@ impl Rights {
         | Self::INVOKE.0
         | Self::GRANT.0
         | Self::EXECUTE.0
-        | Self::MAP.0;
+        | Self::MAP.0
+        | Self::REVOKE.0;
 
     /// Creates a rights set if every bit is defined.
     #[must_use]
@@ -100,6 +103,98 @@ impl Rights {
 impl fmt::Debug for Rights {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Rights({:#06x})", self.0)
+    }
+}
+
+/// Scheduling-clock instant supplied by the scheduler/reference harness.
+///
+//// This is deliberately not backed by a host wall clock. RFC-0037 expiration
+/// uses scheduling time; the caller must provide the current scheduler value.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SchedulingTime(u64);
+
+impl SchedulingTime {
+    /// Zero scheduling time, useful only for explicit unbounded test fixtures.
+    pub const ZERO: Self = Self(0);
+
+    /// Constructs a scheduling-time instant in nanoseconds.
+    #[must_use]
+    pub const fn from_nanos(value: u64) -> Self { Self(value) }
+
+    /// Returns the nanosecond value.
+    #[must_use]
+    pub const fn as_nanos(self) -> u64 { self.0 }
+}
+
+/// Behaviour flags carried by a capability token (RFC-0037.7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityFlags(u8);
+
+impl CapabilityFlags {
+    /// Capability is transient and is lost when its domain is destroyed.
+    pub const TRANSIENT: Self = Self(0x01);
+    /// Capability is subject to explicit revocation.
+    pub const REVOCABLE: Self = Self(0x02);
+    /// Capability has a stable lookup name.
+    pub const NAMED: Self = Self(0x04);
+    /// Capability is bound to one holder domain and cannot be transferred.
+    pub const BOUND: Self = Self(0x08);
+    /// Capability is sealed with the platform integrity key.
+    pub const SEALED: Self = Self(0x10);
+    /// No behaviour flags.
+    pub const NONE: Self = Self(0);
+    const KNOWN: u8 = 0x1f;
+
+    /// Creates a flag set only when no unknown RFC-0037 flag bits are present.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::KNOWN == 0 { Some(Self(bits)) } else { None }
+    }
+
+    /// Returns the serialized flag bits.
+    #[must_use]
+    pub const fn bits(self) -> u8 { self.0 }
+
+    /// Returns whether every flag in other is present.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Returns the union of two flag sets.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self { Self(self.0 | other.0) }
+}
+
+/// Lifecycle metadata corresponding to RFC-0037 token fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityLifecycle {
+    /// Token behaviour flags.
+    pub flags: CapabilityFlags,
+    /// Creation timestamp in scheduler time.
+    pub creation_timestamp_ns: u64,
+    /// Absolute scheduling-time deadline; zero means no expiration.
+    pub expires_at_ns: u64,
+}
+
+impl CapabilityLifecycle {
+    /// Builds lifecycle metadata without consulting a host clock.
+    #[must_use]
+    pub const fn new(flags: CapabilityFlags, creation_timestamp_ns: u64, expires_at_ns: u64) -> Self {
+        Self { flags, creation_timestamp_ns, expires_at_ns }
+    }
+
+    /// Compatibility policy used by the original host-reference root helper.
+    /// This is an explicit host-model default, not a normative token default.
+    #[must_use]
+    pub const fn permanent_revocable() -> Self {
+        Self::new(CapabilityFlags::REVOCABLE, 0, 0)
+    }
+
+    /// RFC-0037.14 uses strict current scheduling time greater than expiry.
+    #[must_use]
+    pub const fn is_expired(self, now: SchedulingTime) -> bool {
+        self.expires_at_ns != 0 && now.as_nanos() > self.expires_at_ns
     }
 }
 
@@ -207,6 +302,12 @@ pub enum CapError {
     Stale,
     /// Capability or one of its ancestors was revoked.
     Revoked,
+    /// Capability scheduling-time expiry has passed.
+    Expired,
+    /// Explicit revocation was attempted without CAPF_REVOCABLE.
+    NotRevocable,
+    /// Capability is bound to a different domain or cannot be transferred.
+    DomainBound,
     /// Requested right is absent.
     Rights,
     /// Requested bounds exceed authority.
@@ -232,5 +333,15 @@ mod tests {
     fn malformed_handle_and_unknown_right_are_rejected() {
         assert_eq!(Handle::from_untrusted(0).decode(), None);
         assert_eq!(Rights::from_bits(1 << 15), None);
+        assert_eq!(CapabilityFlags::from_bits(0x20), None);
+    }
+
+    #[test]
+    fn scheduling_expiry_uses_strict_greater_than() {
+        let lifecycle = CapabilityLifecycle::new(CapabilityFlags::REVOCABLE, 5, 10);
+        assert!(!lifecycle.is_expired(SchedulingTime::from_nanos(10)));
+        assert!(lifecycle.is_expired(SchedulingTime::from_nanos(11)));
+        assert!(!CapabilityLifecycle::new(CapabilityFlags::NONE, 5, 0)
+            .is_expired(SchedulingTime::from_nanos(u64::MAX)));
     }
 }
