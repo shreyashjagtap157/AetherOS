@@ -5,6 +5,7 @@ use aether_capspace::memory::{
     AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
     ShootdownError, TlbShootdown,
 };
+use aether_capspace::runtime::MemoryRuntime;
 use aether_capspace::{BootstrapAuthority as SystemBootstrap, CapabilitySystem};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -32,6 +33,14 @@ fn main() {
         (
             "CTS-EXEC-DISP-ADDRSPACE-001",
             dispatch_address_space_activation(),
+        ),
+        (
+            "CTS-EXEC-CAP-REVALIDATE-001",
+            cached_mapping_requires_live_capability(),
+        ),
+        (
+            "CTS-EXEC-RUNTIME-SERIALIZE-001",
+            serialized_runtime_access_and_revocation(),
         ),
         ("CTS-STATE-ATOMIC-001", state_commit_is_failure_atomic()),
         (
@@ -409,9 +418,9 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
         .map_err(|_| "capability-authorized page mapping failed")?;
 
     memory
-        .access(hart, asid, 0x4000, MemoryAccess::Read)
+        .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
         .map_err(|_| "read access should be permitted by the PTE")?;
-    if memory.access(hart, asid, 0x4000, MemoryAccess::Write)
+    if memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Write)
         != Err(aether_capspace::memory::MemoryError::ProtectionFault)
     {
         return Err("read-only mapping allowed a store");
@@ -420,10 +429,131 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
     memory
         .revoke_capability(&mut capabilities, owner, handle, &mut fences)
         .map_err(|_| "revocation did not complete after hart invalidation")?;
-    if memory.access(hart, asid, 0x4000, MemoryAccess::Read)
+    if memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
         != Err(aether_capspace::memory::MemoryError::Unmapped)
     {
         return Err("revoked mapping remained accessible");
+    }
+    Ok(())
+}
+
+fn serialized_runtime_access_and_revocation() -> Result<(), &'static str> {
+    let (runtime, bootstrap) = MemoryRuntime::bootstrap();
+    let owner = domain(1);
+    let asid = AddressSpaceId::new(21);
+    runtime
+        .register_domain(owner, asid)
+        .map_err(|_| "serialized runtime domain registration failed")?;
+    let handle = runtime
+        .create_root(
+            &bootstrap,
+            owner,
+            Capability {
+                object: ObjectId(121),
+                object_type: ObjectType::Memory,
+                rights: Rights::MAP.union(Rights::READ),
+                bounds: bounds(0, 4096),
+            },
+        )
+        .map_err(|_| "serialized runtime root capability failed")?;
+    let hart = HartId::new(9);
+    let mut fences = ImmediateFences::default();
+    runtime
+        .activate_for_dispatch(owner, hart, &mut fences)
+        .map_err(|_| "serialized runtime address-space activation failed")?;
+    runtime
+        .map(
+            owner,
+            handle,
+            MapRequest {
+                address_space: asid,
+                virtual_range: bounds(0xa000, 0xb000),
+                resource_range: bounds(0, 4096),
+                page_size: PageSize::Base4KiB,
+                permissions: PtePermissions::READ,
+            },
+            &mut fences,
+        )
+        .map_err(|_| "serialized runtime mapping failed")?;
+    runtime
+        .access(hart, asid, 0xa000, MemoryAccess::Read)
+        .map_err(|_| "serialized runtime initial read failed")?;
+    runtime
+        .revoke_capability(owner, handle, &mut fences)
+        .map_err(|_| "serialized runtime revocation failed")?;
+    if runtime.access(hart, asid, 0xa000, MemoryAccess::Read)
+        != Err(aether_capspace::runtime::RuntimeError::Memory(
+            aether_capspace::memory::MemoryError::Unmapped,
+        ))
+    {
+        return Err("serialized runtime allowed access after completed revocation");
+    }
+    if runtime
+        .pending_invalidation_count()
+        .map_err(|_| "serialized runtime state lock failed")?
+        != 0
+    {
+        return Err("serialized runtime left an invalidation pending after successful revoke");
+    }
+    Ok(())
+}
+
+fn cached_mapping_requires_live_capability() -> Result<(), &'static str> {
+    let (mut capabilities, bootstrap) = CapabilitySystem::bootstrap();
+    let owner = domain(1);
+    let asid = AddressSpaceId::new(19);
+    capabilities.add_domain(owner);
+    let handle = capabilities
+        .create_root(
+            &bootstrap,
+            owner,
+            Capability {
+                object: ObjectId(109),
+                object_type: ObjectType::Memory,
+                rights: Rights::MAP.union(Rights::READ),
+                bounds: bounds(0, 4096),
+            },
+        )
+        .map_err(|_| "memory capability bootstrap failed")?;
+
+    let mut memory = MemoryManager::new();
+    memory
+        .register_address_space(owner, asid)
+        .map_err(|_| "address-space registration failed")?;
+    let mut fences = ImmediateFences::default();
+    let hart = HartId::new(8);
+    memory
+        .activate_for_dispatch(owner, hart, &mut fences)
+        .map_err(|_| "dispatch address-space activation failed")?;
+    memory
+        .map(
+            &capabilities,
+            owner,
+            handle,
+            MapRequest {
+                address_space: asid,
+                virtual_range: bounds(0x6000, 0x7000),
+                resource_range: bounds(0, 4096),
+                page_size: PageSize::Base4KiB,
+                permissions: PtePermissions::READ,
+            },
+            &mut fences,
+        )
+        .map_err(|_| "capability-authorized mapping failed")?;
+
+    memory
+        .access(&capabilities, hart, asid, 0x6000, MemoryAccess::Read)
+        .map_err(|_| "initial access should populate the host TLB model")?;
+    capabilities
+        .revoke(owner, handle)
+        .map_err(|_| "capability revocation failed")?;
+
+    if memory.access(&capabilities, hart, asid, 0x6000, MemoryAccess::Read)
+        != Err(aether_capspace::memory::MemoryError::Capability(
+            CapError::Revoked,
+        ))
+    {
+        return Err("cached translation bypassed the revoked MAP capability");
     }
     Ok(())
 }
@@ -458,7 +588,7 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
         .map_err(|_| "second address-space registration failed")?;
 
     let hart = HartId::new(7);
-    if memory.access(hart, first_asid, 0x4000, MemoryAccess::Read)
+    if memory.access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
         != Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
     {
         return Err("memory access was allowed before dispatch activation");
@@ -494,13 +624,13 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
         return Err("mapping activation omitted a dispatched but not-yet-accessing hart");
     }
     memory
-        .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+        .access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
         .map_err(|_| "activated address-space access failed")?;
 
     memory
         .activate_for_dispatch(other, hart, &mut fences)
         .map_err(|_| "address-space switch failed")?;
-    if memory.access(hart, first_asid, 0x4000, MemoryAccess::Read)
+    if memory.access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
         != Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
     {
         return Err("previous address space remained executable after switch");
@@ -509,7 +639,7 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
         .activate_for_dispatch(owner, hart, &mut fences)
         .map_err(|_| "migration back to the first address space failed")?;
     memory
-        .access(hart, first_asid, 0x4000, MemoryAccess::Read)
+        .access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
         .map_err(|_| "address space was not accessible after reactivation")?;
     Ok(())
 }
