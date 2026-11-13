@@ -1881,7 +1881,13 @@ mod tests {
         );
         assert!(
             memory
-                .access(&capabilities, first_hart, first_asid, 0x5000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    first_hart,
+                    first_asid,
+                    0x5000,
+                    MemoryAccess::Read
+                )
                 .is_ok()
         );
     }
