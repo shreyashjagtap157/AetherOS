@@ -8,7 +8,17 @@ mkdir -p "$TMP/one" "$TMP/two"
 
 export CARGO_INCREMENTAL=0
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" show -s --format=%ct HEAD)}
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$ROOT=. -C strip=symbols"
+# MSVC link.exe embeds a wall-clock TimeDateStamp in the PE header regardless of
+# SOURCE_DATE_EPOCH (which only binutils/lld honor). /Brepro makes the PE output
+# deterministic (fixed timestamp + content-based checksum), matching what GNU ld
+# already produces on Linux CI. Without it, identical clean builds always differ
+# at the PE TimeDateStamp, and this gate false-fails on Windows hosts.
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) BREPRO_FLAG="-C link-arg=/Brepro" ;;
+    *) BREPRO_FLAG="" ;;
+esac
+
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$ROOT=. -C strip=symbols $BREPRO_FLAG"
 
 (
   cd "$ROOT/reference"

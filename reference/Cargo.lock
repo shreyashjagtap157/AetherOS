@@ -17,14 +17,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-comp-model"
+version = "0.1.0"
+dependencies = [
+ "aether-types",
+]
+
+[[package]]
 name = "aether-cts-runner"
 version = "0.1.0"
 dependencies = [
  "aether-cap-model",
  "aether-capspace",
+ "aether-comp-model",
+ "aether-sched-model",
  "aether-state-model",
  "aether-types",
 ]
+
+[[package]]
+name = "aether-sched-model"
+version = "0.1.0"
 
 [[package]]
 name = "aether-state-model"

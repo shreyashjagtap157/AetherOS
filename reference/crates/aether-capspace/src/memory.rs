@@ -458,6 +458,9 @@ impl MemoryManager {
     /// PTE publication and local/remote translation invalidation complete before
     /// the new mapping is returned to its caller.
     ///
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
+    ///
     /// # Errors
     /// Returns a capability, alignment, overlap, address-space, rights, or
     /// representability error without partially installing PTEs. If translation
@@ -470,6 +473,7 @@ impl MemoryManager {
         handle: Handle,
         request: MapRequest,
         fences: &mut impl TlbShootdown,
+        now_ns: u64,
     ) -> Result<MappingId, MemoryError> {
         if self.domain_asids.get(&domain) != Some(&request.address_space) {
             return Err(MemoryError::AddressSpaceMissing);
@@ -494,6 +498,7 @@ impl MemoryManager {
             ObjectType::Memory,
             required,
             request.resource_range,
+            now_ns,
         )?;
 
         let mapping = MappingId(self.next_mapping_id);
@@ -581,6 +586,8 @@ impl MemoryManager {
     /// the hart, `ShootdownPending` for a quarantined hart or range, `Unmapped`
     /// for an absent mapping, `Capability` when the live capability no longer
     /// grants the access, or `ProtectionFault` when the PTE denies access.
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn access(
         &mut self,
         capabilities: &CapabilitySystem,
@@ -588,6 +595,7 @@ impl MemoryManager {
         address_space: AddressSpaceId,
         virtual_address: u64,
         operation: MemoryAccess,
+        now_ns: u64,
     ) -> Result<TranslatedAccess, MemoryError> {
         if self.blocked_harts.contains(&hart)
             || self.pending.values().any(|pending| {
@@ -638,6 +646,7 @@ impl MemoryManager {
             ObjectType::Memory,
             Self::required_capability_rights(requested),
             accessed_byte,
+            now_ns,
         )?;
         if authority.object != pte.object {
             return Err(MemoryError::MappingOwnerMismatch);
@@ -662,6 +671,9 @@ impl MemoryManager {
 
     /// Unmaps one mapping owned by the supplied still-live memory capability.
     ///
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
+    ///
     /// # Errors
     /// Returns an ownership/capability error, or `ShootdownPending` until
     /// page-table writes are visible and every resident hart acknowledges the
@@ -673,6 +685,7 @@ impl MemoryManager {
         handle: Handle,
         mapping: MappingId,
         fences: &mut impl TlbShootdown,
+        now_ns: u64,
     ) -> Result<(), MemoryError> {
         let record = *self
             .mappings
@@ -687,6 +700,7 @@ impl MemoryManager {
             ObjectType::Memory,
             Self::required_capability_rights(record.permissions),
             record.resource_range,
+            now_ns,
         )?;
         self.invalidate_mapping(mapping, fences)
     }
@@ -699,6 +713,9 @@ impl MemoryManager {
     /// `ShootdownPending`; callers must not resume any blocked hart until
     /// `retry_pending_shootdowns` completes.
     ///
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
+    ///
     /// # Errors
     /// Returns a capability error or `ShootdownPending` when any required
     /// page-table publication or hart acknowledgement has not completed.
@@ -708,6 +725,7 @@ impl MemoryManager {
         domain: DomainId,
         handle: Handle,
         fences: &mut impl TlbShootdown,
+        now_ns: u64,
     ) -> Result<RevocationReport, MemoryError> {
         capabilities.revoke(domain, handle)?;
 
@@ -721,6 +739,7 @@ impl MemoryManager {
                     ObjectType::Memory,
                     Self::required_capability_rights(record.permissions),
                     record.resource_range,
+                    now_ns,
                 );
                 result.is_err().then_some(*mapping_id)
             })
@@ -1093,6 +1112,7 @@ impl MemoryManager {
 
 #[cfg(test)]
 mod tests {
+    const NOW_NS: u64 = 1_000_000;
     use super::*;
     use crate::BootstrapAuthority;
     use aether_types::Capability;
@@ -1179,6 +1199,8 @@ mod tests {
                     object_type: ObjectType::Memory,
                     rights,
                     bounds: bounds(0, 2 * 1024 * 1024),
+                    flags: aether_types::CapabilityFlags::NONE,
+                    expires_at_ns: 0,
                 },
             )
             .unwrap();
@@ -1215,6 +1237,7 @@ mod tests {
             handle,
             request,
             &mut FakeFences::default(),
+            NOW_NS,
         )
     }
 
@@ -1241,7 +1264,14 @@ mod tests {
         let (capabilities, _bootstrap, mut memory, handle, domain, asid) = setup(rights);
         let hart = HartId::new(9);
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::AddressSpaceNotActive)
         );
 
@@ -1265,12 +1295,20 @@ mod tests {
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
                 &mut fences,
+                NOW_NS,
             )
             .unwrap();
         assert!(fences.calls.contains(&(hart, asid, bounds(0x4000, 0x5000))));
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
     }
@@ -1304,12 +1342,26 @@ mod tests {
         activate_test_hart(&mut memory, first_domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    first_asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
         activate_test_hart(&mut memory, second_domain, hart);
         assert_eq!(
-            memory.access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                first_asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::AddressSpaceNotActive)
         );
         assert_eq!(memory.active_harts.get(&hart), Some(&second_asid));
@@ -1329,7 +1381,14 @@ mod tests {
         activate_test_hart(&mut memory, first_domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    first_asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
     }
@@ -1355,7 +1414,14 @@ mod tests {
             Err(MemoryError::AddressSpaceActivationFailed)
         );
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::ShootdownPending)
         );
         assert_eq!(memory.active_harts.get(&hart), None);
@@ -1368,7 +1434,14 @@ mod tests {
         assert!(!memory.activation_quarantine.contains(&hart));
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
     }
@@ -1390,7 +1463,14 @@ mod tests {
         activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
         let key = PteKey {
@@ -1404,7 +1484,14 @@ mod tests {
         // yet been accompanied by the normal mapping-invalidation operation.
         capabilities.revoke(domain, handle).unwrap();
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::Capability(CapError::Revoked))
         );
         assert!(
@@ -1425,13 +1512,13 @@ mod tests {
             end: 0x4000,
         };
         assert_eq!(
-            memory.map(&capabilities, domain, handle, request, &mut fences),
+            memory.map(&capabilities, domain, handle, request, &mut fences, NOW_NS),
             Err(MemoryError::InvalidRange)
         );
 
         request.virtual_range = bounds(0x4000_0000_0000, 0x4000_0000_1000);
         assert_eq!(
-            memory.map(&capabilities, domain, handle, request, &mut fences),
+            memory.map(&capabilities, domain, handle, request, &mut fences, NOW_NS),
             Err(MemoryError::NonCanonicalVirtualRange)
         );
     }
@@ -1466,6 +1553,7 @@ mod tests {
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
                 &mut fences,
+                NOW_NS,
             )
             .unwrap();
 
@@ -1490,6 +1578,7 @@ mod tests {
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::READ),
                 &mut fences,
+                NOW_NS,
             ),
             Err(MemoryError::MappingActivationFailed)
         );
@@ -1501,7 +1590,8 @@ mod tests {
                 HartId::new(0),
                 asid,
                 0x4000,
-                MemoryAccess::Read
+                MemoryAccess::Read,
+                NOW_NS
             ),
             Err(MemoryError::Unmapped)
         );
@@ -1519,6 +1609,7 @@ mod tests {
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, PtePermissions::NONE),
                 &mut fences,
+                NOW_NS,
             ),
             Err(MemoryError::UnsupportedPermissions)
         );
@@ -1539,6 +1630,7 @@ mod tests {
                 handle,
                 request(asid, 0x4000, 0, PageSize::Base4KiB, permissions),
                 &mut fences,
+                NOW_NS,
             ),
             Err(MemoryError::Capability(CapError::Rights))
         );
@@ -1562,13 +1654,27 @@ mod tests {
         activate_test_hart(&mut memory, domain, hart);
         assert_eq!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .unwrap()
                 .mapping,
             mapping
         );
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Write),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Write,
+                NOW_NS
+            ),
             Err(MemoryError::ProtectionFault)
         );
         assert_eq!(
@@ -1605,15 +1711,36 @@ mod tests {
         activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Execute)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Execute,
+                    NOW_NS
+                )
                 .is_ok()
         );
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::ProtectionFault)
         );
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x9000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x9000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::Unmapped)
         );
     }
@@ -1636,6 +1763,7 @@ mod tests {
                     permissions: PtePermissions::READ,
                 },
                 &mut fences,
+                NOW_NS,
             )
             .unwrap();
 
@@ -1647,6 +1775,7 @@ mod tests {
                 asid,
                 0xffff_ffff_ffff_e123,
                 MemoryAccess::Read,
+                NOW_NS,
             )
             .unwrap();
         assert_eq!(translated.mapping, mapping);
@@ -1672,6 +1801,8 @@ mod tests {
                     object_type: ObjectType::Memory,
                     rights,
                     bounds: bounds(0, 1024 * 1024 * 1024),
+                    flags: aether_types::CapabilityFlags::NONE,
+                    expires_at_ns: 0,
                 },
             )
             .unwrap();
@@ -1700,6 +1831,7 @@ mod tests {
                     asid,
                     virtual_base + bytes - 1,
                     MemoryAccess::Read,
+                    NOW_NS,
                 )
                 .unwrap();
             assert_eq!(access.object, ObjectId(42));
@@ -1751,6 +1883,7 @@ mod tests {
                     .union(Rights::WRITE)
                     .union(Rights::GRANT),
                 bounds(0, 4096),
+                NOW_NS,
             )
             .unwrap();
         let transferred = capabilities
@@ -1760,6 +1893,7 @@ mod tests {
                 second_domain,
                 Rights::MAP.union(Rights::READ),
                 bounds(0, 4096),
+                NOW_NS,
             )
             .unwrap();
         let sibling = capabilities
@@ -1768,6 +1902,7 @@ mod tests {
                 root,
                 Rights::MAP.union(Rights::READ),
                 bounds(4096, 8192),
+                NOW_NS,
             )
             .unwrap();
 
@@ -1825,7 +1960,8 @@ mod tests {
                     first_hart,
                     first_asid,
                     0x4000,
-                    MemoryAccess::Read
+                    MemoryAccess::Read,
+                    NOW_NS
                 )
                 .is_ok()
         );
@@ -1836,7 +1972,8 @@ mod tests {
                     first_hart,
                     first_asid,
                     0x5000,
-                    MemoryAccess::Read
+                    MemoryAccess::Read,
+                    NOW_NS
                 )
                 .is_ok()
         );
@@ -1847,14 +1984,15 @@ mod tests {
                     second_hart,
                     second_asid,
                     0x8000,
-                    MemoryAccess::Read
+                    MemoryAccess::Read,
+                    NOW_NS
                 )
                 .is_ok()
         );
 
         let mut fences = FakeFences::default();
         let report = memory
-            .revoke_capability(&mut capabilities, first_domain, branch, &mut fences)
+            .revoke_capability(&mut capabilities, first_domain, branch, &mut fences, NOW_NS)
             .unwrap();
         assert_eq!(report.mappings_invalidated, 2);
         assert_eq!(report.hart_invalidations, 4);
@@ -1865,7 +2003,8 @@ mod tests {
                 first_hart,
                 first_asid,
                 0x4000,
-                MemoryAccess::Read
+                MemoryAccess::Read,
+                NOW_NS
             ),
             Err(MemoryError::Unmapped)
         );
@@ -1875,7 +2014,8 @@ mod tests {
                 second_hart,
                 second_asid,
                 0x8000,
-                MemoryAccess::Read
+                MemoryAccess::Read,
+                NOW_NS
             ),
             Err(MemoryError::Unmapped)
         );
@@ -1886,7 +2026,8 @@ mod tests {
                     first_hart,
                     first_asid,
                     0x5000,
-                    MemoryAccess::Read
+                    MemoryAccess::Read,
+                    NOW_NS
                 )
                 .is_ok()
         );
@@ -1902,6 +2043,7 @@ mod tests {
                 handle,
                 Rights::MAP.union(Rights::READ),
                 bounds(0, 4096),
+                NOW_NS,
             )
             .unwrap();
         map_request(
@@ -1924,12 +2066,26 @@ mod tests {
         activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x5000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x5000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
 
@@ -1939,12 +2095,26 @@ mod tests {
             Ok(1)
         );
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::Unmapped)
         );
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x5000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x5000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
     }
@@ -1965,14 +2135,21 @@ mod tests {
         activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
 
         let mut fences = FakeFences::default();
         fences.fail_once.insert(hart);
         assert_eq!(
-            memory.revoke_capability(&mut capabilities, domain, handle, &mut fences),
+            memory.revoke_capability(&mut capabilities, domain, handle, &mut fences, NOW_NS),
             Err(MemoryError::ShootdownPending)
         );
         assert_eq!(memory.pending_invalidation_count(), 1);
@@ -1981,14 +2158,28 @@ mod tests {
             Err(MemoryError::ShootdownPending)
         );
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::ShootdownPending)
         );
 
         memory.retry_pending_shootdowns(&mut fences).unwrap();
         assert_eq!(memory.pending_invalidation_count(), 0);
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::Unmapped)
         );
     }
@@ -2017,26 +2208,54 @@ mod tests {
         activate_test_hart(&mut memory, domain, hart);
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x4000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x5000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x5000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
 
         let mut fences = FakeFences::default();
         memory
-            .unmap(&capabilities, domain, handle, first, &mut fences)
+            .unmap(&capabilities, domain, handle, first, &mut fences, NOW_NS)
             .unwrap();
         assert_eq!(
-            memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read),
+            memory.access(
+                &capabilities,
+                hart,
+                asid,
+                0x4000,
+                MemoryAccess::Read,
+                NOW_NS
+            ),
             Err(MemoryError::Unmapped)
         );
         assert!(
             memory
-                .access(&capabilities, hart, asid, 0x5000, MemoryAccess::Read)
+                .access(
+                    &capabilities,
+                    hart,
+                    asid,
+                    0x5000,
+                    MemoryAccess::Read,
+                    NOW_NS
+                )
                 .is_ok()
         );
         assert_eq!(fences.calls.len(), 2);

@@ -103,6 +103,64 @@ impl fmt::Debug for Rights {
     }
 }
 
+/// Capability flags from RFC-0037.7. Unknown bits are rejected.
+///
+/// These labels describe token behaviour for the executable reference model;
+/// canonical sealing and 96-byte layout remain out of scope (see README).
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct CapabilityFlags(u8);
+
+impl CapabilityFlags {
+    /// Not stored in State; lost on domain destroy (RFC-0037.7).
+    pub const TRANSIENT: Self = Self(0x01);
+    /// Subject to revocation (RFC-0037.7, RFC-0039).
+    pub const REVOCABLE: Self = Self(0x02);
+    /// Has a stable name for lookup (RFC-0037.7).
+    pub const NAMED: Self = Self(0x04);
+    /// Bound to a specific domain; not transferable (RFC-0037.7, RFC-0037.15).
+    pub const BOUND: Self = Self(0x08);
+    /// Seal is HMAC; cannot be inspected without key (RFC-0037.7).
+    pub const SEALED: Self = Self(0x10);
+    /// No flags set.
+    pub const NONE: Self = Self(0);
+    const KNOWN: u8 =
+        Self::TRANSIENT.0 | Self::REVOCABLE.0 | Self::NAMED.0 | Self::BOUND.0 | Self::SEALED.0;
+
+    /// Creates a flag set if every bit is defined.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::KNOWN == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the bit representation.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether `self` contains every requested flag.
+    #[must_use]
+    pub const fn contains(self, requested: Self) -> bool {
+        self.0 & requested.0 == requested.0
+    }
+
+    /// Returns the union of two flag sets.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl fmt::Debug for CapabilityFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CapabilityFlags({:#04x})", self.0)
+    }
+}
+
 /// Half-open byte range authorized by a capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Bounds {
@@ -141,6 +199,13 @@ pub struct Capability {
     pub rights: Rights,
     /// Authorized byte range.
     pub bounds: Bounds,
+    /// Token behaviour flags (RFC-0037.7).
+    pub flags: CapabilityFlags,
+    /// Absolute scheduling time in nanoseconds after which this capability is
+    /// invalid (RFC-0037.14). Zero means the capability never expires. The
+    /// scheduling time that authorizes each operation is supplied by the
+    /// caller; the capability never reads a clock itself.
+    pub expires_at_ns: u64,
 }
 
 /// Opaque, domain-local live handle. Its layout is not an ABI.
@@ -213,6 +278,10 @@ pub enum CapError {
     Bounds,
     /// Resource type does not match.
     Type,
+    /// Scheduling time exceeds `expires_at_ns` (RFC-0037.14).
+    Expired,
+    /// Capability carries `CAPF_BOUND` and may not leave its domain (RFC-0037.7, RFC-0037.15).
+    DomainBound,
     /// Table cannot represent another entry.
     Exhausted,
 }
@@ -232,5 +301,17 @@ mod tests {
     fn malformed_handle_and_unknown_right_are_rejected() {
         assert_eq!(Handle::from_untrusted(0).decode(), None);
         assert_eq!(Rights::from_bits(1 << 15), None);
+    }
+
+    #[test]
+    fn flags_round_trip_and_unknown_bits_are_rejected() {
+        let flags = CapabilityFlags::BOUND
+            .union(CapabilityFlags::REVOCABLE)
+            .union(CapabilityFlags::NAMED);
+        assert_eq!(CapabilityFlags::from_bits(flags.bits()), Some(flags));
+        assert_eq!(CapabilityFlags::from_bits(0x20), None);
+        assert!(flags.contains(CapabilityFlags::BOUND));
+        assert!(!flags.contains(CapabilityFlags::TRANSIENT));
+        assert_eq!(CapabilityFlags::NONE.bits(), 0);
     }
 }

@@ -2,6 +2,26 @@
 //!
 //! The format in this crate is a prototype test format, not an `AetherOS` disk
 //! format. A complete checksummed frame is the model's atomic persistence unit.
+//!
+//! Snapshot isolation and write-write conflict detection (RFC-0016.8/.9):
+//! every prepared transaction carries a snapshot of the committed state as
+//! of `prepare` time. Reads through [`PreparedTransaction::snapshot_read`]
+//! observe that snapshot plus the transaction's own mutations, never a
+//! concurrent transaction's commit. At commit time, the first committer
+//! wins; any second writer on the same objects aborts with
+//! [`StateError::WriteWriteConflict`] before any frame is appended, so a
+//! conflict abort never changes durable state. Single-node only; nested
+//! transactions (RFC-0016.10), isolation levels beyond snapshot isolation,
+//! and RFC-0016.12 event emission are not implemented.
+//!
+//! Deterministic crash-consistency fault injection lives in the public `fault`
+//! module (`PERSISTENCE-AND-EXTERNAL-EFFECTS.md` §6). It is a testing harness,
+//! not part of the durable format or the production API.
+
+/// Deterministic crash-boundary fault injection harness.
+pub mod fault;
+/// Deterministic host model of the durable-intent outbox protocol.
+pub mod outbox;
 
 use aether_types::ObjectId;
 use std::collections::{HashMap, HashSet};
@@ -76,6 +96,13 @@ pub struct EffectIntent {
 }
 
 /// Transaction before its single atomic commit frame is appended.
+///
+/// A prepared transaction carries a snapshot of the visible state as of
+/// `prepare` time (RFC-0016.8). Its reads observe that snapshot plus its own
+/// mutations, never mutations committed by other transactions afterwards.
+/// Writes are validated against the snapshot at commit time: the first
+/// committer wins; the second writer aborts with `WriteWriteConflict`
+/// (RFC-0016.9).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedTransaction {
     id: TransactionId,
@@ -83,6 +110,8 @@ pub struct PreparedTransaction {
     authority_reference: u64,
     mutations: Vec<Mutation>,
     effects: Vec<EffectIntent>,
+    /// Snapshot of the visible versions captured at `prepare` time.
+    base: HashMap<ObjectId, VersionId>,
 }
 
 impl PreparedTransaction {
@@ -94,6 +123,21 @@ impl PreparedTransaction {
     /// Adds an external-effect intent to the atomic commit group.
     pub fn intend(&mut self, intent: EffectIntent) {
         self.effects.push(intent);
+    }
+
+    /// Reads `object` from this transaction's snapshot.
+    ///
+    /// The result is the transaction's own staged version when one exists
+    /// (read-your-writes), otherwise the committed version captured at
+    /// `prepare` time; mutations committed by other transactions afterwards
+    /// are invisible (RFC-0016.8).
+    #[must_use]
+    pub fn snapshot_read(&self, object: ObjectId) -> Option<VersionId> {
+        self.mutations
+            .iter()
+            .find(|mutation| mutation.object == object)
+            .map(|mutation| mutation.version)
+            .or_else(|| self.base.get(&object).copied())
     }
 
     /// Returns the transaction identifier.
@@ -137,6 +181,10 @@ pub enum StateError {
     DuplicateOperation,
     /// No unused transaction identifier remains in the reference identifier space.
     TransactionIdExhausted,
+    /// RFC-0016.9: another transaction committed a mutation on one of the same
+    /// objects since this transaction's snapshot was taken. The transaction
+    /// aborts; nothing is applied, and no frame is appended.
+    WriteWriteConflict,
 }
 
 /// Deterministic state engine backed by an append-only byte log.
@@ -217,6 +265,7 @@ impl StateEngine {
             authority_reference,
             mutations: Vec::new(),
             effects: Vec::new(),
+            base: self.visible.clone(),
         })
     }
 
@@ -233,6 +282,16 @@ impl StateEngine {
             return Err(StateError::EmptyTransaction);
         }
         self.validate_prepared(&transaction)?;
+        // RFC-0016.9: write-write conflict detection against the transaction's
+        // snapshot. The check runs before any frame is appended, so a conflict
+        // abort leaves the durable log and visible state untouched.
+        for mutation in &transaction.mutations {
+            if self.visible.get(&mutation.object).copied()
+                != transaction.base.get(&mutation.object).copied()
+            {
+                return Err(StateError::WriteWriteConflict);
+            }
+        }
         let transaction_id = transaction.id;
         let (payload, audit_commitment) = encode_commit(transaction)?;
         self.append_frame(&payload)?;
@@ -269,6 +328,53 @@ impl StateEngine {
     #[must_use]
     pub fn visible_version(&self, object: ObjectId) -> Option<VersionId> {
         self.visible.get(&object).copied()
+    }
+
+    /// Returns all visible `(object, version)` pairs, sorted by object id.
+    #[must_use]
+    pub fn objects(&self) -> Vec<(ObjectId, VersionId)> {
+        let mut entries: Vec<(ObjectId, VersionId)> = self
+            .visible
+            .iter()
+            .map(|(object, version)| (*object, *version))
+            .collect();
+        entries.sort_by_key(|(object, _)| object.0);
+        entries
+    }
+
+    fn effects_with_status(&self, status: EffectStatus) -> Vec<(OperationId, EffectClass)> {
+        let mut filtered: Vec<(OperationId, EffectClass)> = self
+            .effects
+            .iter()
+            .filter(|(_, (_, current))| *current == status)
+            .map(|(operation, (class, _))| (*operation, *class))
+            .collect();
+        filtered.sort_by_key(|(operation, _)| operation.0);
+        filtered
+    }
+
+    /// Returns operations whose dispatch outcome is not yet known, sorted.
+    #[must_use]
+    pub fn pending_effects(&self) -> Vec<(OperationId, EffectClass)> {
+        self.effects_with_status(EffectStatus::Pending)
+    }
+
+    /// Returns operations whose dispatch outcome is uncertain, sorted.
+    #[must_use]
+    pub fn uncertain_effects(&self) -> Vec<(OperationId, EffectClass)> {
+        self.effects_with_status(EffectStatus::Uncertain)
+    }
+
+    /// Returns all tracked `(operation, status)` pairs, sorted by operation id.
+    #[must_use]
+    pub fn operations(&self) -> Vec<(OperationId, EffectStatus)> {
+        let mut entries: Vec<(OperationId, EffectStatus)> = self
+            .effects
+            .iter()
+            .map(|(operation, (_, status))| (*operation, *status))
+            .collect();
+        entries.sort_by_key(|(operation, _)| operation.0);
+        entries
     }
 
     /// Returns the durable effect status.
@@ -443,6 +549,7 @@ fn encode_commit(transaction: PreparedTransaction) -> Result<(Vec<u8>, [u8; 32])
         authority_reference,
         mutations,
         effects,
+        .. // `base` is in-memory snapshot state; never enters the durable frame
     } = transaction;
     let mut body = Vec::new();
     body.extend_from_slice(&id.0.to_le_bytes());
@@ -726,6 +833,424 @@ mod tests {
     fn default_engine_uses_the_same_valid_identifier_origin_as_new() {
         let mut engine = StateEngine::default();
         assert_eq!(engine.prepare(1, 1).unwrap().id(), TransactionId(1));
+    }
+
+    #[test]
+    fn concurrent_writers_on_the_same_object_abort_the_second_writer() {
+        let mut engine = StateEngine::new();
+        let seed = transaction(&mut engine); // object 1 -> version 2
+        engine.commit(seed).unwrap();
+
+        let mut first = engine.prepare(1, 1).unwrap();
+        first.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(3),
+            content_digest: [8; 32],
+        });
+        let mut second = engine.prepare(2, 2).unwrap();
+        second.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(4),
+            content_digest: [9; 32],
+        });
+
+        engine.commit(first).unwrap();
+        assert_eq!(engine.commit(second), Err(StateError::WriteWriteConflict));
+        assert_eq!(engine.visible_version(ObjectId(1)), Some(VersionId(3)));
+
+        // The aborted writer left no frame behind.
+        let recovered = StateEngine::recover(engine.durable_log()).unwrap();
+        assert_eq!(recovered.visible_version(ObjectId(1)), Some(VersionId(3)));
+    }
+
+    #[test]
+    fn disjoint_objects_commit_independently_and_conflict_is_atomic() {
+        let mut engine = StateEngine::new();
+        let mut first = engine.prepare(1, 1).unwrap();
+        first.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(1),
+            content_digest: [1; 32],
+        });
+        let mut second = engine.prepare(2, 2).unwrap();
+        second.mutate(Mutation {
+            object: ObjectId(2),
+            version: VersionId(1),
+            content_digest: [2; 32],
+        });
+        engine.commit(first).unwrap();
+        engine.commit(second).unwrap();
+        assert_eq!(engine.visible_version(ObjectId(1)), Some(VersionId(1)));
+        assert_eq!(engine.visible_version(ObjectId(2)), Some(VersionId(1)));
+
+        let mut writer = engine.prepare(3, 3).unwrap();
+        writer.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(2),
+            content_digest: [3; 32],
+        });
+        let mut winner = engine.prepare(4, 4).unwrap();
+        winner.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(3),
+            content_digest: [4; 32],
+        });
+        engine.commit(winner).unwrap();
+        let after_winner = engine.durable_log().len();
+        assert_eq!(engine.commit(writer), Err(StateError::WriteWriteConflict));
+        assert_eq!(engine.durable_log().len(), after_winner);
+    }
+
+    #[test]
+    fn snapshot_read_observes_base_and_own_mutations_only() {
+        let mut engine = StateEngine::new();
+        let seed = transaction(&mut engine); // object 1 -> version 2
+        engine.commit(seed).unwrap();
+
+        let reader = engine.prepare(1, 1).unwrap();
+        let mut writer = engine.prepare(2, 2).unwrap();
+        writer.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(3),
+            content_digest: [7; 32],
+        });
+        engine.commit(writer).unwrap();
+
+        // The concurrent commit is invisible to the reader's snapshot.
+        assert_eq!(reader.snapshot_read(ObjectId(1)), Some(VersionId(2)));
+
+        let mut reader = reader;
+        reader.mutate(Mutation {
+            object: ObjectId(1),
+            version: VersionId(9),
+            content_digest: [6; 32],
+        });
+        // Read-your-writes wins over the snapshot.
+        assert_eq!(reader.snapshot_read(ObjectId(1)), Some(VersionId(9)));
+
+        // A fresh transaction observes the committed version.
+        let fresh = engine.prepare(3, 3).unwrap();
+        assert_eq!(fresh.snapshot_read(ObjectId(1)), Some(VersionId(3)));
+    }
+
+    #[test]
+    fn persistent_prefix_is_crash_consistent_at_every_byte_cut() {
+        fn prepared(
+            engine: &mut StateEngine,
+            object: u128,
+            version: u64,
+            operation: u128,
+        ) -> PreparedTransaction {
+            let mut transaction = engine.prepare(1, 1).unwrap();
+            transaction.mutate(Mutation {
+                object: ObjectId(object),
+                version: VersionId(version),
+                content_digest: [3; 32],
+            });
+            transaction.intend(EffectIntent {
+                operation: OperationId(operation),
+                class: EffectClass::Deduplicated,
+                request_digest: [5; 32],
+            });
+            transaction
+        }
+
+        let mut engine = StateEngine::new();
+        let first = prepared(&mut engine, 1, 2, 4);
+        engine.commit(first).unwrap();
+        engine
+            .record_effect(OperationId(4), EffectStatus::Acknowledged)
+            .unwrap();
+        let second = prepared(&mut engine, 2, 1, 5);
+        engine.commit(second).unwrap();
+        let third = prepared(&mut engine, 1, 3, 6);
+        engine.commit(third).unwrap();
+
+        let sweep = crate::fault::CrashSweep::new(engine.durable_log().to_vec());
+        let violations = sweep.violations();
+        assert_eq!(
+            violations,
+            Vec::new(),
+            "crash sweep found violations: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn corrupting_a_complete_frame_is_detected_at_every_later_cut() {
+        let mut engine = StateEngine::new();
+        let t1 = transaction(&mut engine);
+        engine.commit(t1).unwrap();
+        let mut log = engine.durable_log().to_vec();
+        // Flip one payload byte inside the first complete frame.
+        log[HEADER_LEN + 1] ^= 1;
+        let corrupt_at = HEADER_LEN + 1;
+        let violations = crate::fault::CrashSweep::new(log).violations();
+        assert!(
+            violations
+                .iter()
+                .any(|violation| matches!(violation, crate::fault::CrashViolation::RecoverFailed(cut) if *cut > corrupt_at)),
+            "corruption was not reported after the corrupt byte: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn torn_effect_frame_is_invisible_at_every_cut() {
+        let mut engine = StateEngine::new();
+        let t1 = transaction(&mut engine);
+        engine.commit(t1).unwrap();
+        engine
+            .record_effect(OperationId(4), EffectStatus::Acknowledged)
+            .unwrap();
+        let log = engine.durable_log();
+        let half = log.len() - 1;
+        let violations = crate::fault::CrashSweep::new(log[..half].to_vec()).violations();
+        assert_eq!(violations, Vec::new());
+    }
+
+    #[test]
+    fn version_regression_is_detected_by_the_sweep() {
+        // The reference engine does not enforce version monotonicity, so a
+        // caller may commit object 9 at v5 and later at v3; both are durable.
+        // The sweep enforces the crash invariant the engine lacks.
+        let mut engine = StateEngine::new();
+        let mut high = engine.prepare(1, 1).unwrap();
+        high.mutate(Mutation {
+            object: ObjectId(9),
+            version: VersionId(5),
+            content_digest: [3; 32],
+        });
+        engine.commit(high).unwrap();
+        let mut low = engine.prepare(1, 1).unwrap();
+        low.mutate(Mutation {
+            object: ObjectId(9),
+            version: VersionId(3),
+            content_digest: [3; 32],
+        });
+        engine.commit(low).unwrap();
+
+        let violations = crate::fault::CrashSweep::new(engine.durable_log().to_vec()).violations();
+        assert!(
+            violations
+                .iter()
+                .any(|violation| matches!(violation, crate::fault::CrashViolation::VersionRegressed(_, object) if *object == ObjectId(9))),
+            "version regression was not reported: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_effect_regression_is_rejected_at_recovery() {
+        // A terminal status must not be rewritten by a later durable frame.
+        // The forged Pending effect is appended as a *complete, checksum-valid
+        // frame*, so recovery parses it and apply_effect must reject the
+        // Acknowledged -> Pending transition via valid_transition, yielding
+        // InvalidEffectTransition (surfaced here as RecoverFailed), NOT merely
+        // an envelope/magic rejection.
+        let mut engine = StateEngine::new();
+        let t = transaction(&mut engine);
+        engine.commit(t).unwrap();
+        engine
+            .record_effect(OperationId(4), EffectStatus::Acknowledged)
+            .unwrap();
+        let bad = encode_effect(OperationId(4), EffectStatus::Pending);
+        engine.append_frame(&bad).unwrap();
+        let violations = crate::fault::CrashSweep::new(engine.durable_log().to_vec()).violations();
+        assert!(
+            violations.iter().any(|violation| matches!(
+                violation,
+                crate::fault::CrashViolation::RecoverFailed(_)
+            )),
+            "a terminal-to-pending effect frame was not rejected by apply_effect: {violations:?}"
+        );
+    }
+
+    fn prepared_with_effects(
+        engine: &mut StateEngine,
+        object: u128,
+        version: u64,
+        operations: &[u128],
+    ) -> PreparedTransaction {
+        let mut transaction = engine.prepare(1, 1).unwrap();
+        transaction.mutate(Mutation {
+            object: ObjectId(object),
+            version: VersionId(version),
+            content_digest: [3; 32],
+        });
+        for operation in operations {
+            transaction.intend(EffectIntent {
+                operation: OperationId(*operation),
+                class: EffectClass::Deduplicated,
+                request_digest: [5; 32],
+            });
+        }
+        transaction
+    }
+
+    #[test]
+    fn outbox_dispatch_acks_fresh_operations() {
+        use crate::outbox::{DispatchReport, OutboxDispatcher, Receiver};
+
+        let mut engine = StateEngine::new();
+        let tx = prepared_with_effects(&mut engine, 1, 1, &[11, 12]);
+        engine.commit(tx).unwrap();
+        assert_eq!(engine.pending_effects().len(), 2);
+
+        let mut dispatcher = OutboxDispatcher::new(Receiver::new());
+        let report = dispatcher.dispatch(&mut engine).unwrap();
+        assert_eq!(
+            report,
+            DispatchReport {
+                delivered: 2,
+                deduplicated: 0,
+                rejected: 0,
+                uncertain: 0,
+                acknowledged: 0,
+            }
+        );
+        assert_eq!(engine.pending_effects().len(), 0);
+        assert_eq!(engine.operations().len(), 2);
+        assert!(
+            engine
+                .operations()
+                .iter()
+                .all(|(_, status)| *status == EffectStatus::Acknowledged)
+        );
+    }
+
+    #[test]
+    fn outbox_uncertain_outcome_is_reconciled_by_dedup_redelivery() {
+        use crate::outbox::{DispatchReport, OutboxDispatcher, Receiver};
+
+        let mut engine = StateEngine::new();
+        let tx = prepared_with_effects(&mut engine, 1, 1, &[21, 22]);
+        engine.commit(tx).unwrap();
+
+        // Crash after the receiver applied operation 21 but lost its ack.
+        let receiver = Receiver::new().crashing_after_send_on(OperationId(21));
+        let mut dispatcher = OutboxDispatcher::new(receiver);
+        let first = dispatcher.dispatch(&mut engine).unwrap();
+        assert_eq!(
+            first,
+            DispatchReport {
+                delivered: 1,
+                deduplicated: 0,
+                rejected: 0,
+                uncertain: 1,
+                acknowledged: 0,
+            }
+        );
+        assert_eq!(
+            engine.uncertain_effects(),
+            vec![(OperationId(21), EffectClass::Deduplicated)]
+        );
+
+        // Restart with the same receiver (the external world persists): redelivery dedups.
+        let second = dispatcher.reconcile(&mut engine).unwrap();
+        assert_eq!(
+            second,
+            DispatchReport {
+                acknowledged: 1,
+                ..DispatchReport::default()
+            }
+        );
+        assert_eq!(engine.uncertain_effects(), Vec::new());
+        assert!(
+            engine
+                .operations()
+                .iter()
+                .all(|(_, status)| *status == EffectStatus::Acknowledged)
+        );
+    }
+
+    #[test]
+    fn outbox_rejected_operations_are_marked_rejected() {
+        use crate::outbox::{DispatchReport, OutboxDispatcher, Receiver};
+
+        let mut engine = StateEngine::new();
+        let tx = prepared_with_effects(&mut engine, 1, 1, &[31, 32]);
+        engine.commit(tx).unwrap();
+        let mut dispatcher = OutboxDispatcher::new(Receiver::new().rejecting(OperationId(32)));
+        let report = dispatcher.dispatch(&mut engine).unwrap();
+        assert_eq!(
+            report,
+            DispatchReport {
+                delivered: 1,
+                deduplicated: 0,
+                rejected: 1,
+                uncertain: 0,
+                acknowledged: 0,
+            }
+        );
+        assert_eq!(
+            engine.effect_status(OperationId(32)),
+            Some(EffectStatus::Rejected)
+        );
+        assert_eq!(
+            engine.effect_status(OperationId(31)),
+            Some(EffectStatus::Acknowledged)
+        );
+    }
+
+    #[test]
+    fn outbox_outcomes_survive_recovery() {
+        use crate::outbox::{OutboxDispatcher, Receiver};
+
+        let mut engine = StateEngine::new();
+        let tx = prepared_with_effects(&mut engine, 1, 1, &[41]);
+        engine.commit(tx).unwrap();
+        let mut dispatcher = OutboxDispatcher::new(Receiver::new());
+        dispatcher.dispatch(&mut engine).unwrap();
+        let recovered = StateEngine::recover(engine.durable_log()).unwrap();
+        assert_eq!(
+            recovered.effect_status(OperationId(41)),
+            Some(EffectStatus::Acknowledged)
+        );
+    }
+
+    #[test]
+    fn outbox_crash_injection_fires_only_for_the_declared_operation() {
+        use crate::outbox::{DispatchReport, OutboxDispatcher, Receiver};
+
+        // Crash declared on the higher-id pending operation: the lower-id
+        // delivery must not disarm it.
+        let mut engine = StateEngine::new();
+        let tx = prepared_with_effects(&mut engine, 1, 1, &[21, 22]);
+        engine.commit(tx).unwrap();
+
+        let receiver = Receiver::new().crashing_after_send_on(OperationId(22));
+        let mut dispatcher = OutboxDispatcher::new(receiver);
+        let report = dispatcher.dispatch(&mut engine).unwrap();
+        assert_eq!(report.delivered, 1);
+        assert_eq!(report.uncertain, 1);
+        assert_eq!(
+            engine.effect_status(OperationId(21)),
+            Some(EffectStatus::Acknowledged)
+        );
+        assert_eq!(
+            engine.effect_status(OperationId(22)),
+            Some(EffectStatus::Uncertain)
+        );
+
+        // Reconcile with a receiver that now conclusively rejects the
+        // redelivery: the engine must end at Rejected, never blind-acked.
+        let receiver = Receiver::new().rejecting(OperationId(22));
+        let mut dispatcher = OutboxDispatcher::new(receiver);
+        let report = dispatcher.reconcile(&mut engine).unwrap();
+        assert_eq!(report.rejected, 1);
+        assert_eq!(
+            engine.effect_status(OperationId(22)),
+            Some(EffectStatus::Rejected)
+        );
+
+        // Reconcile only revisits Uncertain effects; the now-Rejected
+        // operation stays untouched and a fresh dispatcher cannot resurrect it.
+        let receiver = Receiver::new();
+        let mut dispatcher = OutboxDispatcher::new(receiver);
+        let report = dispatcher.reconcile(&mut engine).unwrap();
+        assert_eq!(report, DispatchReport::default());
+        assert_eq!(
+            engine.effect_status(OperationId(22)),
+            Some(EffectStatus::Rejected)
+        );
     }
 
     #[test]

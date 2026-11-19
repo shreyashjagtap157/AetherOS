@@ -5,6 +5,8 @@ members = [
     "crates/aether-capspace",
     "crates/aether-state-model",
     "crates/aether-cts-runner",
+    "crates/aether-sched-model",
+    "crates/aether-comp-model",
 ]
 resolver = "3"
 

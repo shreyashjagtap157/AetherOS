@@ -116,21 +116,29 @@ impl MemoryRuntime {
     ///
     /// # Errors
     /// Returns a capability validation/insertion error or a poisoned-lock error.
+    ///
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn derive(
         &self,
         domain: DomainId,
         parent: Handle,
         rights: Rights,
         bounds: Bounds,
+        now_ns: u64,
     ) -> Result<Handle, RuntimeError> {
         let mut state = self.lock()?;
-        Ok(state.capabilities.derive(domain, parent, rights, bounds)?)
+        Ok(state
+            .capabilities
+            .derive(domain, parent, rights, bounds, now_ns)?)
     }
 
     /// Transfers an attenuated capability into another registered domain.
     ///
     /// # Errors
     /// Returns a capability validation/insertion error or a poisoned-lock error.
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn transfer(
         &self,
         source: DomainId,
@@ -138,11 +146,12 @@ impl MemoryRuntime {
         destination: DomainId,
         rights: Rights,
         bounds: Bounds,
+        now_ns: u64,
     ) -> Result<Handle, RuntimeError> {
         let mut state = self.lock()?;
         Ok(state
             .capabilities
-            .transfer(source, parent, destination, rights, bounds)?)
+            .transfer(source, parent, destination, rights, bounds, now_ns)?)
     }
 
     /// Activates a domain's address space at the serialized dispatch boundary.
@@ -168,19 +177,22 @@ impl MemoryRuntime {
     ///
     /// # Errors
     /// Returns a capability, mapping, shootdown, or poisoned-lock error.
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn map(
         &self,
         domain: DomainId,
         handle: Handle,
         request: MapRequest,
         fences: &mut impl TlbShootdown,
+        now_ns: u64,
     ) -> Result<MappingId, RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.map(capabilities, domain, handle, request, fences)?)
+        Ok(memory.map(capabilities, domain, handle, request, fences, now_ns)?)
     }
 
     /// Performs a memory access with live capability revalidation and PTE
@@ -189,12 +201,15 @@ impl MemoryRuntime {
     /// # Errors
     /// Returns an authority, translation, permission, shootdown, or poisoned-lock
     /// error.
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn access(
         &self,
         hart: HartId,
         address_space: AddressSpaceId,
         virtual_address: u64,
         operation: MemoryAccess,
+        now_ns: u64,
     ) -> Result<TranslatedAccess, RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
@@ -207,6 +222,7 @@ impl MemoryRuntime {
             address_space,
             virtual_address,
             operation,
+            now_ns,
         )?)
     }
 
@@ -214,19 +230,22 @@ impl MemoryRuntime {
     ///
     /// # Errors
     /// Returns an authority, mapping, shootdown, or poisoned-lock error.
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn unmap(
         &self,
         domain: DomainId,
         handle: Handle,
         mapping: MappingId,
         fences: &mut impl TlbShootdown,
+        now_ns: u64,
     ) -> Result<(), RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.unmap(capabilities, domain, handle, mapping, fences)?)
+        Ok(memory.unmap(capabilities, domain, handle, mapping, fences, now_ns)?)
     }
 
     /// Removes one local capability and all mappings created directly from it.
@@ -252,18 +271,22 @@ impl MemoryRuntime {
     ///
     /// # Errors
     /// Returns a capability, shootdown, or poisoned-lock error.
+    ///
+    /// `now_ns` is the current scheduling time used for capability lifetime
+    /// enforcement (RFC-0037.14).
     pub fn revoke_capability(
         &self,
         domain: DomainId,
         handle: Handle,
         fences: &mut impl TlbShootdown,
+        now_ns: u64,
     ) -> Result<RevocationReport, RuntimeError> {
         let mut state = self.lock()?;
         let RuntimeState {
             capabilities,
             memory,
         } = &mut *state;
-        Ok(memory.revoke_capability(capabilities, domain, handle, fences)?)
+        Ok(memory.revoke_capability(capabilities, domain, handle, fences, now_ns)?)
     }
 
     /// Retries every pending translation invalidation while excluding access
@@ -293,6 +316,8 @@ impl MemoryRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NOW_NS: u64 = 1_000_000;
     use crate::memory::{PageSize, PtePermissions, ShootdownError};
     use aether_types::ObjectType;
     use std::sync::{Arc, Barrier};
@@ -356,6 +381,8 @@ mod tests {
                     object_type: ObjectType::Memory,
                     rights: Rights::MAP.union(Rights::READ).union(Rights::GRANT),
                     bounds: bounds(0, 4096),
+                    flags: aether_types::CapabilityFlags::NONE,
+                    expires_at_ns: 0,
                 },
             )
             .expect("root capability should be created");
@@ -375,6 +402,7 @@ mod tests {
                     permissions: PtePermissions::READ,
                 },
                 &mut ImmediateFences,
+                NOW_NS,
             )
             .expect("mapping should install");
         (runtime, handle, address_space, hart)
@@ -385,7 +413,7 @@ mod tests {
         let (runtime, handle, address_space, hart) = prepared_runtime();
         assert!(
             runtime
-                .access(hart, address_space, 0x8000, MemoryAccess::Read)
+                .access(hart, address_space, 0x8000, MemoryAccess::Read, NOW_NS)
                 .is_ok()
         );
 
@@ -394,14 +422,14 @@ mod tests {
         let reader_barrier = Arc::clone(&barrier);
         let reader = thread::spawn(move || {
             reader_barrier.wait();
-            reader_runtime.access(hart, address_space, 0x8000, MemoryAccess::Read)
+            reader_runtime.access(hart, address_space, 0x8000, MemoryAccess::Read, NOW_NS)
         });
 
         let revoker_runtime = Arc::clone(&runtime);
         let revoker_barrier = Arc::clone(&barrier);
         let revoker = thread::spawn(move || {
             revoker_barrier.wait();
-            revoker_runtime.revoke_capability(domain(1), handle, &mut ImmediateFences)
+            revoker_runtime.revoke_capability(domain(1), handle, &mut ImmediateFences, NOW_NS)
         });
 
         barrier.wait();
@@ -424,7 +452,7 @@ mod tests {
 
         assert!(
             matches!(
-                runtime.access(hart, address_space, 0x8000, MemoryAccess::Read),
+                runtime.access(hart, address_space, 0x8000, MemoryAccess::Read, NOW_NS),
                 Err(RuntimeError::Memory(
                     MemoryError::Unmapped | MemoryError::Capability(CapError::Revoked)
                 ))
@@ -437,11 +465,11 @@ mod tests {
     fn serialized_runtime_keeps_capability_and_mapping_state_together() {
         let (runtime, handle, address_space, hart) = prepared_runtime();
         let report = runtime
-            .revoke_capability(domain(1), handle, &mut ImmediateFences)
+            .revoke_capability(domain(1), handle, &mut ImmediateFences, NOW_NS)
             .expect("revocation and mapping invalidation should complete");
         assert_eq!(report.mappings_invalidated, 1);
         assert_eq!(
-            runtime.access(hart, address_space, 0x8000, MemoryAccess::Read),
+            runtime.access(hart, address_space, 0x8000, MemoryAccess::Read, NOW_NS),
             Err(RuntimeError::Memory(MemoryError::Unmapped))
         );
         assert_eq!(runtime.pending_invalidation_count(), Ok(0));

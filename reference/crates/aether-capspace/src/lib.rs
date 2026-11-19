@@ -97,16 +97,21 @@ impl CapabilitySystem {
 
     /// Derives a same-domain child.
     ///
+    /// The child inherits the parent's `expires_at_ns`; derivation never
+    /// extends lifetime (RFC-0037.14, least-authority attenuation).
+    ///
     /// # Errors
-    /// Returns a typed failure if the parent is invalid or attenuation fails.
+    /// Returns a typed failure if the parent is invalid, expired, or
+    /// attenuation fails.
     pub fn derive(
         &mut self,
         domain: DomainId,
         parent: Handle,
         rights: Rights,
         bounds: Bounds,
+        now_ns: u64,
     ) -> Result<Handle, CapError> {
-        let entry = self.resolve_live(domain, parent)?.clone();
+        let entry = self.resolve_live(domain, parent, now_ns)?.clone();
         Self::check_narrowing(&entry.capability, rights, bounds)?;
         let parent_lineage = entry.lineage_id;
         let lineage_id = self.alloc_lineage()?;
@@ -115,6 +120,7 @@ impl CapabilitySystem {
             Capability {
                 rights,
                 bounds,
+                expires_at_ns: entry.capability.expires_at_ns,
                 ..entry.capability
             },
             lineage_id,
@@ -124,8 +130,12 @@ impl CapabilitySystem {
 
     /// Transfers an attenuated child into a destination capability space.
     ///
+    /// The child inherits the parent's `expires_at_ns`; transfer never
+    /// extends lifetime (RFC-0037.14). A capability carrying `CAPF_BOUND`
+    /// may not be transferred to any domain (RFC-0037.7, RFC-0037.15).
+    ///
     /// # Errors
-    /// Returns a typed failure if validation, attenuation, or insertion fails.
+    /// Returns a typed failure if validation, expiry, attenuation, or insertion fails.
     pub fn transfer(
         &mut self,
         source: DomainId,
@@ -133,8 +143,16 @@ impl CapabilitySystem {
         destination: DomainId,
         rights: Rights,
         bounds: Bounds,
+        now_ns: u64,
     ) -> Result<Handle, CapError> {
-        let entry = self.resolve_live(source, parent)?.clone();
+        let entry = self.resolve_live(source, parent, now_ns)?.clone();
+        if entry
+            .capability
+            .flags
+            .contains(aether_types::CapabilityFlags::BOUND)
+        {
+            return Err(CapError::DomainBound);
+        }
         if !entry.capability.rights.contains(Rights::GRANT) {
             return Err(CapError::Rights);
         }
@@ -146,6 +164,7 @@ impl CapabilitySystem {
             Capability {
                 rights,
                 bounds,
+                expires_at_ns: entry.capability.expires_at_ns,
                 ..entry.capability
             },
             lineage_id,
@@ -201,9 +220,14 @@ impl CapabilitySystem {
 
     /// Validates a live handle for a requested operation.
     ///
+    /// `now_ns` is the current scheduling time in nanoseconds; expiry is
+    /// enforced per RFC-0037.14 (`expires_at_ns != 0 && now_ns > expires_at_ns`).
+    /// The boundary is intentionally strict: a capability whose `expires_at_ns`
+    /// equals `now_ns` is still valid, and expires only at the next instant.
+    ///
     /// # Errors
-    /// Returns the precise handle, domain, generation, revocation, type,
-    /// rights, or bounds validation failure.
+    /// Returns the precise handle, domain, generation, revocation, expiry,
+    /// type, rights, or bounds validation failure.
     pub fn authorize(
         &self,
         domain: DomainId,
@@ -211,8 +235,10 @@ impl CapabilitySystem {
         object_type: ObjectType,
         rights: Rights,
         bounds: Bounds,
+        now_ns: u64,
     ) -> Result<Capability, CapError> {
         let entry = self.resolve(domain, handle)?;
+        Self::check_lifetime(&entry.capability, now_ns)?;
         if self.is_revoked(entry.lineage_id)? {
             return Err(CapError::Revoked);
         }
@@ -250,12 +276,25 @@ impl CapabilitySystem {
         Ok(entry)
     }
 
-    fn resolve_live(&self, domain: DomainId, handle: Handle) -> Result<&Entry, CapError> {
+    fn resolve_live(
+        &self,
+        domain: DomainId,
+        handle: Handle,
+        now_ns: u64,
+    ) -> Result<&Entry, CapError> {
         let entry = self.resolve(domain, handle)?;
+        Self::check_lifetime(&entry.capability, now_ns)?;
         if self.is_revoked(entry.lineage_id)? {
             return Err(CapError::Revoked);
         }
         Ok(entry)
+    }
+
+    const fn check_lifetime(capability: &Capability, now_ns: u64) -> Result<(), CapError> {
+        if capability.expires_at_ns != 0 && now_ns > capability.expires_at_ns {
+            return Err(CapError::Expired);
+        }
+        Ok(())
     }
 
     fn is_revoked(&self, lineage_id: u64) -> Result<bool, CapError> {
@@ -427,7 +466,9 @@ const fn next_generation(current: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_types::ObjectId;
+    use aether_types::{CapabilityFlags, ObjectId};
+
+    const NOW_NS: u64 = 1_000_000;
 
     fn domain(value: u16) -> DomainId {
         DomainId::new(value).unwrap()
@@ -441,6 +482,14 @@ mod tests {
             object_type: ObjectType::Memory,
             rights: Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
             bounds: bounds(0, 4096),
+            flags: CapabilityFlags::NONE,
+            expires_at_ns: 0,
+        }
+    }
+    fn root_with_expiry(expires_at_ns: u64) -> Capability {
+        Capability {
+            expires_at_ns,
+            ..root()
         }
     }
 
@@ -450,11 +499,11 @@ mod tests {
         system.add_domain(domain(1));
         let cap = system.create_root(&bootstrap, domain(1), root()).unwrap();
         assert_eq!(
-            system.derive(domain(1), cap, Rights::INVOKE, bounds(0, 1)),
+            system.derive(domain(1), cap, Rights::INVOKE, bounds(0, 1), NOW_NS),
             Err(CapError::Rights)
         );
         assert_eq!(
-            system.derive(domain(1), cap, Rights::READ, bounds(0, 8192)),
+            system.derive(domain(1), cap, Rights::READ, bounds(0, 8192), NOW_NS),
             Err(CapError::Bounds)
         );
     }
@@ -473,7 +522,8 @@ mod tests {
                 old,
                 ObjectType::Memory,
                 Rights::READ,
-                bounds(0, 1)
+                bounds(0, 1),
+                NOW_NS
             ),
             Err(CapError::Stale)
         );
@@ -486,7 +536,14 @@ mod tests {
         system.add_domain(domain(2));
         let parent = system.create_root(&bootstrap, domain(1), root()).unwrap();
         let child = system
-            .transfer(domain(1), parent, domain(2), Rights::READ, bounds(10, 20))
+            .transfer(
+                domain(1),
+                parent,
+                domain(2),
+                Rights::READ,
+                bounds(10, 20),
+                NOW_NS,
+            )
             .unwrap();
         assert!(
             system
@@ -495,7 +552,8 @@ mod tests {
                     child,
                     ObjectType::Memory,
                     Rights::READ,
-                    bounds(12, 15)
+                    bounds(12, 15),
+                    NOW_NS
                 )
                 .is_ok()
         );
@@ -506,7 +564,8 @@ mod tests {
                 child,
                 ObjectType::Memory,
                 Rights::READ,
-                bounds(12, 15)
+                bounds(12, 15),
+                NOW_NS
             ),
             Err(CapError::Revoked)
         );
@@ -525,16 +584,24 @@ mod tests {
                 root,
                 Rights::READ.union(Rights::GRANT),
                 bounds(0, 4096),
+                NOW_NS,
             )
             .unwrap();
         let descendant = system
-            .derive(domain(1), branch, Rights::READ, bounds(0, 1024))
+            .derive(domain(1), branch, Rights::READ, bounds(0, 1024), NOW_NS)
             .unwrap();
         let transferred = system
-            .transfer(domain(1), branch, domain(2), Rights::READ, bounds(0, 512))
+            .transfer(
+                domain(1),
+                branch,
+                domain(2),
+                Rights::READ,
+                bounds(0, 512),
+                NOW_NS,
+            )
             .unwrap();
         let sibling = system
-            .derive(domain(1), root, Rights::READ, bounds(1024, 2048))
+            .derive(domain(1), root, Rights::READ, bounds(1024, 2048), NOW_NS)
             .unwrap();
 
         system.revoke(domain(1), branch).unwrap();
@@ -545,7 +612,8 @@ mod tests {
                 branch,
                 ObjectType::Memory,
                 Rights::READ,
-                bounds(0, 1)
+                bounds(0, 1),
+                NOW_NS
             ),
             Err(CapError::Revoked)
         );
@@ -555,7 +623,8 @@ mod tests {
                 descendant,
                 ObjectType::Memory,
                 Rights::READ,
-                bounds(0, 1)
+                bounds(0, 1),
+                NOW_NS
             ),
             Err(CapError::Revoked)
         );
@@ -565,7 +634,8 @@ mod tests {
                 transferred,
                 ObjectType::Memory,
                 Rights::READ,
-                bounds(0, 1)
+                bounds(0, 1),
+                NOW_NS
             ),
             Err(CapError::Revoked)
         );
@@ -576,7 +646,8 @@ mod tests {
                     root,
                     ObjectType::Memory,
                     Rights::READ,
-                    bounds(0, 1)
+                    bounds(0, 1),
+                    NOW_NS
                 )
                 .is_ok()
         );
@@ -587,7 +658,8 @@ mod tests {
                     sibling,
                     ObjectType::Memory,
                     Rights::READ,
-                    bounds(1024, 1025)
+                    bounds(1024, 1025),
+                    NOW_NS
                 )
                 .is_ok()
         );
@@ -604,11 +676,18 @@ mod tests {
                 root,
                 Rights::READ.union(Rights::GRANT),
                 bounds(0, 4096),
+                NOW_NS,
             )
             .unwrap();
         let intermediate_lineage = system.resolve(domain(1), intermediate).unwrap().lineage_id;
         let descendant = system
-            .derive(domain(1), intermediate, Rights::READ, bounds(0, 1024))
+            .derive(
+                domain(1),
+                intermediate,
+                Rights::READ,
+                bounds(0, 1024),
+                NOW_NS,
+            )
             .unwrap();
 
         system.remove(domain(1), intermediate).unwrap();
@@ -621,7 +700,8 @@ mod tests {
                 descendant,
                 ObjectType::Memory,
                 Rights::READ,
-                bounds(0, 1)
+                bounds(0, 1),
+                NOW_NS
             ),
             Err(CapError::Revoked)
         );
@@ -638,10 +718,17 @@ mod tests {
                 root,
                 Rights::READ.union(Rights::GRANT),
                 bounds(0, 4096),
+                NOW_NS,
             )
             .unwrap();
         let descendant = system
-            .derive(domain(1), intermediate, Rights::READ, bounds(0, 1024))
+            .derive(
+                domain(1),
+                intermediate,
+                Rights::READ,
+                bounds(0, 1024),
+                NOW_NS,
+            )
             .unwrap();
 
         assert_eq!(system.revocation_nodes.len(), 3);
@@ -667,6 +754,7 @@ mod tests {
                     parent,
                     Rights::READ.union(Rights::GRANT),
                     bounds(0, 4096),
+                    NOW_NS,
                 )
                 .unwrap();
             chain.push(child);
@@ -687,6 +775,7 @@ mod tests {
                 ObjectType::Memory,
                 requested_rights,
                 bounds(0, 1),
+                NOW_NS,
             );
             if index < revoke_at {
                 assert!(result.is_ok(), "ancestor {index} was unexpectedly revoked");
@@ -741,12 +830,235 @@ mod tests {
         let parent = system.create_root(&bootstrap, domain(1), root()).unwrap();
         system.revoke(domain(1), parent).unwrap();
         assert_eq!(
-            system.derive(domain(1), parent, Rights::READ, bounds(0, 1)),
+            system.derive(domain(1), parent, Rights::READ, bounds(0, 1), NOW_NS),
             Err(CapError::Revoked)
         );
         assert_eq!(
-            system.transfer(domain(1), parent, domain(2), Rights::READ, bounds(0, 1)),
+            system.transfer(
+                domain(1),
+                parent,
+                domain(2),
+                Rights::READ,
+                bounds(0, 1),
+                NOW_NS
+            ),
             Err(CapError::Revoked)
+        );
+    }
+
+    #[test]
+    fn expiry_boundary_is_strictly_greater_than() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        let cap = root_with_expiry(1_000);
+        let cap_bounds = cap.bounds;
+        let handle = system.create_root(&bootstrap, domain(1), cap).unwrap();
+
+        // now == expires_at_ns: still valid (RFC-0037.14 "exceeds").
+        assert!(
+            system
+                .authorize(
+                    domain(1),
+                    handle,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    cap_bounds,
+                    1_000
+                )
+                .is_ok()
+        );
+        // now == expires_at_ns + 1: first expired instant.
+        assert_eq!(
+            system.authorize(
+                domain(1),
+                handle,
+                ObjectType::Memory,
+                Rights::READ,
+                cap_bounds,
+                1_001
+            ),
+            Err(CapError::Expired)
+        );
+    }
+
+    #[test]
+    fn zero_expiry_means_never_expires() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        let handle = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        assert!(
+            system
+                .authorize(
+                    domain(1),
+                    handle,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(0, 1),
+                    u64::MAX
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn expired_parent_cannot_derive_or_transfer() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+        let cap = root_with_expiry(1_000);
+        let handle = system.create_root(&bootstrap, domain(1), cap).unwrap();
+        assert_eq!(
+            system.derive(domain(1), handle, Rights::READ, bounds(0, 1), 1_001),
+            Err(CapError::Expired)
+        );
+        assert_eq!(
+            system.transfer(
+                domain(1),
+                handle,
+                domain(2),
+                Rights::READ,
+                bounds(0, 1),
+                1_001
+            ),
+            Err(CapError::Expired)
+        );
+    }
+
+    #[test]
+    fn derived_and_transferred_children_inherit_parent_expiry() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+        let cap = root_with_expiry(5_000);
+        let handle = system.create_root(&bootstrap, domain(1), cap).unwrap();
+        let now = 1_000;
+        let child_bounds = bounds(0, 4);
+        let derived = system
+            .derive(domain(1), handle, Rights::READ, child_bounds, now)
+            .unwrap();
+        let transferred = system
+            .transfer(
+                domain(1),
+                handle,
+                domain(2),
+                Rights::READ,
+                child_bounds,
+                now,
+            )
+            .unwrap();
+
+        for (bound_domain, child) in [(domain(1), derived), (domain(2), transferred)] {
+            assert!(
+                system
+                    .authorize(
+                        bound_domain,
+                        child,
+                        ObjectType::Memory,
+                        Rights::READ,
+                        child_bounds,
+                        5_000
+                    )
+                    .is_ok()
+            );
+            assert_eq!(
+                system.authorize(
+                    bound_domain,
+                    child,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    child_bounds,
+                    5_001
+                ),
+                Err(CapError::Expired)
+            );
+        }
+    }
+
+    #[test]
+    fn bound_capability_cannot_be_transferred() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+        let cap = Capability {
+            flags: CapabilityFlags::BOUND,
+            ..root()
+        };
+        let handle = system.create_root(&bootstrap, domain(1), cap).unwrap();
+
+        // Same-domain use remains valid.
+        assert!(
+            system
+                .authorize(
+                    domain(1),
+                    handle,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(0, 1),
+                    NOW_NS
+                )
+                .is_ok()
+        );
+        // Cross-domain transfer is refused.
+        assert_eq!(
+            system.transfer(
+                domain(1),
+                handle,
+                domain(2),
+                Rights::READ,
+                bounds(0, 1),
+                NOW_NS
+            ),
+            Err(CapError::DomainBound)
+        );
+        // Cross-domain presentation fails closed even without transfer.
+        assert_eq!(
+            system.authorize(
+                domain(2),
+                handle,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1),
+                NOW_NS
+            ),
+            Err(CapError::WrongDomain)
+        );
+        // Derivation inside the domain is still permitted.
+        assert!(
+            system
+                .derive(domain(1), handle, Rights::READ, bounds(0, 1), NOW_NS)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn derived_child_of_bound_parent_is_also_bound() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+        let cap = Capability {
+            flags: CapabilityFlags::BOUND,
+            ..root()
+        };
+        let handle = system.create_root(&bootstrap, domain(1), cap).unwrap();
+        let child = system
+            .derive(
+                domain(1),
+                handle,
+                Rights::READ.union(Rights::GRANT),
+                bounds(0, 4096),
+                NOW_NS,
+            )
+            .unwrap();
+        assert_eq!(
+            system.transfer(
+                domain(1),
+                child,
+                domain(2),
+                Rights::READ,
+                bounds(0, 1),
+                NOW_NS
+            ),
+            Err(CapError::DomainBound)
         );
     }
 }

@@ -7,13 +7,23 @@ use aether_capspace::memory::{
 };
 use aether_capspace::runtime::MemoryRuntime;
 use aether_capspace::{BootstrapAuthority as SystemBootstrap, CapabilitySystem};
+use aether_comp_model::profile::{Mechanism, ProfileDeclaration, apply_profile, combine_profiles};
+use aether_comp_model::{
+    ComponentId, Manifest, ManifestError, NarrowingPolicy, Profile, Requirement, ResolutionError,
+    SelectionStrategy, Tier, conformance, routing, validate_manifest,
+};
+use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
 };
-use aether_types::{Bounds, CapError, Capability, DomainId, Handle, ObjectId, ObjectType, Rights};
+use aether_types::{
+    Bounds, CapError, Capability, CapabilityFlags, DomainId, Handle, ObjectId, ObjectType, Rights,
+};
 
-fn main() {
-    let cases = [
+const NOW_NS: u64 = 1_000_000;
+
+fn cases() -> [(&'static str, Result<(), &'static str>); 38] {
+    [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
         ("CTS-CAP-REVOKE-001", revoke_across_transfer()),
@@ -26,6 +36,27 @@ fn main() {
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
         ("CTS-CAP-DOMAIN-001", reject_unregistered_destination()),
         ("CTS-CAP-REVOKED-DERIVE-001", reject_revoked_parent_use()),
+        ("CTS-CAP-EXPIRY-001", expiry_boundary_matches_rfc_0037_14()),
+        (
+            "CTS-CAP-BOUND-001",
+            bound_capability_cannot_be_transferred(),
+        ),
+        ("CTS-SCHED-ADMIT-001", admission_bound_matches_rfc_0011_7()),
+        (
+            "CTS-SCHED-DETERMINISM-001",
+            scheduler_selection_is_deterministic(),
+        ),
+        (
+            "CTS-SCHED-QUANTUM-001",
+            quantum_expiry_requeues_with_new_deadline(),
+        ),
+        (
+            "CTS-COMP-RESOLVE-001",
+            composition_resolution_matches_rfc_0004(),
+        ),
+        ("CTS-COMP-CYCLE-001", composition_cycle_is_reported()),
+        ("CTS-COMP-ORDER-001", composition_order_is_deterministic()),
+        ("CTS-COMP-VALIDATE-001", invalid_manifest_is_rejected()),
         (
             "CTS-EXEC-MAP-REVOKE-001",
             mapping_permissions_and_revocation(),
@@ -49,7 +80,47 @@ fn main() {
         ),
         ("CTS-STATE-REPLAY-001", reject_replayed_transaction()),
         ("CTS-STATE-DUPLICATE-001", reject_duplicate_mutation()),
-    ];
+        (
+            "CTS-STATE-CONFLICT-001",
+            concurrent_writer_conflicts_match_rfc_0016_9(),
+        ),
+        ("CTS-STATE-SNAPSHOT-001", snapshot_read_matches_rfc_0016_8()),
+        (
+            "CTS-STATE-CRASH-001",
+            crash_sweep_matches_persistence_baseline(),
+        ),
+        (
+            "CTS-OUTBOX-DISPATCH-001",
+            outbox_dispatch_matches_persistence_baseline(),
+        ),
+        ("CTS-PROF-SELECT-001", profile_selection_matches_rfc_0005()),
+        (
+            "CTS-PROF-COMBINE-001",
+            profile_combination_matches_rfc_0005(),
+        ),
+        ("CTS-ROUTING-GRANT-001", routing_grant_matches_rfc_0003()),
+        ("CTS-ROUTING-DENY-001", routing_denial_matches_rfc_0003()),
+        (
+            "CTS-COMP-CONF-001",
+            composition_conformance_matches_rfc_0006(),
+        ),
+        (
+            "CTS-COMP-CONF-002",
+            conformance_rejects_incomplete_declarations(),
+        ),
+        (
+            "CTS-COMP-CONF-003",
+            conformance_report_cites_artifact_and_tests(),
+        ),
+        (
+            "CTS-COMP-CONF-004",
+            conformance_forensics_counts_match_methodology_s10(),
+        ),
+    ]
+}
+
+fn main() {
+    let cases = cases();
     let mut failed = 0;
     for (id, result) in cases {
         let (status, detail) = match result {
@@ -78,6 +149,8 @@ fn root() -> Capability {
         object_type: ObjectType::Memory,
         rights: Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
         bounds: bounds(0, 4096),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
     }
 }
 
@@ -107,13 +180,21 @@ fn reject_unregistered_destination() -> Result<(), &'static str> {
     let system_root = system
         .create_root(&system_bootstrap, domain(1), root())
         .map_err(|_| "provider root failed")?;
-    let model_result = model.transfer(domain(1), model_root, domain(2), Rights::READ, bounds(0, 1));
+    let model_result = model.transfer(
+        domain(1),
+        model_root,
+        domain(2),
+        Rights::READ,
+        bounds(0, 1),
+        NOW_NS,
+    );
     let system_result = system.transfer(
         domain(1),
         system_root,
         domain(2),
         Rights::READ,
         bounds(0, 1),
+        NOW_NS,
     );
     compare_handle_error(model_result, system_result, CapError::Missing)
 }
@@ -133,8 +214,8 @@ fn reject_revoked_parent_use() -> Result<(), &'static str> {
         .revoke(domain(1), system_root)
         .map_err(|_| "provider revoke failed")?;
     compare_handle_error(
-        model.derive(domain(1), model_root, Rights::READ, bounds(0, 1)),
-        system.derive(domain(1), system_root, Rights::READ, bounds(0, 1)),
+        model.derive(domain(1), model_root, Rights::READ, bounds(0, 1), NOW_NS),
+        system.derive(domain(1), system_root, Rights::READ, bounds(0, 1), NOW_NS),
         CapError::Revoked,
     )
 }
@@ -159,8 +240,14 @@ fn narrow_rights_and_bounds() -> Result<(), &'static str> {
     let system_root = system
         .create_root(&system_bootstrap, domain(1), root())
         .map_err(|_| "provider root failed")?;
-    let m = model.derive(domain(1), model_root, Rights::READ, bounds(64, 128));
-    let s = system.derive(domain(1), system_root, Rights::READ, bounds(64, 128));
+    let m = model.derive(domain(1), model_root, Rights::READ, bounds(64, 128), NOW_NS);
+    let s = system.derive(
+        domain(1),
+        system_root,
+        Rights::READ,
+        bounds(64, 128),
+        NOW_NS,
+    );
     if m.is_ok() == s.is_ok() {
         Ok(())
     } else {
@@ -177,10 +264,24 @@ fn explicit_transfer() -> Result<(), &'static str> {
         .create_root(&system_bootstrap, domain(1), root())
         .map_err(|_| "provider root failed")?;
     let mh = model
-        .transfer(domain(1), mr, domain(2), Rights::READ, bounds(100, 200))
+        .transfer(
+            domain(1),
+            mr,
+            domain(2),
+            Rights::READ,
+            bounds(100, 200),
+            NOW_NS,
+        )
         .map_err(|_| "model transfer failed")?;
     let sh = system
-        .transfer(domain(1), sr, domain(2), Rights::READ, bounds(100, 200))
+        .transfer(
+            domain(1),
+            sr,
+            domain(2),
+            Rights::READ,
+            bounds(100, 200),
+            NOW_NS,
+        )
         .map_err(|_| "provider transfer failed")?;
     compare_auth(
         model.authorize(
@@ -189,6 +290,7 @@ fn explicit_transfer() -> Result<(), &'static str> {
             ObjectType::Memory,
             Rights::READ,
             bounds(120, 130),
+            NOW_NS,
         ),
         system.authorize(
             domain(2),
@@ -196,6 +298,7 @@ fn explicit_transfer() -> Result<(), &'static str> {
             ObjectType::Memory,
             Rights::READ,
             bounds(120, 130),
+            NOW_NS,
         ),
     )
 }
@@ -209,10 +312,24 @@ fn revoke_across_transfer() -> Result<(), &'static str> {
         .create_root(&system_bootstrap, domain(1), root())
         .map_err(|_| "provider root failed")?;
     let mh = model
-        .transfer(domain(1), mr, domain(2), Rights::READ, bounds(0, 10))
+        .transfer(
+            domain(1),
+            mr,
+            domain(2),
+            Rights::READ,
+            bounds(0, 10),
+            NOW_NS,
+        )
         .map_err(|_| "model transfer failed")?;
     let sh = system
-        .transfer(domain(1), sr, domain(2), Rights::READ, bounds(0, 10))
+        .transfer(
+            domain(1),
+            sr,
+            domain(2),
+            Rights::READ,
+            bounds(0, 10),
+            NOW_NS,
+        )
         .map_err(|_| "provider transfer failed")?;
     model
         .revoke(domain(1), mr)
@@ -227,6 +344,7 @@ fn revoke_across_transfer() -> Result<(), &'static str> {
             ObjectType::Memory,
             Rights::READ,
             bounds(0, 1),
+            NOW_NS,
         ),
         system.authorize(
             domain(2),
@@ -234,8 +352,58 @@ fn revoke_across_transfer() -> Result<(), &'static str> {
             ObjectType::Memory,
             Rights::READ,
             bounds(0, 1),
+            NOW_NS,
         ),
     )
+}
+
+fn pair_derive(
+    model: &mut CapabilityModel,
+    model_parent: Handle,
+    system: &mut CapabilitySystem,
+    system_parent: Handle,
+    rights: Rights,
+    bounds_: Bounds,
+) -> Result<(Handle, Handle), &'static str> {
+    let model_handle = model
+        .derive(domain(1), model_parent, rights, bounds_, NOW_NS)
+        .map_err(|_| "model derivation failed")?;
+    let system_handle = system
+        .derive(domain(1), system_parent, rights, bounds_, NOW_NS)
+        .map_err(|_| "provider derivation failed")?;
+    Ok((model_handle, system_handle))
+}
+
+fn pair_transfer(
+    model: &mut CapabilityModel,
+    model_parent: Handle,
+    system: &mut CapabilitySystem,
+    system_parent: Handle,
+    destination: DomainId,
+    rights: Rights,
+    bounds_: Bounds,
+) -> Result<(Handle, Handle), &'static str> {
+    let model_handle = model
+        .transfer(
+            domain(1),
+            model_parent,
+            destination,
+            rights,
+            bounds_,
+            NOW_NS,
+        )
+        .map_err(|_| "model transfer failed")?;
+    let system_handle = system
+        .transfer(
+            domain(1),
+            system_parent,
+            destination,
+            rights,
+            bounds_,
+            NOW_NS,
+        )
+        .map_err(|_| "provider transfer failed")?;
+    Ok((model_handle, system_handle))
 }
 
 fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
@@ -247,55 +415,40 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
         .create_root(&system_bootstrap, domain(1), root())
         .map_err(|_| "provider root failed")?;
 
-    let model_branch = model
-        .derive(
-            domain(1),
-            model_root,
-            Rights::READ.union(Rights::GRANT),
-            bounds(0, 4096),
-        )
-        .map_err(|_| "model branch derivation failed")?;
-    let system_branch = system
-        .derive(
-            domain(1),
-            system_root,
-            Rights::READ.union(Rights::GRANT),
-            bounds(0, 4096),
-        )
-        .map_err(|_| "provider branch derivation failed")?;
-
-    let model_descendant = model
-        .derive(domain(1), model_branch, Rights::READ, bounds(0, 1024))
-        .map_err(|_| "model descendant derivation failed")?;
-    let system_descendant = system
-        .derive(domain(1), system_branch, Rights::READ, bounds(0, 1024))
-        .map_err(|_| "provider descendant derivation failed")?;
-
-    let model_transfer = model
-        .transfer(
-            domain(1),
-            model_branch,
-            domain(2),
-            Rights::READ,
-            bounds(0, 512),
-        )
-        .map_err(|_| "model transfer failed")?;
-    let system_transfer = system
-        .transfer(
-            domain(1),
-            system_branch,
-            domain(2),
-            Rights::READ,
-            bounds(0, 512),
-        )
-        .map_err(|_| "provider transfer failed")?;
-
-    let model_sibling = model
-        .derive(domain(1), model_root, Rights::READ, bounds(1024, 2048))
-        .map_err(|_| "model sibling derivation failed")?;
-    let system_sibling = system
-        .derive(domain(1), system_root, Rights::READ, bounds(1024, 2048))
-        .map_err(|_| "provider sibling derivation failed")?;
+    let grant = Rights::READ.union(Rights::GRANT);
+    let (model_branch, system_branch) = pair_derive(
+        &mut model,
+        model_root,
+        &mut system,
+        system_root,
+        grant,
+        bounds(0, 4096),
+    )?;
+    let (model_descendant, system_descendant) = pair_derive(
+        &mut model,
+        model_branch,
+        &mut system,
+        system_branch,
+        Rights::READ,
+        bounds(0, 1024),
+    )?;
+    let (model_transfer, system_transfer) = pair_transfer(
+        &mut model,
+        model_branch,
+        &mut system,
+        system_branch,
+        domain(2),
+        Rights::READ,
+        bounds(0, 512),
+    )?;
+    let (model_sibling, system_sibling) = pair_derive(
+        &mut model,
+        model_root,
+        &mut system,
+        system_root,
+        Rights::READ,
+        bounds(1024, 2048),
+    )?;
 
     model
         .revoke(domain(1), model_branch)
@@ -318,6 +471,7 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
                 ObjectType::Memory,
                 Rights::READ,
                 request_bounds,
+                NOW_NS,
             ),
             system.authorize(
                 test_domain,
@@ -325,6 +479,7 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
                 ObjectType::Memory,
                 Rights::READ,
                 request_bounds,
+                NOW_NS,
             ),
         )?;
     }
@@ -388,6 +543,8 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
                     .union(Rights::WRITE)
                     .union(Rights::GRANT),
                 bounds: bounds(0, 4096),
+                flags: aether_types::CapabilityFlags::NONE,
+                expires_at_ns: 0,
             },
         )
         .map_err(|_| "memory capability bootstrap failed")?;
@@ -414,23 +571,43 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
                 permissions: PtePermissions::READ,
             },
             &mut fences,
+            NOW_NS,
         )
         .map_err(|_| "capability-authorized page mapping failed")?;
 
     memory
-        .access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
+        .access(
+            &capabilities,
+            hart,
+            asid,
+            0x4000,
+            MemoryAccess::Read,
+            NOW_NS,
+        )
         .map_err(|_| "read access should be permitted by the PTE")?;
-    if memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Write)
-        != Err(aether_capspace::memory::MemoryError::ProtectionFault)
+    if memory.access(
+        &capabilities,
+        hart,
+        asid,
+        0x4000,
+        MemoryAccess::Write,
+        NOW_NS,
+    ) != Err(aether_capspace::memory::MemoryError::ProtectionFault)
     {
         return Err("read-only mapping allowed a store");
     }
 
     memory
-        .revoke_capability(&mut capabilities, owner, handle, &mut fences)
+        .revoke_capability(&mut capabilities, owner, handle, &mut fences, NOW_NS)
         .map_err(|_| "revocation did not complete after hart invalidation")?;
-    if memory.access(&capabilities, hart, asid, 0x4000, MemoryAccess::Read)
-        != Err(aether_capspace::memory::MemoryError::Unmapped)
+    if memory.access(
+        &capabilities,
+        hart,
+        asid,
+        0x4000,
+        MemoryAccess::Read,
+        NOW_NS,
+    ) != Err(aether_capspace::memory::MemoryError::Unmapped)
     {
         return Err("revoked mapping remained accessible");
     }
@@ -453,6 +630,8 @@ fn serialized_runtime_access_and_revocation() -> Result<(), &'static str> {
                 object_type: ObjectType::Memory,
                 rights: Rights::MAP.union(Rights::READ),
                 bounds: bounds(0, 4096),
+                flags: aether_types::CapabilityFlags::NONE,
+                expires_at_ns: 0,
             },
         )
         .map_err(|_| "serialized runtime root capability failed")?;
@@ -473,15 +652,16 @@ fn serialized_runtime_access_and_revocation() -> Result<(), &'static str> {
                 permissions: PtePermissions::READ,
             },
             &mut fences,
+            NOW_NS,
         )
         .map_err(|_| "serialized runtime mapping failed")?;
     runtime
-        .access(hart, asid, 0xa000, MemoryAccess::Read)
+        .access(hart, asid, 0xa000, MemoryAccess::Read, NOW_NS)
         .map_err(|_| "serialized runtime initial read failed")?;
     runtime
-        .revoke_capability(owner, handle, &mut fences)
+        .revoke_capability(owner, handle, &mut fences, NOW_NS)
         .map_err(|_| "serialized runtime revocation failed")?;
-    if runtime.access(hart, asid, 0xa000, MemoryAccess::Read)
+    if runtime.access(hart, asid, 0xa000, MemoryAccess::Read, NOW_NS)
         != Err(aether_capspace::runtime::RuntimeError::Memory(
             aether_capspace::memory::MemoryError::Unmapped,
         ))
@@ -512,6 +692,8 @@ fn cached_mapping_requires_live_capability() -> Result<(), &'static str> {
                 object_type: ObjectType::Memory,
                 rights: Rights::MAP.union(Rights::READ),
                 bounds: bounds(0, 4096),
+                flags: aether_types::CapabilityFlags::NONE,
+                expires_at_ns: 0,
             },
         )
         .map_err(|_| "memory capability bootstrap failed")?;
@@ -538,21 +720,34 @@ fn cached_mapping_requires_live_capability() -> Result<(), &'static str> {
                 permissions: PtePermissions::READ,
             },
             &mut fences,
+            NOW_NS,
         )
         .map_err(|_| "capability-authorized mapping failed")?;
 
     memory
-        .access(&capabilities, hart, asid, 0x6000, MemoryAccess::Read)
+        .access(
+            &capabilities,
+            hart,
+            asid,
+            0x6000,
+            MemoryAccess::Read,
+            NOW_NS,
+        )
         .map_err(|_| "initial access should populate the host TLB model")?;
     capabilities
         .revoke(owner, handle)
         .map_err(|_| "capability revocation failed")?;
 
-    if memory.access(&capabilities, hart, asid, 0x6000, MemoryAccess::Read)
-        != Err(aether_capspace::memory::MemoryError::Capability(
-            CapError::Revoked,
-        ))
-    {
+    if memory.access(
+        &capabilities,
+        hart,
+        asid,
+        0x6000,
+        MemoryAccess::Read,
+        NOW_NS,
+    ) != Err(aether_capspace::memory::MemoryError::Capability(
+        CapError::Revoked,
+    )) {
         return Err("cached translation bypassed the revoked MAP capability");
     }
     Ok(())
@@ -572,9 +767,8 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
             owner,
             Capability {
                 object: ObjectId(101),
-                object_type: ObjectType::Memory,
                 rights: Rights::MAP.union(Rights::READ),
-                bounds: bounds(0, 4096),
+                ..root()
             },
         )
         .map_err(|_| "memory capability bootstrap failed")?;
@@ -588,9 +782,17 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
         .map_err(|_| "second address-space registration failed")?;
 
     let hart = HartId::new(7);
-    if memory.access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
-        != Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
-    {
+    let access_denied = |memory: &mut MemoryManager, address_space, address| {
+        memory.access(
+            &capabilities,
+            hart,
+            address_space,
+            address,
+            MemoryAccess::Read,
+            NOW_NS,
+        ) == Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
+    };
+    if !access_denied(&mut memory, first_asid, 0x4000) {
         return Err("memory access was allowed before dispatch activation");
     }
 
@@ -615,6 +817,7 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
                 permissions: PtePermissions::READ,
             },
             &mut fences,
+            NOW_NS,
         )
         .map_err(|_| "mapping after dispatch activation failed")?;
     if !fences
@@ -624,22 +827,34 @@ fn dispatch_address_space_activation() -> Result<(), &'static str> {
         return Err("mapping activation omitted a dispatched but not-yet-accessing hart");
     }
     memory
-        .access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
+        .access(
+            &capabilities,
+            hart,
+            first_asid,
+            0x4000,
+            MemoryAccess::Read,
+            NOW_NS,
+        )
         .map_err(|_| "activated address-space access failed")?;
 
     memory
         .activate_for_dispatch(other, hart, &mut fences)
         .map_err(|_| "address-space switch failed")?;
-    if memory.access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
-        != Err(aether_capspace::memory::MemoryError::AddressSpaceNotActive)
-    {
+    if !access_denied(&mut memory, first_asid, 0x4000) {
         return Err("previous address space remained executable after switch");
     }
     memory
         .activate_for_dispatch(owner, hart, &mut fences)
         .map_err(|_| "migration back to the first address space failed")?;
     memory
-        .access(&capabilities, hart, first_asid, 0x4000, MemoryAccess::Read)
+        .access(
+            &capabilities,
+            hart,
+            first_asid,
+            0x4000,
+            MemoryAccess::Read,
+            NOW_NS,
+        )
         .map_err(|_| "address space was not accessible after reactivation")?;
     Ok(())
 }
@@ -653,6 +868,7 @@ fn reject_forged_integer() -> Result<(), &'static str> {
             ObjectType::Memory,
             Rights::READ,
             bounds(0, 1),
+            NOW_NS,
         ),
         system.authorize(
             domain(1),
@@ -660,6 +876,7 @@ fn reject_forged_integer() -> Result<(), &'static str> {
             ObjectType::Memory,
             Rights::READ,
             bounds(0, 1),
+            NOW_NS,
         ),
     )
 }
@@ -678,6 +895,7 @@ fn reject_stale_generation() -> Result<(), &'static str> {
         ObjectType::Memory,
         Rights::READ,
         bounds(0, 1),
+        NOW_NS,
     ) {
         Err(CapError::Stale) => Ok(()),
         _ => Err("provider accepted stale handle or returned wrong failure"),
@@ -807,4 +1025,1002 @@ fn reject_duplicate_mutation() -> Result<(), &'static str> {
         }
         _ => Err("duplicate mutation reached durable log"),
     }
+}
+
+fn expiry_boundary_matches_rfc_0037_14() -> Result<(), &'static str> {
+    let (mut model, model_bootstrap, mut system, system_bootstrap) = pair();
+    let expiring = Capability {
+        expires_at_ns: 1_000,
+        ..root()
+    };
+    let model_root = model
+        .create_root(&model_bootstrap, domain(1), expiring)
+        .map_err(|_| "model root failed")?;
+    let system_root = system
+        .create_root(&system_bootstrap, domain(1), expiring)
+        .map_err(|_| "provider root failed")?;
+
+    // Equality is still live in BOTH models; the first instant after expiry is
+    // rejected. Assert actual outcomes (not only model/provider agreement) so a
+    // uniform boundary regression in both models cannot pass this case.
+    if model
+        .authorize(
+            domain(1),
+            model_root,
+            ObjectType::Memory,
+            Rights::READ,
+            bounds(0, 1),
+            1_000,
+        )
+        .is_err()
+        || system
+            .authorize(
+                domain(1),
+                system_root,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1),
+                1_000,
+            )
+            .is_err()
+    {
+        return Err("capability expired at exact expires_at_ns boundary");
+    }
+    let model_expired = model.authorize(
+        domain(1),
+        model_root,
+        ObjectType::Memory,
+        Rights::READ,
+        bounds(0, 1),
+        1_001,
+    );
+    let system_expired = system.authorize(
+        domain(1),
+        system_root,
+        ObjectType::Memory,
+        Rights::READ,
+        bounds(0, 1),
+        1_001,
+    );
+    if model_expired != Err(CapError::Expired) || system_expired != Err(CapError::Expired) {
+        return Err("expiry boundary mismatch");
+    }
+
+    // Expired parents cannot derive or transfer in either model.
+    compare_handle_error(
+        model.derive(domain(1), model_root, Rights::READ, bounds(0, 1), 1_001),
+        system.derive(domain(1), system_root, Rights::READ, bounds(0, 1), 1_001),
+        CapError::Expired,
+    )?;
+    compare_handle_error(
+        model.transfer(
+            domain(1),
+            model_root,
+            domain(2),
+            Rights::READ,
+            bounds(0, 1),
+            1_001,
+        ),
+        system.transfer(
+            domain(1),
+            system_root,
+            domain(2),
+            Rights::READ,
+            bounds(0, 1),
+            1_001,
+        ),
+        CapError::Expired,
+    )
+}
+
+fn bound_capability_cannot_be_transferred() -> Result<(), &'static str> {
+    let (mut model, model_bootstrap, mut system, system_bootstrap) = pair();
+    let bound = Capability {
+        flags: aether_types::CapabilityFlags::BOUND,
+        ..root()
+    };
+    let model_root = model
+        .create_root(&model_bootstrap, domain(1), bound)
+        .map_err(|_| "model root failed")?;
+    let system_root = system
+        .create_root(&system_bootstrap, domain(1), bound)
+        .map_err(|_| "provider root failed")?;
+
+    // Same-domain use remains valid for a bound capability.
+    compare_auth(
+        model.authorize(
+            domain(1),
+            model_root,
+            ObjectType::Memory,
+            Rights::READ,
+            bounds(0, 1),
+            NOW_NS,
+        ),
+        system.authorize(
+            domain(1),
+            system_root,
+            ObjectType::Memory,
+            Rights::READ,
+            bounds(0, 1),
+            NOW_NS,
+        ),
+    )?;
+
+    // Transfer to another domain is refused even with GRANT in both models.
+    compare_handle_error(
+        model.transfer(
+            domain(1),
+            model_root,
+            domain(2),
+            Rights::READ,
+            bounds(0, 1),
+            NOW_NS,
+        ),
+        system.transfer(
+            domain(1),
+            system_root,
+            domain(2),
+            Rights::READ,
+            bounds(0, 1),
+            NOW_NS,
+        ),
+        CapError::DomainBound,
+    )
+}
+
+fn admission_bound_matches_rfc_0011_7() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(1_000);
+    sched
+        .create_thread(ThreadId(1), 2, 1, 10)
+        .map_err(|_| "first thread admission failed")?;
+    sched
+        .create_thread(ThreadId(2), 3, 1, 10)
+        .map_err(|_| "second thread admission failed")?;
+    sched
+        .create_thread(ThreadId(3), 6, 1, 10)
+        .map_err(|_| "third thread admission failed")?;
+    if sched.utilization() != Ok((1, 1)) {
+        return Err("exact utilization accounting mismatch at U = 1");
+    }
+    if sched.create_thread(ThreadId(4), 1_000_000, 1, 10)
+        != Err(aether_sched_model::SchedError::NotAdmissible)
+    {
+        return Err("over-utilization set was admitted");
+    }
+    Ok(())
+}
+
+fn scheduler_selection_is_deterministic() -> Result<(), &'static str> {
+    fn run(order: &[(u64, u64, u64)]) -> Vec<ThreadId> {
+        let mut sched = UniprocessorEdf::new(1_000);
+        for &(tid, period, budget) in order {
+            sched
+                .create_thread(ThreadId(tid), period, budget, 10)
+                .expect("admission should succeed for U <= 1");
+        }
+        let mut picked = Vec::new();
+        for _ in 0..4 {
+            picked.push(
+                sched
+                    .dispatch_next()
+                    .expect("dispatch should not fail")
+                    .unwrap_or(ThreadId(0)),
+            );
+            sched.yield_now().expect("running thread must yield");
+            sched
+                .requeue_yielded()
+                .expect("yielded thread must requeue");
+        }
+        picked
+    }
+    let forward = run(&[(1, 10, 1), (2, 10, 1), (3, 10, 1)]);
+    let reverse = run(&[(3, 10, 1), (2, 10, 1), (1, 10, 1)]);
+    let expected = vec![ThreadId(1), ThreadId(2), ThreadId(3), ThreadId(1)];
+    if forward != reverse || forward != expected {
+        return Err("scheduler decision sequence differs across identical inputs");
+    }
+    Ok(())
+}
+
+fn quantum_expiry_requeues_with_new_deadline() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(5);
+    sched
+        .create_thread(ThreadId(1), 100, 100, 10)
+        .map_err(|_| "thread admission failed")?;
+    if sched.dispatch_next() != Ok(Some(ThreadId(1))) {
+        return Err("admissible thread was not dispatched");
+    }
+    sched.advance(5).map_err(|_| "time advance failed")?;
+    if sched.state(ThreadId(1)) != Some(ThreadState::Ready) {
+        return Err("quantum expiry did not re-queue the running thread");
+    }
+    if sched.deadline(ThreadId(1)) != Some(200) {
+        return Err("quantum expiry did not advance the deadline by one period");
+    }
+    let events = sched.take_events();
+    let mut reasons: Vec<TransitionReason> = events.iter().map(|event| event.reason).collect();
+    reasons.retain(|reason| {
+        *reason == TransitionReason::QuantumExpired || *reason == TransitionReason::Requeued
+    });
+    if reasons.as_slice() != [TransitionReason::QuantumExpired, TransitionReason::Requeued] {
+        return Err("quantum expiry did not emit the required transition events");
+    }
+    if sched.deadline_misses() != 0 {
+        return Err("deadline miss was charged inside an in-flight period");
+    }
+    Ok(())
+}
+
+fn comp_component(id: u64) -> ComponentId {
+    ComponentId(id)
+}
+
+fn comp_manifest(id: u64, version: u64, requires: Vec<Requirement>) -> Manifest {
+    Manifest {
+        id: comp_component(id),
+        schema_version: 1,
+        version,
+        requires,
+        provides: Vec::new(),
+        profiles: vec![Profile::Desktop],
+        tier: Tier::B,
+        max_instances: 4,
+        rollback_on_failure: true,
+        start: "main".to_string(),
+        stop: "main".to_string(),
+    }
+}
+
+fn comp_requirement(component: u64, min: u64, max: u64) -> Requirement {
+    Requirement {
+        component: comp_component(component),
+        min_version: min,
+        max_version: max,
+    }
+}
+
+fn comp_pool(entries: Vec<Manifest>) -> std::collections::BTreeMap<ComponentId, Vec<Manifest>> {
+    let mut map: std::collections::BTreeMap<ComponentId, Vec<Manifest>> =
+        std::collections::BTreeMap::new();
+    for manifest in entries {
+        map.entry(manifest.id).or_default().push(manifest);
+    }
+    map
+}
+
+fn composition_resolution_matches_rfc_0004() -> Result<(), &'static str> {
+    use aether_comp_model::resolve;
+    let target = comp_manifest(1, 1, vec![comp_requirement(2, 1, 9)]);
+    let candidates = comp_pool(vec![
+        comp_manifest(2, 3, Vec::new()),
+        comp_manifest(2, 7, Vec::new()),
+        comp_manifest(2, 10, Vec::new()), // outside the declared range
+    ]);
+    let resolution = resolve(&target, &candidates, SelectionStrategy::HighestVersion)
+        .map_err(|_| "resolution failed on a satisfiable pool")?;
+    if resolution.order != vec![comp_component(2), comp_component(1)] {
+        return Err("instantiation order is not dependencies-first");
+    }
+    if resolution.events.first().map(|event| event.version) != Some(7) {
+        return Err("highest-version strategy did not select version 7");
+    }
+
+    // RFC-0004.6 reason codes are distinct.
+    let missing = comp_pool(Vec::new());
+    if resolve(&target, &missing, SelectionStrategy::HighestVersion)
+        != Err(ResolutionError::MissingProvider(comp_component(2)))
+    {
+        return Err("missing provider reason code mismatch");
+    }
+    let version = comp_pool(vec![comp_manifest(2, 11, Vec::new())]);
+    if resolve(&target, &version, SelectionStrategy::HighestVersion)
+        != Err(ResolutionError::VersionMismatch(comp_component(2)))
+    {
+        return Err("version mismatch reason code mismatch");
+    }
+    let mut other_profile = comp_manifest(2, 5, Vec::new());
+    other_profile.profiles = vec![Profile::HPC];
+    let profile = comp_pool(vec![other_profile]);
+    if resolve(&target, &profile, SelectionStrategy::HighestVersion)
+        != Err(ResolutionError::ProfileMismatch(comp_component(2)))
+    {
+        return Err("profile mismatch reason code mismatch");
+    }
+    let mut weak = comp_manifest(2, 5, Vec::new());
+    weak.tier = Tier::D;
+    let tier = comp_pool(vec![weak]);
+    if resolve(&target, &tier, SelectionStrategy::HighestVersion)
+        != Err(ResolutionError::TierMismatch(comp_component(2)))
+    {
+        return Err("tier mismatch reason code mismatch");
+    }
+    Ok(())
+}
+
+fn composition_cycle_is_reported() -> Result<(), &'static str> {
+    use aether_comp_model::resolve;
+    let a = comp_manifest(1, 1, vec![comp_requirement(2, 1, 1)]);
+    let b = comp_manifest(2, 1, vec![comp_requirement(1, 1, 1)]);
+    let candidates = comp_pool(vec![a.clone(), b]);
+    match resolve(&a, &candidates, SelectionStrategy::HighestVersion) {
+        Err(ResolutionError::Cycle(members))
+            if members == vec![comp_component(1), comp_component(2)] =>
+        {
+            Ok(())
+        }
+        _ => Err("dependency cycle was not reported with sorted members"),
+    }
+}
+
+fn composition_order_is_deterministic() -> Result<(), &'static str> {
+    use aether_comp_model::resolve;
+    let build = || {
+        let root = comp_manifest(
+            1,
+            1,
+            vec![comp_requirement(2, 1, 1), comp_requirement(3, 1, 1)],
+        );
+        let a = comp_manifest(2, 1, vec![comp_requirement(4, 1, 1)]);
+        let b = comp_manifest(3, 1, vec![comp_requirement(4, 1, 1)]);
+        let d = comp_manifest(4, 1, Vec::new());
+        let pool = comp_pool(vec![d, b, a]);
+        resolve(&root, &pool, SelectionStrategy::HighestVersion).map(|resolution| resolution.order)
+    };
+    let first = build().map_err(|_| "first resolution failed")?;
+    let second = build().map_err(|_| "second resolution failed")?;
+    if first != second {
+        return Err("identical inputs produced different instantiation orders");
+    }
+    let position = |id: u64| {
+        first
+            .iter()
+            .position(|component| *component == comp_component(id))
+            .ok_or("component missing from resolution")
+    };
+    if position(4)? > position(2)? || position(4)? > position(3)? {
+        return Err("a provider was ordered after its dependent");
+    }
+    if position(1)? != first.len() - 1 {
+        return Err("the target was not instantiated last");
+    }
+    Ok(())
+}
+
+fn invalid_manifest_is_rejected() -> Result<(), &'static str> {
+    let mut zero_id = comp_manifest(1, 1, Vec::new());
+    zero_id.id = comp_component(0);
+    match validate_manifest(&zero_id) {
+        Err(ManifestError::ZeroComponentId) => {}
+        _ => return Err("zero component id was accepted"),
+    }
+    let mut zero_instances = comp_manifest(1, 1, Vec::new());
+    zero_instances.max_instances = 0;
+    match validate_manifest(&zero_instances) {
+        Err(ManifestError::InvalidMaxInstances) => {}
+        _ => return Err("max-instances = 0 was accepted"),
+    }
+    let mut no_profiles = comp_manifest(1, 1, Vec::new());
+    no_profiles.profiles = Vec::new();
+    match validate_manifest(&no_profiles) {
+        Err(ManifestError::NoProfiles) => {}
+        _ => return Err("a manifest without profiles was accepted"),
+    }
+    let reversed = comp_manifest(1, 1, vec![comp_requirement(2, 9, 1)]);
+    match validate_manifest(&reversed) {
+        Err(ManifestError::InvalidRequirement) => {}
+        _ => return Err("an inverted requirement range was accepted"),
+    }
+    let empty_name = comp_manifest(1, 1, Vec::new());
+    if validate_manifest(&empty_name).is_err() {
+        return Err("valid baseline manifest was rejected");
+    }
+    let _ = NarrowingPolicy::Attenuate;
+    Ok(())
+}
+
+fn concurrent_writer_conflicts_match_rfc_0016_9() -> Result<(), &'static str> {
+    let mut engine = StateEngine::new();
+    let seed = state_transaction(&mut engine);
+    engine.commit(seed).map_err(|_| "seed commit failed")?;
+
+    let mut first = engine.prepare(1, 1).map_err(|_| "prepare first failed")?;
+    first.mutate(Mutation {
+        object: ObjectId(9),
+        version: VersionId(2),
+        content_digest: [9; 32],
+    });
+    let mut second = engine.prepare(2, 2).map_err(|_| "prepare second failed")?;
+    second.mutate(Mutation {
+        object: ObjectId(9),
+        version: VersionId(3),
+        content_digest: [10; 32],
+    });
+
+    engine
+        .commit(first)
+        .map_err(|_| "first writer failed to commit")?;
+    let length = engine.durable_log().len();
+    if engine.commit(second) != Err(aether_state_model::StateError::WriteWriteConflict) {
+        return Err("second writer was not rejected with WriteWriteConflict");
+    }
+    if engine.durable_log().len() != length {
+        return Err("a conflicted transaction appended a frame");
+    }
+    if engine.visible_version(ObjectId(9)) != Some(VersionId(2)) {
+        return Err("first writer's commit is not visible");
+    }
+    Ok(())
+}
+
+fn snapshot_read_matches_rfc_0016_8() -> Result<(), &'static str> {
+    let mut engine = StateEngine::new();
+    let seed = state_transaction(&mut engine); // object 9 -> version 1
+    engine.commit(seed).map_err(|_| "seed commit failed")?;
+
+    let reader = engine.prepare(1, 1).map_err(|_| "prepare reader failed")?;
+    let mut writer = engine.prepare(2, 2).map_err(|_| "prepare writer failed")?;
+    writer.mutate(Mutation {
+        object: ObjectId(9),
+        version: VersionId(2),
+        content_digest: [11; 32],
+    });
+    engine.commit(writer).map_err(|_| "writer commit failed")?;
+
+    if reader.snapshot_read(ObjectId(9)) != Some(VersionId(1)) {
+        return Err("snapshot read observed a concurrent commit");
+    }
+    let mut reader = reader;
+    reader.mutate(Mutation {
+        object: ObjectId(9),
+        version: VersionId(9),
+        content_digest: [12; 32],
+    });
+    if reader.snapshot_read(ObjectId(9)) != Some(VersionId(9)) {
+        return Err("snapshot read did not apply read-your-writes");
+    }
+    let fresh = engine.prepare(3, 3).map_err(|_| "prepare fresh failed")?;
+    if fresh.snapshot_read(ObjectId(9)) != Some(VersionId(2)) {
+        return Err("a fresh transaction did not observe the committed version");
+    }
+    Ok(())
+}
+
+fn prof_mechanism(name: &str) -> Mechanism {
+    Mechanism::new(name).expect("non-empty mechanism name")
+}
+
+fn prof_manifest(id: u64, tier: Tier) -> Manifest {
+    Manifest {
+        id: ComponentId(id),
+        schema_version: 1,
+        version: 1,
+        requires: Vec::new(),
+        provides: Vec::new(),
+        profiles: vec![Profile::Desktop],
+        tier,
+        max_instances: 1,
+        rollback_on_failure: true,
+        start: "main".to_string(),
+        stop: "main".to_string(),
+    }
+}
+
+fn prof_desktop() -> ProfileDeclaration {
+    ProfileDeclaration {
+        profile: Profile::Desktop,
+        mandatory: vec![prof_mechanism("RFC-0011: layer1-scheduler")],
+        declared_optional: vec![prof_mechanism("RFC-0020: posix-projection")],
+        forbidden: vec![prof_mechanism("multi-domain-federation")],
+        extensions: Vec::new(),
+        minimum_tier: Tier::B,
+    }
+}
+
+fn profile_selection_matches_rfc_0005() -> Result<(), &'static str> {
+    let strong = prof_manifest(1, Tier::A);
+    let decision =
+        apply_profile(&prof_desktop(), &strong).map_err(|_| "strong-tier manifest was rejected")?;
+    if decision.activated
+        != vec![
+            prof_mechanism("RFC-0011: layer1-scheduler"),
+            prof_mechanism("RFC-0020: posix-projection"),
+        ]
+    {
+        return Err("activated mechanism set mismatch");
+    }
+    // Default-off: no undeclared optional or extension may appear.
+    if decision.activated.len() != 2 {
+        return Err("an undeclared mechanism was activated by default");
+    }
+    // Explicit opt-in activates an extension (RFC-0005.5).
+    let mut with_extension = prof_desktop();
+    with_extension
+        .extensions
+        .push(prof_mechanism("object-projection"));
+    let decision =
+        apply_profile(&with_extension, &strong).map_err(|_| "opted-in extension was rejected")?;
+    if !decision
+        .activated
+        .contains(&prof_mechanism("object-projection"))
+    {
+        return Err("an explicitly opted-in extension was not activated");
+    }
+    // Opting into a forbidden mechanism fails.
+    let mut forbidden_opt_in = prof_desktop();
+    forbidden_opt_in
+        .extensions
+        .push(prof_mechanism("multi-domain-federation"));
+    if apply_profile(&forbidden_opt_in, &strong).is_ok() {
+        return Err("an opted-in forbidden mechanism was accepted");
+    }
+    let weak = prof_manifest(1, Tier::D);
+    if apply_profile(&prof_desktop(), &weak).is_ok() {
+        return Err("manifest weaker than the profile floor was accepted");
+    }
+    Ok(())
+}
+
+fn profile_combination_matches_rfc_0005() -> Result<(), &'static str> {
+    let safety = ProfileDeclaration {
+        profile: Profile::SafetyCritical,
+        mandatory: vec![prof_mechanism("locked-manifests")],
+        declared_optional: Vec::new(),
+        forbidden: vec![
+            prof_mechanism("RFC-0011: layer3-offline-learning"),
+            // The desktop mandatory mechanism is forbidden by Safety-Critical:
+            // it must be suppressed, never activated.
+            prof_mechanism("RFC-0011: layer1-scheduler"),
+        ],
+        extensions: Vec::new(),
+        minimum_tier: Tier::A,
+    };
+    let desktop = prof_desktop();
+    let manifest = prof_manifest(1, Tier::A);
+    let decision = combine_profiles(&[desktop, safety.clone()], &manifest)
+        .map_err(|_| "combination was rejected")?;
+    if decision
+        .activated
+        .contains(&prof_mechanism("RFC-0011: layer1-scheduler"))
+    {
+        return Err("a mechanism forbidden by a combined profile was activated");
+    }
+    if !decision
+        .suppressed
+        .contains(&prof_mechanism("RFC-0011: layer1-scheduler"))
+    {
+        return Err("a suppressed mechanism was not reported as suppressed");
+    }
+    if !decision
+        .activated
+        .contains(&prof_mechanism("locked-manifests"))
+    {
+        return Err("combined mandatory sets were not unioned");
+    }
+    // The strictest floor applies: Tier B manifest fails the Safety-Critical floor.
+    let weaker = prof_manifest(1, Tier::B);
+    let safety = ProfileDeclaration {
+        profile: Profile::SafetyCritical,
+        mandatory: vec![prof_mechanism("locked-manifests")],
+        declared_optional: Vec::new(),
+        forbidden: Vec::new(),
+        extensions: Vec::new(),
+        minimum_tier: Tier::A,
+    };
+    if combine_profiles(&[prof_desktop(), safety], &weaker).is_ok() {
+        return Err("the strictest tier floor was not applied");
+    }
+    Ok(())
+}
+
+fn routing_grantor(provides: Vec<aether_comp_model::Grant>) -> aether_comp_model::Manifest {
+    aether_comp_model::Manifest {
+        id: ComponentId(1),
+        schema_version: 1,
+        version: 1,
+        requires: Vec::new(),
+        provides,
+        profiles: vec![Profile::Desktop],
+        tier: Tier::B,
+        max_instances: 1,
+        rollback_on_failure: true,
+        start: "main".to_string(),
+        stop: "main".to_string(),
+    }
+}
+
+fn routing_requestor() -> aether_comp_model::Manifest {
+    aether_comp_model::Manifest {
+        id: ComponentId(2),
+        ..routing_grantor(Vec::new())
+    }
+}
+
+fn routing_authority() -> Capability {
+    Capability {
+        object: ObjectId(42),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ.union(Rights::WRITE).union(Rights::MAP),
+        bounds: Bounds::new(0, 65536).expect("valid bounds"),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    }
+}
+
+fn attenuated(name: &str, ceiling: Option<Rights>) -> aether_comp_model::Grant {
+    aether_comp_model::Grant {
+        name: name.to_string(),
+        narrowing: NarrowingPolicy::Attenuate,
+        rights_ceiling: ceiling,
+    }
+}
+
+fn routing_grant_matches_rfc_0003() -> Result<(), &'static str> {
+    let grantor = routing_grantor(vec![attenuated(
+        "memory.read",
+        Some(Rights::READ.union(Rights::WRITE)),
+    )]);
+    let requestor = routing_requestor();
+    let authority = routing_authority();
+    let outcome = routing::route(
+        &grantor,
+        &requestor,
+        &authority,
+        &routing::RoutingRequest {
+            capability: "memory.read".to_string(),
+            requested_rights: Rights::READ,
+        },
+    );
+    match outcome {
+        routing::RoutingOutcome::Granted(capability)
+            if capability.rights == Rights::READ
+                && capability.object == authority.object
+                && capability.object_type == authority.object_type
+                && capability.bounds == authority.bounds
+                && capability.flags == authority.flags
+                && capability.expires_at_ns == authority.expires_at_ns =>
+        {
+            Ok(())
+        }
+        _ => Err("attenuated grant was not narrowed to the requested rights"),
+    }
+}
+
+fn routing_denial_matches_rfc_0003() -> Result<(), &'static str> {
+    use routing::DenialReason;
+    let authority = routing_authority();
+    let requestor = routing_requestor();
+
+    // Request beyond the ceiling.
+    let grantor = routing_grantor(vec![attenuated("memory.read", Some(Rights::READ))]);
+    let outcome = routing::route(
+        &grantor,
+        &requestor,
+        &authority,
+        &routing::RoutingRequest {
+            capability: "memory.read".to_string(),
+            requested_rights: Rights::MAP,
+        },
+    );
+    if outcome != routing::RoutingOutcome::Denied(DenialReason::NarrowingFailed) {
+        return Err("request exceeding the ceiling was not rejected");
+    }
+
+    // Ceiling the grantor authority does not hold.
+    let grantor = routing_grantor(vec![attenuated("invoke", Some(Rights::INVOKE))]);
+    let outcome = routing::route(
+        &grantor,
+        &requestor,
+        &authority,
+        &routing::RoutingRequest {
+            capability: "invoke".to_string(),
+            requested_rights: Rights::INVOKE,
+        },
+    );
+    if outcome != routing::RoutingOutcome::Denied(DenialReason::GrantNotDerivable) {
+        return Err("ceiling beyond grantor authority was not rejected");
+    }
+
+    // Absent grant.
+    let grantor = routing_grantor(Vec::new());
+    let outcome = routing::route(
+        &grantor,
+        &requestor,
+        &authority,
+        &routing::RoutingRequest {
+            capability: "absent".to_string(),
+            requested_rights: Rights::READ,
+        },
+    );
+    if outcome != routing::RoutingOutcome::Denied(DenialReason::GrantNotDerivable) {
+        return Err("absent grant was not rejected");
+    }
+
+    // Grant with no ceiling is a declaration, not authority.
+    let grantor = routing_grantor(vec![attenuated("ceilingless", None)]);
+    let outcome = routing::route(
+        &grantor,
+        &requestor,
+        &authority,
+        &routing::RoutingRequest {
+            capability: "ceilingless".to_string(),
+            requested_rights: Rights::READ,
+        },
+    );
+    if outcome != routing::RoutingOutcome::Denied(DenialReason::NarrowingFailed) {
+        return Err("ceiling-less grant was not rejected");
+    }
+    Ok(())
+}
+
+fn conformance_core_input() -> conformance::DeclarationInput {
+    conformance::DeclarationInput {
+        cts_version: "cts-0.1.0".to_string(),
+        implementation: "aether-ref-0.1.0".to_string(),
+        profile: None,
+        core_results: conformance::CORE_COMPOSITION_TESTS
+            .iter()
+            .map(|fixture| conformance::FixtureResult::pass(fixture))
+            .collect(),
+        profile_subset: Vec::new(),
+        substitutions: Vec::new(),
+        omitted: Vec::new(),
+        manifests_tested: Vec::new(),
+        tier_claims: Vec::new(),
+    }
+}
+
+fn composition_conformance_matches_rfc_0006() -> Result<(), &'static str> {
+    let declaration = conformance::declare_composition(conformance_core_input())
+        .map_err(|_| "valid core declaration was rejected")?;
+    if !declaration.conformant || !declaration.gaps.is_empty() {
+        return Err("valid core declaration was not reported conformant");
+    }
+    // RFC-0006.4: the declaration cites both the test set and the artifact.
+    let second = conformance::declare_composition(conformance_core_input())
+        .map_err(|_| "second identical declaration was rejected")?;
+    if declaration.artifact != second.artifact {
+        return Err("artifact identifier is not deterministic for identical runs");
+    }
+    Ok(())
+}
+
+fn conformance_rejects_incomplete_declarations() -> Result<(), &'static str> {
+    // Missing core fixture is rejected with the missing fixture id.
+    let mut input = conformance_core_input();
+    input
+        .core_results
+        .retain(|result| result.fixture != "CTS-COMP-PROF-4");
+    match conformance::declare_composition(input) {
+        Err(conformance::ConformanceError::MissingCoreTest("CTS-COMP-PROF-4")) => {}
+        _ => return Err("a missing core fixture was not rejected"),
+    }
+
+    // A failing fixture without a classification is rejected (methodology §10).
+    let mut input = conformance_core_input();
+    let position = input
+        .core_results
+        .iter()
+        .position(|result| result.fixture == "CTS-COMP-RT-2")
+        .expect("fixture exists");
+    input.core_results[position] = conformance::FixtureResult {
+        fixture: "CTS-COMP-RT-2",
+        passed: false,
+        failure: None,
+    };
+    match conformance::declare_composition(input) {
+        Err(conformance::ConformanceError::FailureNotClassified("CTS-COMP-RT-2")) => {}
+        _ => return Err("an unclassified failure was not rejected"),
+    }
+
+    // A failing core fixture must produce a non-conformant declaration with
+    // gap records (methodology section 10); never a passing one.
+    let mut input = conformance_core_input();
+    let position = input
+        .core_results
+        .iter()
+        .position(|result| result.fixture == "CTS-COMP-MAN-4")
+        .expect("fixture exists");
+    input.core_results[position] = conformance::FixtureResult::fail(
+        "CTS-COMP-MAN-4",
+        conformance::FailureMode::ImplementationBug,
+    );
+    let declaration = conformance::declare_composition(input)
+        .map_err(|_| "a failing core fixture must still be declarable")?;
+    if declaration.conformant {
+        return Err("a failing core fixture was reported as conformant");
+    }
+    if declaration.gaps.is_empty() {
+        return Err("a failing core fixture produced no gap records");
+    }
+    Ok(())
+}
+
+fn crash_sweep_matches_persistence_baseline() -> Result<(), &'static str> {
+    // Multi-frame log: one transaction and one effect acknowledgement.
+    let mut engine = StateEngine::new();
+    let seed = state_transaction(&mut engine); // object 9 -> version 1, operation 10
+    engine.commit(seed).map_err(|_| "seed commit failed")?;
+    engine
+        .record_effect(OperationId(10), EffectStatus::Acknowledged)
+        .map_err(|_| "record effect failed")?;
+    let log = engine.durable_log().to_vec();
+    let sweep = aether_state_model::fault::CrashSweep::new(log);
+    if !sweep.violations().is_empty() {
+        return Err("crash sweep reported violations on a valid multi-frame log");
+    }
+
+    // Corrupt one byte inside the first complete frame: recovery must fail at
+    // cuts after the corruption point.
+    let mut corrupt = engine.durable_log().to_vec();
+    let corrupt_at = 17;
+    corrupt[corrupt_at] ^= 1;
+    let sweep = aether_state_model::fault::CrashSweep::new(corrupt);
+    if !sweep.violations().iter().any(|violation| {
+        matches!(violation, aether_state_model::fault::CrashViolation::RecoverFailed(cut) if *cut > corrupt_at)
+    }) {
+        return Err("corruption was not detected at later byte cuts");
+    }
+    Ok(())
+}
+
+fn conformance_report_cites_artifact_and_tests() -> Result<(), &'static str> {
+    let declaration = conformance::declare_composition(conformance_core_input())
+        .map_err(|_| "valid declaration was rejected")?;
+    if !declaration.artifact_is_cited() {
+        return Err("declaration does not cite both the fixture set and a non-zero artifact");
+    }
+    // Negative axis: a zero artifact must NOT be reported as cited.
+    let mut zeroed = declaration.clone();
+    zeroed.artifact = conformance::ArtifactId(0);
+    if zeroed.artifact_is_cited() {
+        return Err("a zero artifact identifier was reported as cited");
+    }
+    let report = declaration.report();
+    if report.artifact != declaration.artifact {
+        return Err("report does not cite the declaration artifact");
+    }
+    if report.artifacts_tested.len() != conformance::CORE_COMPOSITION_TESTS.len() {
+        return Err("report fixture set does not match the executed core set");
+    }
+    let mut sorted = report.artifacts_tested.clone();
+    sorted.sort_unstable();
+    if sorted != report.artifacts_tested {
+        return Err("report fixture list is not in canonical order");
+    }
+    Ok(())
+}
+
+fn conformance_forensics_counts_match_methodology_s10() -> Result<(), &'static str> {
+    let modes = [
+        (
+            "CTS-COMP-MAN-1",
+            conformance::FailureMode::ConformanceViolation,
+        ),
+        ("CTS-COMP-MAN-2", conformance::FailureMode::ConformanceGap),
+        (
+            "CTS-COMP-MAN-3",
+            conformance::FailureMode::ImplementationBug,
+        ),
+        ("CTS-COMP-MAN-4", conformance::FailureMode::TestBug),
+        (
+            "CTS-COMP-MAN-5",
+            conformance::FailureMode::EnvironmentalFailure,
+        ),
+    ];
+    let mut input = conformance_core_input();
+    for (fixture, mode) in modes {
+        let position = input
+            .core_results
+            .iter()
+            .position(|result| result.fixture == fixture)
+            .expect("fixture exists");
+        input.core_results[position] = conformance::FixtureResult::fail(fixture, mode);
+    }
+    let declaration = conformance::declare_composition(input)
+        .map_err(|_| "classified failures must still be declarable")?;
+    let counts = declaration.report().forensics;
+    if counts.conformance_violations != 1
+        || counts.conformance_gaps != 1
+        || counts.implementation_bugs != 1
+        || counts.test_bugs != 1
+        || counts.environmental_failures != 1
+    {
+        return Err("forensics category counts do not match the classified failures");
+    }
+    Ok(())
+}
+
+fn outbox_dispatch_matches_persistence_baseline() -> Result<(), &'static str> {
+    use aether_state_model::outbox::{OutboxDispatcher, Receiver};
+
+    // Commit two effects; dispatch; both must be acknowledged.
+    let mut engine = StateEngine::new();
+    let mut tx = engine.prepare(7, 11).map_err(|_| "prepare failed")?;
+    tx.mutate(Mutation {
+        object: ObjectId(77),
+        version: VersionId(1),
+        content_digest: [7; 32],
+    });
+    for operation in [101_u128, 102] {
+        tx.intend(EffectIntent {
+            operation: OperationId(operation),
+            class: EffectClass::Deduplicated,
+            request_digest: [8; 32],
+        });
+    }
+    engine.commit(tx).map_err(|_| "commit failed")?;
+    let mut dispatcher = OutboxDispatcher::new(Receiver::new());
+    let report = dispatcher
+        .dispatch(&mut engine)
+        .map_err(|_| "dispatch failed")?;
+    if report.delivered != 2
+        || engine.effect_status(OperationId(101)) != Some(EffectStatus::Acknowledged)
+        || engine.effect_status(OperationId(102)) != Some(EffectStatus::Acknowledged)
+    {
+        return Err("fresh intents were not acknowledged");
+    }
+
+    // Crash after send for a fresh effect: uncertain outcome, then reconcile.
+    let tx = engine
+        .prepare(7, 11)
+        .map_err(|_| "prepare crash intent failed")?;
+    let mut tx = tx;
+    tx.intend(EffectIntent {
+        operation: OperationId(103),
+        class: EffectClass::Deduplicated,
+        request_digest: [9; 32],
+    });
+    engine
+        .commit(tx)
+        .map_err(|_| "commit crash intent failed")?;
+    let mut dispatcher =
+        OutboxDispatcher::new(Receiver::new().crashing_after_send_on(OperationId(103)));
+    let first = dispatcher
+        .dispatch(&mut engine)
+        .map_err(|_| "crash dispatch failed")?;
+    if first.uncertain != 1
+        || engine.effect_status(OperationId(103)) != Some(EffectStatus::Uncertain)
+    {
+        return Err("crash after send did not produce an uncertain outcome");
+    }
+    let reconciled = dispatcher
+        .reconcile(&mut engine)
+        .map_err(|_| "reconcile failed")?;
+    if reconciled.acknowledged != 1
+        || engine.effect_status(OperationId(103)) != Some(EffectStatus::Acknowledged)
+    {
+        return Err("uncertain outcome was not reconciled by deduplicated redelivery");
+    }
+
+    // A rejecting-redelivery receiver must end Rejected, never blind-acked.
+    let tx = engine
+        .prepare(7, 11)
+        .map_err(|_| "prepare reject intent failed")?;
+    let mut tx = tx;
+    tx.intend(EffectIntent {
+        operation: OperationId(104),
+        class: EffectClass::Deduplicated,
+        request_digest: [11; 32],
+    });
+    engine
+        .commit(tx)
+        .map_err(|_| "commit reject intent failed")?;
+    let mut dispatcher =
+        OutboxDispatcher::new(Receiver::new().crashing_after_send_on(OperationId(104)));
+    let first = dispatcher
+        .dispatch(&mut engine)
+        .map_err(|_| "crash dispatch failed")?;
+    if first.uncertain != 1 {
+        return Err("crash after send did not leave the op uncertain");
+    }
+    let mut dispatcher = OutboxDispatcher::new(Receiver::new().rejecting(OperationId(104)));
+    let reconciled = dispatcher
+        .reconcile(&mut engine)
+        .map_err(|_| "reconcile failed")?;
+    if reconciled.rejected != 1
+        || engine.effect_status(OperationId(104)) != Some(EffectStatus::Rejected)
+    {
+        return Err("redelivery was not routed through the receiver (blind ack)");
+    }
+    Ok(())
 }

@@ -134,7 +134,7 @@ Merged-main artifact SHA-256: `f48aa6aa2a30625e35ad2fc23af307f7c6059944dd0e41326
 
 These results are host-reference evidence only. They do not prove kernel conformance, hardware page-table correctness, actual scheduler integration, concurrent map/dispatch linearization, target-hart discovery, interrupt delivery, memory ordering, worst-case shootdown latency, or formal correctness.
 
-The live-authority access guard and serialized MemoryRuntime described above are subsequent development-branch additions. They add one unit regression for a revoked capability with a cached translation and two machine-readable CTS cases, bringing that branch to 17 cases. Their latest-head CI validation is pending; the earlier 15-case main/PR validation above does not cover them.
+The live-authority access guard and serialized MemoryRuntime described above were validated as PR #10 and merged to `main`, bringing main to 17 cases. The uncommitted working tree adds scheduling-time lifetime enforcement and CAPF_BOUND semantics with two further cases (19 total); it is not merged, committed or CI-validated.
 
 ## 7. Explicit exclusions and unresolved engineering work
 
