@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["crates/aether-arch-riscv64"]
 members = [
     "crates/aether-types",
     "crates/aether-cap-model",

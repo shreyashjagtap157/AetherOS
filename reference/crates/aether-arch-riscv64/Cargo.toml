@@ -1,0 +1,11 @@
+[package]
+name = "aether-arch-riscv64"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+rust-version = "1.85"
+publish = false
+
+[profile.release]
+opt-level = "s"
+debug = false

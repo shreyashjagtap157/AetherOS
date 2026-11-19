@@ -44,7 +44,7 @@ The product-version realization of these gates is defined in `VERSIONED-PRODUCT-
 
 ## 4. Phase B — QEMU RISC-V64 vertical slice
 
-**Minimum plausible duration:** 12–24 months after Phase A gate. **Current state:** not started.
+**Minimum plausible duration:** 12-24 months after Phase A gate. **Current state:** target approved 2026-11-19 (QEMU `virt` RISC-V64 + OpenSBI, per VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md); a boot-checkpoint ELF is built and cross-compile verified (entry `0x80200000`, EM_RISCV); boot NOT verified (QEMU absent on this host); no milestone claimed.
 
 Implement only: OpenSBI/QEMU boot, minimal executor, physical/page allocation, Sv39 address spaces, traps/timer, compact capability spaces, one IPC path, one isolated component, UART, virtio-block, append-only transactional state prototype, batched audit commitment, outbox recovery, deterministic test harness, and crash/fault injection.
 

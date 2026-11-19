@@ -177,7 +177,7 @@ This document tracks the implementation status of every component in the platfor
 | Pre-Phase 1: RFC-COMPILER-001 drafted | 2026-06-09 | **Drafted** | Compiler boundary RFC drafted; pending review and acceptance |
 | Pre-Phase 1: RFC-DRIVER-001 drafted | 2026-06-09 | **Drafted** | Driver framework RFC drafted; pending review and acceptance |
 | Pre-Phase 1: Three RFCs accepted | TBD | **Not started** | All three RFCs accepted as Active; Implementation Baseline v1.2 |
-| Phase 1: RISC-V reference boot | TBD | **Not started** | Primary reference platform (was: Phase 3) |
+| Phase B: RISC-V64 boot checkpoint | TBD | **Target approved 2026-11-19; cross-compile and link verified; boot NOT verified (QEMU absent on this host)** | QEMU `virt` + OpenSBI; payload links at 0x80200000; see docs/HANDOFF-PHASE-B-RV64.md |
 | Phase 2: x86-64 + ARM64 ports | TBD | **Not started** | Deployment platforms |
 | All 5 peer architectures running | TBD | **Not started** | After Phase 2 |
 | Multi-architecture support (Phase 3) | TBD | **Not started** | After Phase 2 |
