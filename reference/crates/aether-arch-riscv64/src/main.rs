@@ -18,9 +18,108 @@ const CLINT_MTIMECMP0: usize = 0x0200_4000;
 const TIMER_INTERVAL: u64 = 10_000_000;
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+// ---------------------------------------------------------------------------
+// Task context (saved registers)
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct TaskContext {
+    pc: u64,
+    ra: u64,
+    gp: u64,
+    tp: u64,
+    t0: u64,
+    t1: u64,
+    t2: u64,
+    s0: u64,
+    s1: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+    a4: u64,
+    a5: u64,
+    a6: u64,
+    a7: u64,
+    s2: u64,
+    s3: u64,
+    s4: u64,
+    s5: u64,
+    s6: u64,
+    s7: u64,
+    s8: u64,
+    s9: u64,
+    s10: u64,
+    s11: u64,
+    t3: u64,
+    t4: u64,
+    t5: u64,
+    t6: u64,
+    sp: u64,
+}
+
+const MAX_TASKS: usize = 2;
+
+static mut TASKS: [TaskContext; MAX_TASKS] = [TaskContext {
+    pc: 0,
+    ra: 0,
+    gp: 0,
+    tp: 0,
+    t0: 0,
+    t1: 0,
+    t2: 0,
+    s0: 0,
+    s1: 0,
+    a0: 0,
+    a1: 0,
+    a2: 0,
+    a3: 0,
+    a4: 0,
+    a5: 0,
+    a6: 0,
+    a7: 0,
+    s2: 0,
+    s3: 0,
+    s4: 0,
+    s5: 0,
+    s6: 0,
+    s7: 0,
+    s8: 0,
+    s9: 0,
+    s10: 0,
+    s11: 0,
+    t3: 0,
+    t4: 0,
+    t5: 0,
+    t6: 0,
+    sp: 0,
+}; MAX_TASKS];
+
+static mut CURRENT_TASK: usize = 0;
+
+// Stack for task 1 (1 KiB, grows down).
+static mut TASK1_STACK: [u64; 128] = [0; 128];
+
+// Task 1 entry point.
+#[unsafe(no_mangle)]
+pub extern "C" fn task1_entry() -> ! {
+    sbi_console_write(b"task1 entry\n");
+    loop {
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trap entry (assembly) - saves all registers, calls Rust handler,
+// restores registers, sret.
+// ---------------------------------------------------------------------------
 
 core::arch::global_asm!(
     ".section .text._start",
@@ -87,22 +186,6 @@ fn clint_write_mtimecmp0(val: u64) {
     unsafe {
         (CLINT_MTIMECMP0 as *mut u64).write_volatile(val);
     }
-}
-
-fn csrr_scause() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("csrr {}, scause", out(reg) val, options(nomem));
-    }
-    val
-}
-
-fn csrr_sepc() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("csrr {}, sepc", out(reg) val, options(nomem));
-    }
-    val
 }
 
 unsafe extern "C" {
@@ -190,8 +273,116 @@ pub extern "C" fn trap_handler(mcause: u64, sepc: u64) -> u64 {
         sbi_console_write(b"tick\n");
         let now = clint_read_mtime();
         clint_write_mtimecmp0(now.wrapping_add(TIMER_INTERVAL));
+
+        // Context switch: save current task, switch to next task.
+        unsafe { save_and_switch(sepc) };
     }
     sepc
+}
+
+/// Save current task context from trap frame, switch to next task,
+/// and prepare stack for next task's register restore.
+unsafe fn save_and_switch(sepc: u64) {
+    // Current stack pointer (points to saved trap frame).
+    let sp: u64;
+    core::arch::asm!("mv {}, sp", out(reg) sp, options(nomem));
+
+    let current = CURRENT_TASK;
+    let task = &mut TASKS[current];
+
+    // Save program counter from sepc (passed by trap_handler).
+    task.pc = sepc;
+
+    // Save all GPRs from trap frame (sp + offset, 8 bytes each).
+    let frame = sp as *mut u64;
+    task.ra = *frame.add(0);
+    task.gp = *frame.add(1);
+    task.tp = *frame.add(2);
+    task.t0 = *frame.add(3);
+    task.t1 = *frame.add(4);
+    task.t2 = *frame.add(5);
+    task.s0 = *frame.add(6);
+    task.s1 = *frame.add(7);
+    task.a0 = *frame.add(8);
+    task.a1 = *frame.add(9);
+    task.a2 = *frame.add(10);
+    task.a3 = *frame.add(11);
+    task.a4 = *frame.add(12);
+    task.a5 = *frame.add(13);
+    task.a6 = *frame.add(14);
+    task.a7 = *frame.add(15);
+    task.s2 = *frame.add(16);
+    task.s3 = *frame.add(17);
+    task.s4 = *frame.add(18);
+    task.s5 = *frame.add(19);
+    task.s6 = *frame.add(20);
+    task.s7 = *frame.add(21);
+    task.s8 = *frame.add(22);
+    task.s9 = *frame.add(23);
+    task.s10 = *frame.add(24);
+    task.s11 = *frame.add(25);
+    task.t3 = *frame.add(26);
+    task.t4 = *frame.add(27);
+    task.t5 = *frame.add(28);
+    task.t6 = *frame.add(29);
+
+    // Original sp (before trap_entry's `addi sp, sp, -256`).
+    task.sp = sp.wrapping_add(256);
+
+    // Switch to next task (round-robin).
+    let next = (current + 1) % MAX_TASKS;
+    CURRENT_TASK = next;
+
+    let next_task = &TASKS[next];
+
+    // Set sepc so sret returns to next task's pc.
+    csrw_sepc(next_task.pc);
+
+    // Where trap_entry will restore from: it does ld reg, offset(sp) then
+    // addi sp, sp, 256. We want final sp = next_task.sp, so set sp now to
+    // next_task.sp - 256 and write next task's regs at that frame.
+    let next_sp = next_task.sp.wrapping_sub(256);
+    let next_frame = next_sp as *mut u64;
+    *next_frame.add(0) = next_task.ra;
+    *next_frame.add(1) = next_task.gp;
+    *next_frame.add(2) = next_task.tp;
+    *next_frame.add(3) = next_task.t0;
+    *next_frame.add(4) = next_task.t1;
+    *next_frame.add(5) = next_task.t2;
+    *next_frame.add(6) = next_task.s0;
+    *next_frame.add(7) = next_task.s1;
+    *next_frame.add(8) = next_task.a0;
+    *next_frame.add(9) = next_task.a1;
+    *next_frame.add(10) = next_task.a2;
+    *next_frame.add(11) = next_task.a3;
+    *next_frame.add(12) = next_task.a4;
+    *next_frame.add(13) = next_task.a5;
+    *next_frame.add(14) = next_task.a6;
+    *next_frame.add(15) = next_task.a7;
+    *next_frame.add(16) = next_task.s2;
+    *next_frame.add(17) = next_task.s3;
+    *next_frame.add(18) = next_task.s4;
+    *next_frame.add(19) = next_task.s5;
+    *next_frame.add(20) = next_task.s6;
+    *next_frame.add(21) = next_task.s7;
+    *next_frame.add(22) = next_task.s8;
+    *next_frame.add(23) = next_task.s9;
+    *next_frame.add(24) = next_task.s10;
+    *next_frame.add(25) = next_task.s11;
+    *next_frame.add(26) = next_task.t3;
+    *next_frame.add(27) = next_task.t4;
+    *next_frame.add(28) = next_task.t5;
+    *next_frame.add(29) = next_task.t6;
+
+    // Set sp so trap_entry's loads read next task's regs.
+    core::arch::asm!("mv sp, {}", in(reg) next_sp, options(nomem));
+}
+
+/// Write sepc CSR with the given value.
+fn csrw_sepc(val: u64) {
+    unsafe {
+        core::arch::asm!("csrw sepc, {}", in(reg) val, options(nomem));
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -202,12 +393,17 @@ pub extern "C" fn start() -> ! {
     sbi_console_write(b"stvec+sie+sstatus set\n");
     sbi_console_write(b"hello from kernel\n");
 
-    // Read current mtime and set timer
+    // Initialise task 1.
+    unsafe {
+        TASKS[1].pc = task1_entry as *const () as usize as u64;
+        TASKS[1].sp = (&raw const TASK1_STACK as *const [u64; 128] as usize + 1024) as u64;
+    }
+
+    // Read current mtime and set timer.
     let mtime_now = clint_read_mtime();
     let fire_at = mtime_now.wrapping_add(TIMER_INTERVAL);
     sbi_timer_set(fire_at);
     sbi_console_write(b"timer set at ");
-    // Print fire_at hex
     let mut buf = [0u8; 18];
     buf[0] = b'0';
     buf[1] = b'x';
