@@ -13,7 +13,7 @@ fn panic(_info: &PanicInfo) -> ! {
 
 // Trap entry assembly (no-op: just mret)
 core::arch::global_asm!(
-    ".section .text.trap",
+    ".section .text",
     ".globl trap_entry",
     "trap_entry:",
     "  mret",
