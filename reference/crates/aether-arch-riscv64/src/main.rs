@@ -691,26 +691,6 @@ fn panic(_info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
-    sbi_console_write(b"1\n");
-    // Install trap vector.
-    write_mtvec(trap_entry as *const () as usize as u64);
-    sbi_console_write(b"2: task1 init\n");
-    // Initialise task 1 with a valid entry point and stack.
-    unsafe {
-        TASKS[1].pc = task1_entry as *const () as usize as u64;
-        TASKS[1].sp = (&raw const TASK1_STACK as *const [u64; 128] as usize + 1024) as u64;
-    }
-    sbi_console_write(b"3: mie\n");
-    // Enable machine timer interrupt.
-    set_mie(MIE_MTIE);
-    sbi_console_write(b"4: mstatus\n");
-    set_mstatus(MSTATUS_MIE);
-    sbi_console_write(b"5: timer\n");
-    // Arm first timer interrupt.
-    let now = clint_read_mtime();
-    sbi_console_write(b"6: mtimecmp\n");
-    clint_write_mtimecmp0(now.wrapping_add(TIMER_INTERVAL));
-    sbi_console_write(b"7: rust_main\n");
     rust_main()
 }
 
@@ -718,23 +698,8 @@ pub extern "C" fn start() -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
     sbi_console_write(b"rust_main\n");
-    sbi_console_write(b"AetherOS RV64 kernel: IPC ready\n");
-    let mut buf = [0u8; IPC_MSG_SIZE];
+    sbi_console_write(b"AetherOS RV64 kernel: ready\n");
     loop {
-        match ipc_receive(0, &mut buf) {
-            Ok((sender, len)) => {
-                sbi_console_write(b"recv from ");
-                sbi_console_write_u64(sender);
-                sbi_console_write(b": ");
-                for &b in &buf[..len] {
-                    sbi_console_putchar(b);
-                }
-                sbi_console_putchar(b'\n');
-            }
-            Err(_) => {
-                // No message yet; yield until next timer tick.
-            }
-        }
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
