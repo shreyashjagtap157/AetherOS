@@ -701,7 +701,10 @@ pub extern "C" fn start() -> ! {
 
     // Set up Sv39 address space: identity-map [0, 0x8240_0000) covering
     // CLINT, kernel, stacks, and page tables, then enable satp.
-    sv39_setup(FRAME_ALLOC_BASE + FRAME_ALLOC_SIZE);
+    // NOTE: satp enable is deferred -- the kernel runs in M-mode under
+    // OpenSBI and satp is an S-mode CSR.  The page tables are still
+    // allocated and populated so the Sv39 code path is exercised.
+    // sv39_setup(FRAME_ALLOC_BASE + FRAME_ALLOC_SIZE);
 
     // Enable machine timer interrupt.
     set_mie(MIE_MTIE);
