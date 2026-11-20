@@ -70,14 +70,20 @@ jobs:
       - name: Validate boot result
         run: |
           ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
+          echo "=== boot.log ==="
+          cat boot.log || true
+          echo "=== end boot.log ==="
           if ! test -s "$ARTIFACT"; then echo "ARTIFACT missing"; exit 1; fi
           if ! head -c 4 "$ARTIFACT" | grep -q $'\x7fELF'; then echo "not ELF"; exit 1; fi
           if ! od -An -tu2 -j18 -N2 "$ARTIFACT" | tr -d ' ' | grep -q 243; then echo "not RISC-V"; exit 1; fi
           if ! od -An -tu2 -j16 -N2 "$ARTIFACT" | tr -d ' ' | grep -q 2; then echo "not ET_EXEC"; exit 1; fi
-          if ! od -An -tx1 -j24 -N8 "$ARTIFACT" | tr -d ' ' | tr 'a-f' 'A-F' | grep -q 80200000; then echo "bad entry"; exit 1; fi
+          entry=$(od -An -tx1 -j24 -N4 "$ARTIFACT" | tr -d ' ')
+          entry=$(echo "$entry" | sed 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/')
+          entry="0x$entry"
+          test "$entry" = "0x80200000" || { echo "bad entry $entry"; exit 1; }
           if [ ! -s boot.log ]; then echo "no console output"; exit 1; fi
-          if ! grep -q "AetherOS RV64 kernel" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
-          if ! grep -q "tick" boot.log; then echo "timer tick missing"; cat boot.log; exit 1; fi
+          if ! grep -q "AetherOS RV64 kernel" boot.log; then echo "kernel marker missing"; exit 1; fi
+          if ! grep -q "tick" boot.log; then echo "timer tick missing"; exit 1; fi
           exit_code=$(cut -d= -f2 boot.status)
           if [ "$exit_code" != "0" ]; then echo "emulator exited $exit_code"; exit 1; fi
           echo "boot ok"
