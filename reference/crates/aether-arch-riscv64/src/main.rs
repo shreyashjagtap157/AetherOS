@@ -3,8 +3,13 @@
 
 use core::panic::PanicInfo;
 
+const MSTATUS_MIE: u64 = 1 << 3;
+const MIE_MTIE: u64 = 1 << 7;
+const MCAUSE_MACHINE_TIMER: u64 = 7;
+
 const CLINT_BASE: usize = 0x0200_0000;
-const CLINT_MTIME: usize = CLINT_BASE + 0xBFF8;
+const CLINT_MTIMECMP0: usize = CLINT_BASE + 0x4000;
+const TIMER_INTERVAL: u64 = 10_000_000;
 
 const SBI_EXT_CONSOLE_PUTCHAR: u64 = 0x01;
 const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
@@ -41,12 +46,53 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
+fn write_mtvec(val: u64) {
+    unsafe {
+        core::arch::asm!("csrw mtvec, {}", in(reg) val, options(nomem));
+    }
+}
+
+fn set_mie(bits: u64) {
+    unsafe {
+        core::arch::asm!("csrs mie, {}", in(reg) bits, options(nomem));
+    }
+}
+
+fn set_mstatus(bits: u64) {
+    unsafe {
+        core::arch::asm!("csrs mstatus, {}", in(reg) bits, options(nomem));
+    }
+}
+
+fn clint_write_mtimecmp0(val: u64) {
+    unsafe {
+        (CLINT_MTIMECMP0 as *mut u64).write_volatile(val);
+    }
+}
+
+unsafe extern "C" {
+    fn trap_entry();
+}
+
+core::arch::global_asm!(
+    ".section .text",
+    ".globl trap_entry",
+    "trap_entry:",
+    "  mret",
+);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn trap_handler(mcause: u64, mepc: u64, _mtval: u64) -> u64 {
+    if mcause == MCAUSE_MACHINE_TIMER {
+        sbi_console_write(b"tick\n");
+        // Don't re-arm timer yet
+    }
+    mepc
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
-    let mtime = unsafe { (CLINT_MTIME as *const u64).read_volatile() };
-    sbi_console_write(b"mtime: ");
-    // Print mtime as hex (simple)
-    sbi_console_write(b"ok\n");
+    write_mtvec(trap_entry as *const () as usize as u64);
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
