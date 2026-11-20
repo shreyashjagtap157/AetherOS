@@ -37,6 +37,49 @@ const TIMER_INTERVAL: u64 = 10_000_000;
 const SBI_EXT_CONSOLE_PUTCHAR: u64 = 0x01;
 const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
 
+// ---------------------------------------------------------------------------
+// Sv39 page tables (3-level, 4 KiB pages)
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZE: usize = 4096;
+
+// PTE bits
+const PTE_V: u64 = 1 << 0;   // Valid
+const PTE_R: u64 = 1 << 1;   // Read
+const PTE_W: u64 = 1 << 2;   // Write
+const PTE_X: u64 = 1 << 3;   // Execute
+
+// Satp mode: 8 = Sv39.
+const SATP_MODE_SV39: u64 = 8;
+
+// Page frame allocator: bump over a reserved region (32 MiB at 0x80400000,
+// just above the kernel load address 0x80200000).
+const FRAME_ALLOC_BASE: usize = 0x8040_0000;
+const FRAME_ALLOC_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+static mut FRAME_ALLOC_NEXT: usize = FRAME_ALLOC_BASE;
+
+/// Allocate one zeroed 4 KiB page frame, returning its physical address.
+fn alloc_frame() -> usize {
+    unsafe {
+        let addr = FRAME_ALLOC_NEXT;
+        FRAME_ALLOC_NEXT = FRAME_ALLOC_NEXT.checked_add(PAGE_SIZE)
+            .expect("frame allocator exhausted");
+        // Zero the frame.
+        let mut p = addr as *mut u64;
+        for _ in 0..PAGE_SIZE / 8 {
+            p.write_volatile(0);
+            p = p.add(1);
+        }
+        addr
+    }
+}
+
+/// Physical page number from a physical address.
+fn ppn_of(addr: usize) -> u64 {
+    (addr >> 12) as u64
+}
+
+// ---------------------------------------------------------------------------
 // Global tick counter, incremented by the timer interrupt handler.
 static mut TICKS: u64 = 0;
 
@@ -329,6 +372,65 @@ fn clint_write_mtimecmp0(val: u64) {
     }
 }
 
+/// Map a virtual address range to physical addresses in an Sv39 page table.
+/// Walks all three levels (L2, L1, L0), allocating intermediate page tables
+/// as needed. `addr` and `size` must be page-aligned.
+fn map(root_pa: usize, vaddr: usize, paddr: usize, size: usize, perm: u64) {
+    assert_eq!(vaddr % PAGE_SIZE, 0);
+    assert_eq!(paddr % PAGE_SIZE, 0);
+    assert_eq!(size % PAGE_SIZE, 0);
+
+    let table = root_pa as *mut u64;
+
+    for offset in (0..size).step_by(PAGE_SIZE) {
+        let va = vaddr + offset;
+        let pa = paddr + offset;
+
+        // Level 2 index (bits 38:30)
+        let l2 = ((va >> 30) & 0x1ff) as usize;
+        let mut l2_entry = unsafe { table.add(l2).read_volatile() };
+        if l2_entry & PTE_V == 0 {
+            let child = alloc_frame();
+            l2_entry = (ppn_of(child) << 10) | PTE_V;
+            unsafe { table.add(l2).write_volatile(l2_entry) };
+        }
+        let l2_table = ((l2_entry >> 10) << 12) as *mut u64;
+
+        // Level 1 index (bits 29:21)
+        let l1 = ((va >> 21) & 0x1ff) as usize;
+        let mut l1_entry = unsafe { l2_table.add(l1).read_volatile() };
+        if l1_entry & PTE_V == 0 {
+            let child = alloc_frame();
+            l1_entry = (ppn_of(child) << 10) | PTE_V;
+            unsafe { l2_table.add(l1).write_volatile(l1_entry) };
+        }
+        let l1_table = ((l1_entry >> 10) << 12) as *mut u64;
+
+        // Level 0 index (bits 20:12) -> leaf PTE
+        let l0 = ((va >> 12) & 0x1ff) as usize;
+        let pte = (ppn_of(pa) << 10) | PTE_V | perm;
+        unsafe { l1_table.add(l0).write_volatile(pte) };
+    }
+}
+
+/// Set up an Sv39 address space: allocate a root page table, identity-map a
+/// region covering CLINT, kernel, stacks, and page tables, then enable satp.
+/// After this call, all memory accesses use Sv39 translation with VA == PA.
+fn sv39_setup(identity_end: usize) {
+    let root = alloc_frame();
+
+    // Identity-map [0, identity_end) with Read|Write|Execute permissions.
+    let perm = PTE_R | PTE_W | PTE_X;
+    map(root, 0, 0, identity_end, perm);
+
+    // Enable Sv39: satp = (mode << 60) | ppn
+    let satp = (SATP_MODE_SV39 << 60) | ppn_of(root);
+    unsafe {
+        core::arch::asm!("csrw satp, {}", in(reg) satp, options(nomem));
+        core::arch::asm!("sfence.vma", options(nomem));
+    }
+}
+
 /// Save current task context from the trap frame, switch to the next task,
 /// and prepare the stack so trap_entry's register restore loads the next
 /// task's registers. Called from trap_handler on every timer tick.
@@ -488,6 +590,12 @@ pub extern "C" fn start() -> ! {
         TASKS[1].pc = task1_entry as *const () as usize as u64;
         TASKS[1].sp = (&raw const TASK1_STACK as *const [u64; 128] as usize + 1024) as u64;
     }
+
+    // Set up Sv39 address space: identity-map [0, 0x8240_0000) covering
+    // CLINT, kernel, stacks, and page tables, then enable satp.
+    sv39_setup(FRAME_ALLOC_BASE + FRAME_ALLOC_SIZE);
+
+    // Enable machine timer interrupt.
     set_mie(MIE_MTIE);
     set_mstatus(MSTATUS_MIE);
 
