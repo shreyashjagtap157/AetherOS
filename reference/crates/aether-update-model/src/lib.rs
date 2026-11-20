@@ -150,7 +150,10 @@ impl UpdateSystem {
         if !self.update_in_progress {
             return Err("no update in progress");
         }
-        let manifest = self.pending_manifest.as_ref().ok_or("no pending manifest")?;
+        let manifest = self
+            .pending_manifest
+            .as_ref()
+            .ok_or("no pending manifest")?;
         let target = self.active.other();
         self.set_version(target, manifest.version.clone());
         self.boot_retries = 0;
@@ -278,7 +281,7 @@ mod tests {
         // Simulate 3 boot failures.
         assert!(!sys.record_boot_failure()); // retry 1
         assert!(!sys.record_boot_failure()); // retry 2
-        assert!(sys.record_boot_failure());  // retry 3 -> rollback
+        assert!(sys.record_boot_failure()); // retry 3 -> rollback
         assert_eq!(sys.active, Partition::A);
         assert_eq!(sys.active_version(), "1.0.0");
         assert!(!sys.update_in_progress);

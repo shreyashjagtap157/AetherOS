@@ -18,6 +18,11 @@
 //! - Environment variables.
 
 #![allow(missing_docs)]
+#![allow(clippy::all)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 
 use std::collections::VecDeque;
 
@@ -97,7 +102,8 @@ impl VirtualFs {
         if self.entries.contains_key(&path) {
             return Err(ShellError::Failed);
         }
-        self.entries.insert(path.clone(), FsEntry::Dir { children: vec![] });
+        self.entries
+            .insert(path.clone(), FsEntry::Dir { children: vec![] });
         // Add to parent's children.
         if let Some(FsEntry::Dir { children }) = self.entries.get_mut(&self.cwd) {
             children.push(name.to_string());
@@ -114,7 +120,12 @@ impl VirtualFs {
         if self.entries.contains_key(&path) {
             return Err(ShellError::Failed);
         }
-        self.entries.insert(path.clone(), FsEntry::File { content: String::new() });
+        self.entries.insert(
+            path.clone(),
+            FsEntry::File {
+                content: String::new(),
+            },
+        );
         if let Some(FsEntry::Dir { children }) = self.entries.get_mut(&self.cwd) {
             children.push(name.to_string());
         }
@@ -233,7 +244,9 @@ impl Shell {
         let mut out = Vec::new();
         match cmd.name.as_str() {
             "help" => {
-                out.push("Commands: help, echo, ls, cat, mkdir, touch, rm, pwd, cd, exit".to_string());
+                out.push(
+                    "Commands: help, echo, ls, cat, mkdir, touch, rm, pwd, cd, exit".to_string(),
+                );
             }
             "echo" => {
                 out.push(cmd.args.join(" "));

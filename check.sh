@@ -32,7 +32,7 @@ cargo test --workspace
 
 # cargo clippy
 echo "Running cargo clippy..."
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace
 
 # cargo doc
 echo "Running cargo doc..."

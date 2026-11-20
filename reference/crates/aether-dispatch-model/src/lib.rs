@@ -177,18 +177,20 @@ impl Dispatcher {
     /// [`DispatchError::Expired`] if the capability has expired,
     /// [`DispatchError::DomainViolation`] if the capability does not cover
     /// the target hart's domain.
-    pub fn dispatch(
-        &mut self,
-        request: DispatchRequest,
-    ) -> Result<DispatchId, DispatchError> {
+    pub fn dispatch(&mut self, request: DispatchRequest) -> Result<DispatchId, DispatchError> {
         if !self.is_authorized(&request) {
             return Err(DispatchError::Unauthorized);
         }
-        if request.capability.expires_at_ns != 0 && request.now_ns > request.capability.expires_at_ns {
+        if request.capability.expires_at_ns != 0
+            && request.now_ns > request.capability.expires_at_ns
+        {
             return Err(DispatchError::Expired);
         }
         let id = DispatchId(self.next_dispatch_id);
-        self.next_dispatch_id = self.next_dispatch_id.checked_add(1).ok_or(DispatchError::Exhausted)?;
+        self.next_dispatch_id = self
+            .next_dispatch_id
+            .checked_add(1)
+            .ok_or(DispatchError::Exhausted)?;
         let dispatch = Dispatch {
             id,
             state: DispatchState::Running,
@@ -290,10 +292,7 @@ mod tests {
             domain: DomainId::new(1).unwrap(),
             now_ns: 101, // after expiry
         };
-        assert_eq!(
-            dispatcher.dispatch(request),
-            Err(DispatchError::Expired)
-        );
+        assert_eq!(dispatcher.dispatch(request), Err(DispatchError::Expired));
     }
 
     #[test]

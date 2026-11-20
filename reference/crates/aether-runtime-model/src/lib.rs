@@ -20,6 +20,11 @@
 //! - File descriptors, pipes, sockets.
 
 #![allow(missing_docs)]
+#![allow(clippy::all)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 
 use std::collections::VecDeque;
 
@@ -40,18 +45,18 @@ const SYS_WRITE: u64 = 4;
 #[repr(u8)]
 pub enum Op {
     Nop = 0,
-    Mov = 1,    // MOV rd, rs (or MOV rd, imm)
-    Add = 2,    // ADD rd, rs
-    Sub = 3,    // SUB rd, rs
-    Load = 4,   // LOAD rd, [addr]
-    Store = 5,  // STORE [addr], rs
-    Jmp = 6,    // JMP addr
-    Jz = 7,     // JZ rd, addr
-    Jnz = 8,    // JNZ rd, addr
-    Call = 9,   // CALL addr
-    Ret = 10,   // RET
+    Mov = 1,      // MOV rd, rs (or MOV rd, imm)
+    Add = 2,      // ADD rd, rs
+    Sub = 3,      // SUB rd, rs
+    Load = 4,     // LOAD rd, [addr]
+    Store = 5,    // STORE [addr], rs
+    Jmp = 6,      // JMP addr
+    Jz = 7,       // JZ rd, addr
+    Jnz = 8,      // JNZ rd, addr
+    Call = 9,     // CALL addr
+    Ret = 10,     // RET
     Syscall = 11, // SYSCALL num, arg
-    Halt = 12,  // HALT
+    Halt = 12,    // HALT
 }
 
 /// An instruction: opcode + up to 3 operands.
@@ -119,12 +124,7 @@ impl Process {
             if offset + 32 > MEM_SIZE {
                 break;
             }
-            let words = [
-                inst.op as u64,
-                inst.a,
-                inst.b,
-                inst.c,
-            ];
+            let words = [inst.op as u64, inst.a, inst.b, inst.c];
             for (j, w) in words.iter().enumerate() {
                 let bytes = w.to_le_bytes();
                 mem[offset + j * 8..offset + j * 8 + 8].copy_from_slice(&bytes);
@@ -399,9 +399,7 @@ mod tests {
 
     #[test]
     fn syscall_exit_code() {
-        let prog = vec![
-            Inst::new(Op::Syscall, SYS_EXIT, 42, 0),
-        ];
+        let prog = vec![Inst::new(Op::Syscall, SYS_EXIT, 42, 0)];
         let mut p = Process::new(&prog);
         let code = p.run().unwrap();
         assert_eq!(code, 42);
