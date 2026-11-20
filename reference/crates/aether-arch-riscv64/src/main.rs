@@ -56,10 +56,10 @@ fn sbi_console_write_u64_hex(val: u64) {
     }
 }
 
-fn csrr_mtvec() -> u64 {
+fn csrr_mcycle() -> u64 {
     let val: u64;
     unsafe {
-        core::arch::asm!("csrr {}, mtvec", out(reg) val, options(nomem));
+        core::arch::asm!("csrr {}, mcycle", out(reg) val, options(nomem));
     }
     val
 }
@@ -67,8 +67,8 @@ fn csrr_mtvec() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
-    sbi_console_write(b"mtvec: ");
-    let v = csrr_mtvec();
+    sbi_console_write(b"mcycle: ");
+    let v = csrr_mcycle();
     sbi_console_write_u64_hex(v);
     sbi_console_write(b"\n");
     sbi_console_write(b"hello from kernel\n");
