@@ -9,3 +9,4 @@ publish = false
 [profile.release]
 opt-level = "s"
 debug = false
+panic = "abort"
