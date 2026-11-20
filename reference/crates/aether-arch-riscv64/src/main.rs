@@ -64,22 +64,12 @@ fn csrr_mtvec() -> u64 {
     val
 }
 
-fn csrr_stvec() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("csrr {}, stvec", out(reg) val, options(nomem));
-    }
-    val
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
     sbi_console_write(b"mtvec: ");
-    sbi_console_write_u64_hex(csrr_mtvec());
-    sbi_console_write(b"\n");
-    sbi_console_write(b"stvec: ");
-    sbi_console_write_u64_hex(csrr_stvec());
+    let v = csrr_mtvec();
+    sbi_console_write_u64_hex(v);
     sbi_console_write(b"\n");
     sbi_console_write(b"hello from kernel\n");
     loop {
