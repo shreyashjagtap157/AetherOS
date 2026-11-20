@@ -46,9 +46,9 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
-fn write_mtvec(val: u64) {
+fn write_stvec(val: u64) {
     unsafe {
-        core::arch::asm!("csrw mtvec, {}", in(reg) val, options(nomem));
+        core::arch::asm!("csrw stvec, {}", in(reg) val, options(nomem));
     }
 }
 
@@ -58,7 +58,7 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
-    write_mtvec(trap_entry as *const () as usize as u64);
+    write_stvec(trap_entry as *const () as usize as u64);
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
