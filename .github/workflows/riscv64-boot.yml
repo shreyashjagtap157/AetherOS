@@ -22,7 +22,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install pinned Rust toolchain
-        run: rustup show active-toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add riscv64gc-unknown-none-elf
         working-directory: reference/crates/aether-arch-riscv64
       - name: Install QEMU RISC-V64 emulator
         run: |
