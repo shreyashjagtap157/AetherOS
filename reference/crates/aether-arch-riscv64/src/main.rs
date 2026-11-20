@@ -13,6 +13,10 @@ const SIE_STIE: u64 = 1 << 5;
 
 const SCAUSE_SUPERVISOR_TIMER: u64 = 5;
 
+const CLINT_MTIME: usize = 0x0200_BFF8;
+const CLINT_MTIMECMP0: usize = 0x0200_4000;
+const TIMER_INTERVAL: u64 = 10_000_000;
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
@@ -72,6 +76,16 @@ fn sbi_timer_set(value: u64) {
             in("a7") SBI_EXT_TIMER,
             options(nomem, nostack),
         );
+    }
+}
+
+fn clint_read_mtime() -> u64 {
+    unsafe { (CLINT_MTIME as *const u64).read_volatile() }
+}
+
+fn clint_write_mtimecmp0(val: u64) {
+    unsafe {
+        (CLINT_MTIMECMP0 as *mut u64).write_volatile(val);
     }
 }
 
@@ -174,6 +188,8 @@ core::arch::global_asm!(
 pub extern "C" fn trap_handler(mcause: u64, sepc: u64) -> u64 {
     if mcause == SCAUSE_SUPERVISOR_TIMER {
         sbi_console_write(b"tick\n");
+        let now = clint_read_mtime();
+        clint_write_mtimecmp0(now.wrapping_add(TIMER_INTERVAL));
     }
     sepc
 }
@@ -185,8 +201,30 @@ pub extern "C" fn start() -> ! {
     csrs_sstatus(SSTATUS_SIE);
     sbi_console_write(b"stvec+sie+sstatus set\n");
     sbi_console_write(b"hello from kernel\n");
-    sbi_timer_set(10_000_000);
-    sbi_console_write(b"timer set\n");
+
+    // Read current mtime and set timer
+    let mtime_now = clint_read_mtime();
+    let fire_at = mtime_now.wrapping_add(TIMER_INTERVAL);
+    sbi_timer_set(fire_at);
+    sbi_console_write(b"timer set at ");
+    // Print fire_at hex
+    let mut buf = [0u8; 18];
+    buf[0] = b'0';
+    buf[1] = b'x';
+    let mut v = fire_at;
+    for i in (2..18).rev() {
+        buf[i] = match v % 16 {
+            0..=9 => b'0' + (v % 16) as u8,
+            10..=15 => b'a' + (v % 16 - 10) as u8,
+            _ => b'?',
+        };
+        v /= 16;
+    }
+    for &b in &buf {
+        sbi_console_putchar(b);
+    }
+    sbi_console_write(b"\n");
+
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
