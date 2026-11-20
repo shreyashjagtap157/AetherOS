@@ -20,6 +20,14 @@ core::arch::global_asm!(
     "  unimp",
 );
 
+// Trap entry in .text section (separate from _start)
+core::arch::global_asm!(
+    ".section .text",
+    ".globl trap_entry",
+    "trap_entry:",
+    "  mret",
+);
+
 fn sbi_console_putchar(byte: u8) {
     unsafe {
         core::arch::asm!(
@@ -38,8 +46,19 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
+fn write_mtvec(val: u64) {
+    unsafe {
+        core::arch::asm!("csrw mtvec, {}", in(reg) val, options(nomem));
+    }
+}
+
+unsafe extern "C" {
+    fn trap_entry();
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
+    write_mtvec(trap_entry as *const () as usize as u64);
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
