@@ -55,5 +55,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-storage-model"
+version = "0.1.0"
+dependencies = [
+ "aether-types",
+]
+
+[[package]]
 name = "aether-types"
 version = "0.1.0"
