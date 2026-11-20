@@ -347,11 +347,12 @@ fn sbi_console_write_u64(value: u64) {
     sbi_console_putchar(b'\n');
 }
 
-/// Task 1 entry point: prints a marker and loops (waits for next timer tick).
+/// Task 1 entry point: sends a message on endpoint 0 each timer tick.
 #[unsafe(no_mangle)]
 pub extern "C" fn task1_entry() -> ! {
-    sbi_console_write(b"task1 running\n");
+    let msg = b"hello from task1";
     loop {
+        let _ = ipc_send(0, 1, msg);
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
@@ -431,7 +432,114 @@ fn sv39_setup(identity_end: usize) {
     }
 }
 
-/// Save current task context from the trap frame, switch to the next task,
+// ---------------------------------------------------------------------------
+// IPC: message-queue endpoints with blocking send/receive
+// ---------------------------------------------------------------------------
+
+/// IPC message payload (64 bytes).
+const IPC_MSG_SIZE: usize = 64;
+
+/// Number of messages an endpoint queue can hold.
+const IPC_QUEUE_CAP: usize = 8;
+
+/// Maximum number of IPC endpoints.
+const IPC_MAX_ENDPOINTS: usize = 4;
+
+/// An IPC message: sender task id + payload.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct IpcMessage {
+    sender: u64,
+    payload: [u8; IPC_MSG_SIZE],
+}
+
+/// An IPC endpoint with a bounded message queue.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct IpcEndpoint {
+    /// Messages in the queue.
+    queue: [IpcMessage; IPC_QUEUE_CAP],
+    /// Head index (next to dequeue).
+    head: usize,
+    /// Tail index (next to enqueue).
+    tail: usize,
+    /// Number of messages currently queued.
+    count: usize,
+    /// Task id blocked waiting to receive, or u64::MAX if none.
+    receiver_waiter: u64,
+}
+
+/// All IPC endpoints.
+static mut IPC_ENDPOINTS: [IpcEndpoint; IPC_MAX_ENDPOINTS] = [
+    IpcEndpoint {
+        queue: [IpcMessage {
+            sender: 0,
+            payload: [0; IPC_MSG_SIZE],
+        }; IPC_QUEUE_CAP],
+        head: 0,
+        tail: 0,
+        count: 0,
+        receiver_waiter: u64::MAX,
+    };
+    IPC_MAX_ENDPOINTS
+];
+
+/// Send a message to an IPC endpoint. Wakes a blocked receiver if any.
+/// Returns Ok(()) on success, Err(1) if the endpoint is full.
+fn ipc_send(endpoint: u64, sender: u64, payload: &[u8]) -> Result<(), u64> {
+    assert!(payload.len() <= IPC_MSG_SIZE);
+    let ep = endpoint as usize;
+    if ep >= IPC_MAX_ENDPOINTS {
+        return Err(1);
+    }
+    unsafe {
+        let e = &mut IPC_ENDPOINTS[ep];
+        if e.count >= IPC_QUEUE_CAP {
+            return Err(1);
+        }
+        let mut msg = IpcMessage {
+            sender,
+            payload: [0; IPC_MSG_SIZE],
+        };
+        msg.payload[..payload.len()].copy_from_slice(payload);
+        e.queue[e.tail] = msg;
+        e.tail = (e.tail + 1) % IPC_QUEUE_CAP;
+        e.count += 1;
+
+        // Wake a blocked receiver.
+        if e.receiver_waiter != u64::MAX {
+            // Mark the waiting task as ready by clearing its blocked state.
+            // The waiter's task context is already in TASKS; we just note
+            // it can now run on the next timer tick.
+            e.receiver_waiter = u64::MAX;
+        }
+        Ok(())
+    }
+}
+
+/// Receive a message from an IPC endpoint. Blocks (returns Err(2)) if the
+/// queue is empty; caller retries on the next timer tick.
+fn ipc_receive(endpoint: u64, out: &mut [u8]) -> Result<(u64, usize), u64> {
+    assert!(out.len() <= IPC_MSG_SIZE);
+    let ep = endpoint as usize;
+    if ep >= IPC_MAX_ENDPOINTS {
+        return Err(1);
+    }
+    unsafe {
+        let e = &mut IPC_ENDPOINTS[ep];
+        if e.count == 0 {
+            return Err(2); // empty
+        }
+        let msg = e.queue[e.head];
+        e.head = (e.head + 1) % IPC_QUEUE_CAP;
+        e.count -= 1;
+        out[..msg.payload.len()].copy_from_slice(&msg.payload);
+        Ok((msg.sender, msg.payload.len()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Save current task context from the trap frame, switch to the next task,
 /// and prepare the stack so trap_entry's register restore loads the next
 /// task's registers. Called from trap_handler on every timer tick.
 ///
@@ -606,11 +714,26 @@ pub extern "C" fn start() -> ! {
     rust_main()
 }
 
-/// Kernel main: wait for interrupts; the timer handler fires on each tick.
+/// Kernel main (task 0): receives messages from task 1 via IPC endpoint 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    sbi_console_write(b"AetherOS RV64 kernel: trap + timer ready\n");
+    sbi_console_write(b"AetherOS RV64 kernel: IPC ready\n");
+    let mut buf = [0u8; IPC_MSG_SIZE];
     loop {
+        match ipc_receive(0, &mut buf) {
+            Ok((sender, len)) => {
+                sbi_console_write(b"recv from ");
+                sbi_console_write_u64(sender);
+                sbi_console_write(b": ");
+                for &b in &buf[..len] {
+                    sbi_console_putchar(b);
+                }
+                sbi_console_putchar(b'\n');
+            }
+            Err(_) => {
+                // No message yet; yield until next timer tick.
+            }
+        }
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
