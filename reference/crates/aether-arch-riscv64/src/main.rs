@@ -13,6 +13,11 @@ const SIE_STIE: u64 = 1 << 5;
 
 const SCAUSE_SUPERVISOR_TIMER: u64 = 5;
 
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
 const CLINT_MTIME: usize = 0x0200_BFF8;
 const CLINT_MTIMECMP0: usize = 0x0200_4000;
 const TIMER_INTERVAL: u64 = 10_000_000;
@@ -99,24 +104,45 @@ static mut CURRENT_TASK: usize = 0;
 
 static mut TASK1_STACK: [u64; 128] = [0; 128];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn task1_entry() -> ! {
-    sbi_console_write(b"task1 entry\n");
-    loop {
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack));
+// ---------------------------------------------------------------------------
+// IPC: message-queue endpoints
+// ---------------------------------------------------------------------------
+
+const IPC_QUEUE_CAP: usize = 8;
+
+static mut IPC_QUEUE: [[u8; 64]; IPC_QUEUE_CAP] = [[0u8; 64]; IPC_QUEUE_CAP];
+static mut IPC_HEAD: usize = 0;
+static mut IPC_TAIL: usize = 0;
+
+fn ipc_send(msg: &[u8]) {
+    unsafe {
+        let len = msg.len().min(64);
+        let full = (IPC_TAIL + 1) % IPC_QUEUE_CAP == IPC_HEAD;
+        if full {
+            return;
         }
+        for i in 0..len {
+            IPC_QUEUE[IPC_TAIL][i] = msg[i];
+        }
+        IPC_QUEUE[IPC_TAIL][len] = 0;
+        IPC_TAIL = (IPC_TAIL + 1) % IPC_QUEUE_CAP;
+    }
+}
+
+fn ipc_receive() -> Option<[u8; 64]> {
+    unsafe {
+        if IPC_HEAD == IPC_TAIL {
+            return None;
+        }
+        let msg = IPC_QUEUE[IPC_HEAD];
+        IPC_HEAD = (IPC_HEAD + 1) % IPC_QUEUE_CAP;
+        Some(msg)
     }
 }
 
 // ---------------------------------------------------------------------------
 // Trap entry (assembly)
 // ---------------------------------------------------------------------------
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
 
 core::arch::global_asm!(
     ".section .text._start",
@@ -258,9 +284,7 @@ core::arch::global_asm!(
     "  sd a7, 120(sp)",
     "  sd s2, 128(sp)",
     "  sd s3, 136(sp)",
-    "  sd s4, 144(sp)",
-    "  sd s5, 152(sp)",
-    "  sd s6, 160(sp)",
+    "  sd s4, 152(sp)",
     "  sd s7, 168(sp)",
     "  sd s8, 176(sp)",
     "  sd s9, 184(sp)",
@@ -412,6 +436,20 @@ unsafe fn save_and_switch(sepc: u64) {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn task1_entry() -> ! {
+    sbi_console_write(b"task1 entry\n");
+    let mut counter: u64 = 0;
+    loop {
+        let bytes = counter.to_le_bytes();
+        ipc_send(&bytes);
+        counter = counter.wrapping_add(1);
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -454,6 +492,16 @@ pub extern "C" fn start() -> ! {
     sbi_console_write(b"\n");
 
     loop {
+        if let Some(msg) = ipc_receive() {
+            sbi_console_write(b"recv: ");
+            for &b in &msg {
+                if b == 0 {
+                    break;
+                }
+                sbi_console_putchar(b);
+            }
+            sbi_console_write(b"\n");
+        }
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
