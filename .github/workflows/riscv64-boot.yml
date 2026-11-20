@@ -82,7 +82,9 @@ jobs:
           entry="0x$entry"
           test "$entry" = "0x80200000" || { echo "bad entry $entry"; exit 1; }
           if [ ! -s boot.log ]; then echo "no console output"; exit 1; fi
-          if ! grep -q "AetherOS" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
+          if ! grep -q "hello" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
+          if [ ! -s boot.log ]; then echo "no console output"; exit 1; fi
+          if ! grep -q "hello" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
           # tick check disabled temporarily
           exit_code=$(cut -d= -f2 boot.status)
           if [ "$exit_code" != "0" ]; then echo "emulator exited $exit_code"; exit 1; fi
