@@ -17,6 +17,7 @@ jobs:
     name: RV64 QEMU virt boot qualification
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    working-directory: reference/crates/aether-arch-riscv64
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -29,7 +30,6 @@ jobs:
           qemu-system-riscv64 --version | head -n 1
       - name: Build RV64 boot checkpoint payload
         run: cargo build --release --target riscv64gc-unknown-none-elf
-        working-directory: reference
       - name: Verify ELF format and header
         run: |
           ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
@@ -48,7 +48,7 @@ jobs:
         id: boot
         timeout-minutes: 10
         run: |
-          ARTIFACT=reference/crates/aether-arch-riscv64/target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
+          ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
           timeout 60 qemu-system-riscv64 \
             -machine virt \
             -m 128M \
@@ -64,7 +64,7 @@ jobs:
           cp boot.log boot.log.txt
       - name: Validate boot result
         run: |
-          ARTIFACT=reference/crates/aether-arch-riscv64/target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
+          ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
           if ! test -s "$ARTIFACT"; then echo "ARTIFACT missing"; exit 1; fi
           if ! head -c 4 "$ARTIFACT" | grep -q $'\x7fELF'; then echo "not ELF"; exit 1; fi
           if ! od -An -tu2 -j18 -N2 "$ARTIFACT" | tr -d ' ' | grep -q 243; then echo "not RISC-V"; exit 1; fi
@@ -81,7 +81,7 @@ jobs:
         with:
           name: riscv64-boot-evidence-${{ github.sha }}
           path: |
-            reference/crates/aether-arch-riscv64/target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
+            target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
             boot.log
             boot.log.txt
             boot.status
