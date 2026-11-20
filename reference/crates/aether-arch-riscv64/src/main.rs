@@ -3,14 +3,6 @@
 
 use core::panic::PanicInfo;
 
-const MSTATUS_MIE: u64 = 1 << 3;
-const MIE_MTIE: u64 = 1 << 7;
-const MCAUSE_MACHINE_TIMER: u64 = 7;
-
-const CLINT_BASE: usize = 0x0200_0000;
-const CLINT_MTIMECMP0: usize = CLINT_BASE + 0x4000;
-const TIMER_INTERVAL: u64 = 10_000_000;
-
 const SBI_EXT_CONSOLE_PUTCHAR: u64 = 0x01;
 const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
 
@@ -46,53 +38,49 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
-fn write_mtvec(val: u64) {
+fn sbi_console_write_u64_hex(val: u64) {
+    let mut buf = [0u8; 18];
+    buf[0] = b'0';
+    buf[1] = b'x';
+    let mut v = val;
+    for i in (2..18).rev() {
+        buf[i] = match v % 16 {
+            0..=9 => b'0' + (v % 16) as u8,
+            10..=15 => b'a' + (v % 16 - 10) as u8,
+            _ => b'?',
+        };
+        v /= 16;
+    }
+    for &b in &buf {
+        sbi_console_putchar(b);
+    }
+}
+
+fn csrr_mtvec() -> u64 {
+    let val: u64;
     unsafe {
-        core::arch::asm!("csrw mtvec, {}", in(reg) val, options(nomem));
+        core::arch::asm!("csrr {}, mtvec", out(reg) val, options(nomem));
     }
+    val
 }
 
-fn set_mie(bits: u64) {
+fn csrr_stvec() -> u64 {
+    let val: u64;
     unsafe {
-        core::arch::asm!("csrs mie, {}", in(reg) bits, options(nomem));
+        core::arch::asm!("csrr {}, stvec", out(reg) val, options(nomem));
     }
-}
-
-fn set_mstatus(bits: u64) {
-    unsafe {
-        core::arch::asm!("csrs mstatus, {}", in(reg) bits, options(nomem));
-    }
-}
-
-fn clint_write_mtimecmp0(val: u64) {
-    unsafe {
-        (CLINT_MTIMECMP0 as *mut u64).write_volatile(val);
-    }
-}
-
-unsafe extern "C" {
-    fn trap_entry();
-}
-
-core::arch::global_asm!(
-    ".section .text",
-    ".globl trap_entry",
-    "trap_entry:",
-    "  mret",
-);
-
-#[unsafe(no_mangle)]
-pub extern "C" fn trap_handler(mcause: u64, mepc: u64, _mtval: u64) -> u64 {
-    if mcause == MCAUSE_MACHINE_TIMER {
-        sbi_console_write(b"tick\n");
-        // Don't re-arm timer yet
-    }
-    mepc
+    val
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
-    write_mtvec(trap_entry as *const () as usize as u64);
+    sbi_console_write(b"start\n");
+    sbi_console_write(b"mtvec: ");
+    sbi_console_write_u64_hex(csrr_mtvec());
+    sbi_console_write(b"\n");
+    sbi_console_write(b"stvec: ");
+    sbi_console_write_u64_hex(csrr_stvec());
+    sbi_console_write(b"\n");
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
