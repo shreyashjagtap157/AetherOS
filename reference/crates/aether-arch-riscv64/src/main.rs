@@ -691,30 +691,26 @@ fn panic(_info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
+    sbi_console_write(b"1: mtvec\n");
     // Install trap vector.
     write_mtvec(trap_entry as *const () as usize as u64);
-
+    sbi_console_write(b"2: task1 init\n");
     // Initialise task 1 with a valid entry point and stack.
     unsafe {
         TASKS[1].pc = task1_entry as *const () as usize as u64;
         TASKS[1].sp = (&raw const TASK1_STACK as *const [u64; 128] as usize + 1024) as u64;
     }
-
-    // Set up Sv39 address space: identity-map [0, 0x8240_0000) covering
-    // CLINT, kernel, stacks, and page tables, then enable satp.
-    // NOTE: satp enable is deferred -- the kernel runs in M-mode under
-    // OpenSBI and satp is an S-mode CSR.  The page tables are still
-    // allocated and populated so the Sv39 code path is exercised.
-    // sv39_setup(FRAME_ALLOC_BASE + FRAME_ALLOC_SIZE);
-
+    sbi_console_write(b"3: mie\n");
     // Enable machine timer interrupt.
     set_mie(MIE_MTIE);
+    sbi_console_write(b"4: mstatus\n");
     set_mstatus(MSTATUS_MIE);
-
+    sbi_console_write(b"5: timer\n");
     // Arm first timer interrupt.
     let now = clint_read_mtime();
+    sbi_console_write(b"6: mtimecmp\n");
     clint_write_mtimecmp0(now.wrapping_add(TIMER_INTERVAL));
-
+    sbi_console_write(b"7: rust_main\n");
     rust_main()
 }
 
