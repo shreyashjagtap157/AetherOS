@@ -13,113 +13,10 @@ const SIE_STIE: u64 = 1 << 5;
 
 const SCAUSE_SUPERVISOR_TIMER: u64 = 5;
 
-const CLINT_MTIME: usize = 0x0200_BFF8;
-const CLINT_MTIMECMP0: usize = 0x0200_4000;
-const TIMER_INTERVAL: u64 = 10_000_000;
-
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
-
-// ---------------------------------------------------------------------------
-// Task context (saved registers)
-// ---------------------------------------------------------------------------
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-struct TaskContext {
-    pc: u64,
-    ra: u64,
-    gp: u64,
-    tp: u64,
-    t0: u64,
-    t1: u64,
-    t2: u64,
-    s0: u64,
-    s1: u64,
-    a0: u64,
-    a1: u64,
-    a2: u64,
-    a3: u64,
-    a4: u64,
-    a5: u64,
-    a6: u64,
-    a7: u64,
-    s2: u64,
-    s3: u64,
-    s4: u64,
-    s5: u64,
-    s6: u64,
-    s7: u64,
-    s8: u64,
-    s9: u64,
-    s10: u64,
-    s11: u64,
-    t3: u64,
-    t4: u64,
-    t5: u64,
-    t6: u64,
-    sp: u64,
-}
-
-const MAX_TASKS: usize = 2;
-
-static mut TASKS: [TaskContext; MAX_TASKS] = [TaskContext {
-    pc: 0,
-    ra: 0,
-    gp: 0,
-    tp: 0,
-    t0: 0,
-    t1: 0,
-    t2: 0,
-    s0: 0,
-    s1: 0,
-    a0: 0,
-    a1: 0,
-    a2: 0,
-    a3: 0,
-    a4: 0,
-    a5: 0,
-    a6: 0,
-    a7: 0,
-    s2: 0,
-    s3: 0,
-    s4: 0,
-    s5: 0,
-    s6: 0,
-    s7: 0,
-    s8: 0,
-    s9: 0,
-    s10: 0,
-    s11: 0,
-    t3: 0,
-    t4: 0,
-    t5: 0,
-    t6: 0,
-    sp: 0,
-}; MAX_TASKS];
-
-static mut CURRENT_TASK: usize = 0;
-
-// Stack for task 1 (1 KiB, grows down).
-static mut TASK1_STACK: [u64; 128] = [0; 128];
-
-// Task 1 entry point.
-#[unsafe(no_mangle)]
-pub extern "C" fn task1_entry() -> ! {
-    sbi_console_write(b"task1 entry\n");
-    loop {
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Trap entry (assembly) - saves all registers, calls Rust handler,
-// restores registers, sret.
-// ---------------------------------------------------------------------------
 
 core::arch::global_asm!(
     ".section .text._start",
@@ -148,6 +45,24 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
+fn sbi_console_write_u64_hex(val: u64) {
+    let mut buf = [0u8; 18];
+    buf[0] = b'0';
+    buf[1] = b'x';
+    let mut v = val;
+    for i in (2..18).rev() {
+        buf[i] = match v % 16 {
+            0..=9 => b'0' + (v % 16) as u8,
+            10..=15 => b'a' + (v % 16 - 10) as u8,
+            _ => b'?',
+        };
+        v /= 16;
+    }
+    for &b in &buf {
+        sbi_console_putchar(b);
+    }
+}
+
 fn csrw_stvec(val: u64) {
     unsafe {
         core::arch::asm!("csrw stvec, {}", in(reg) val, options(nomem));
@@ -166,25 +81,9 @@ fn csrs_sstatus(bits: u64) {
     }
 }
 
-fn sbi_timer_set(value: u64) {
+fn csrw_satp(val: u64) {
     unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a0") value,
-            in("a6") SBI_TIMER_SET_TIMER,
-            in("a7") SBI_EXT_TIMER,
-            options(nomem, nostack),
-        );
-    }
-}
-
-fn clint_read_mtime() -> u64 {
-    unsafe { (CLINT_MTIME as *const u64).read_volatile() }
-}
-
-fn clint_write_mtimecmp0(val: u64) {
-    unsafe {
-        (CLINT_MTIMECMP0 as *mut u64).write_volatile(val);
+        core::arch::asm!("csrw satp, {}", in(reg) val, options(nomem));
     }
 }
 
@@ -196,193 +95,12 @@ core::arch::global_asm!(
     ".section .text",
     ".globl trap_entry",
     "trap_entry:",
-    "  addi sp, sp, -256",
-    "  sd ra, 0(sp)",
-    "  sd gp, 8(sp)",
-    "  sd tp, 16(sp)",
-    "  sd t0, 24(sp)",
-    "  sd t1, 32(sp)",
-    "  sd t2, 40(sp)",
-    "  sd s0, 48(sp)",
-    "  sd s1, 56(sp)",
-    "  sd a0, 64(sp)",
-    "  sd a1, 72(sp)",
-    "  sd a2, 80(sp)",
-    "  sd a3, 88(sp)",
-    "  sd a4, 96(sp)",
-    "  sd a5, 104(sp)",
-    "  sd a6, 112(sp)",
-    "  sd a7, 120(sp)",
-    "  sd s2, 128(sp)",
-    "  sd s3, 136(sp)",
-    "  sd s4, 144(sp)",
-    "  sd s5, 152(sp)",
-    "  sd s6, 160(sp)",
-    "  sd s7, 168(sp)",
-    "  sd s8, 176(sp)",
-    "  sd s9, 184(sp)",
-    "  sd s10, 192(sp)",
-    "  sd s11, 200(sp)",
-    "  sd t3, 208(sp)",
-    "  sd t4, 216(sp)",
-    "  sd t5, 224(sp)",
-    "  sd t6, 232(sp)",
-    "",
-    "  csrr a0, scause",
-    "  csrr a1, sepc",
-    "  call trap_handler",
-    "",
-    "  ld t6, 232(sp)",
-    "  ld t5, 224(sp)",
-    "  ld t4, 216(sp)",
-    "  ld t3, 208(sp)",
-    "  ld s11, 200(sp)",
-    "  ld s10, 192(sp)",
-    "  ld s9, 184(sp)",
-    "  ld s8, 176(sp)",
-    "  ld s7, 168(sp)",
-    "  ld s6, 160(sp)",
-    "  ld s5, 152(sp)",
-    "  ld s4, 144(sp)",
-    "  ld s3, 136(sp)",
-    "  ld s2, 128(sp)",
-    "  ld a7, 120(sp)",
-    "  ld a6, 112(sp)",
-    "  ld a5, 104(sp)",
-    "  ld a4, 96(sp)",
-    "  ld a3, 88(sp)",
-    "  ld a2, 80(sp)",
-    "  ld a1, 72(sp)",
-    "  ld a0, 64(sp)",
-    "  ld s1, 56(sp)",
-    "  ld s0, 48(sp)",
-    "  ld t2, 40(sp)",
-    "  ld t1, 32(sp)",
-    "  ld t0, 24(sp)",
-    "  ld tp, 16(sp)",
-    "  ld gp, 8(sp)",
-    "  ld ra, 0(sp)",
-    "  addi sp, sp, 256",
-    "",
-    "  sret",
+    "  mret",
 );
 
 #[unsafe(no_mangle)]
 pub extern "C" fn trap_handler(mcause: u64, sepc: u64) -> u64 {
-    if mcause == SCAUSE_SUPERVISOR_TIMER {
-        sbi_console_write(b"tick\n");
-        let now = clint_read_mtime();
-        clint_write_mtimecmp0(now.wrapping_add(TIMER_INTERVAL));
-
-        // Context switch: save current task, switch to next task.
-        unsafe { save_and_switch(sepc) };
-    }
     sepc
-}
-
-/// Save current task context from trap frame, switch to next task,
-/// and prepare stack for next task's register restore.
-unsafe fn save_and_switch(sepc: u64) {
-    // Current stack pointer (points to saved trap frame).
-    let sp: u64;
-    core::arch::asm!("mv {}, sp", out(reg) sp, options(nomem));
-
-    let current = CURRENT_TASK;
-    let task = &mut TASKS[current];
-
-    // Save program counter from sepc (passed by trap_handler).
-    task.pc = sepc;
-
-    // Save all GPRs from trap frame (sp + offset, 8 bytes each).
-    let frame = sp as *mut u64;
-    task.ra = *frame.add(0);
-    task.gp = *frame.add(1);
-    task.tp = *frame.add(2);
-    task.t0 = *frame.add(3);
-    task.t1 = *frame.add(4);
-    task.t2 = *frame.add(5);
-    task.s0 = *frame.add(6);
-    task.s1 = *frame.add(7);
-    task.a0 = *frame.add(8);
-    task.a1 = *frame.add(9);
-    task.a2 = *frame.add(10);
-    task.a3 = *frame.add(11);
-    task.a4 = *frame.add(12);
-    task.a5 = *frame.add(13);
-    task.a6 = *frame.add(14);
-    task.a7 = *frame.add(15);
-    task.s2 = *frame.add(16);
-    task.s3 = *frame.add(17);
-    task.s4 = *frame.add(18);
-    task.s5 = *frame.add(19);
-    task.s6 = *frame.add(20);
-    task.s7 = *frame.add(21);
-    task.s8 = *frame.add(22);
-    task.s9 = *frame.add(23);
-    task.s10 = *frame.add(24);
-    task.s11 = *frame.add(25);
-    task.t3 = *frame.add(26);
-    task.t4 = *frame.add(27);
-    task.t5 = *frame.add(28);
-    task.t6 = *frame.add(29);
-
-    // Original sp (before trap_entry's `addi sp, sp, -256`).
-    task.sp = sp.wrapping_add(256);
-
-    // Switch to next task (round-robin).
-    let next = (current + 1) % MAX_TASKS;
-    CURRENT_TASK = next;
-
-    let next_task = &TASKS[next];
-
-    // Set sepc so sret returns to next task's pc.
-    csrw_sepc(next_task.pc);
-
-    // Where trap_entry will restore from: it does ld reg, offset(sp) then
-    // addi sp, sp, 256. We want final sp = next_task.sp, so set sp now to
-    // next_task.sp - 256 and write next task's regs at that frame.
-    let next_sp = next_task.sp.wrapping_sub(256);
-    let next_frame = next_sp as *mut u64;
-    *next_frame.add(0) = next_task.ra;
-    *next_frame.add(1) = next_task.gp;
-    *next_frame.add(2) = next_task.tp;
-    *next_frame.add(3) = next_task.t0;
-    *next_frame.add(4) = next_task.t1;
-    *next_frame.add(5) = next_task.t2;
-    *next_frame.add(6) = next_task.s0;
-    *next_frame.add(7) = next_task.s1;
-    *next_frame.add(8) = next_task.a0;
-    *next_frame.add(9) = next_task.a1;
-    *next_frame.add(10) = next_task.a2;
-    *next_frame.add(11) = next_task.a3;
-    *next_frame.add(12) = next_task.a4;
-    *next_frame.add(13) = next_task.a5;
-    *next_frame.add(14) = next_task.a6;
-    *next_frame.add(15) = next_task.a7;
-    *next_frame.add(16) = next_task.s2;
-    *next_frame.add(17) = next_task.s3;
-    *next_frame.add(18) = next_task.s4;
-    *next_frame.add(19) = next_task.s5;
-    *next_frame.add(20) = next_task.s6;
-    *next_frame.add(21) = next_task.s7;
-    *next_frame.add(22) = next_task.s8;
-    *next_frame.add(23) = next_task.s9;
-    *next_frame.add(24) = next_task.s10;
-    *next_frame.add(25) = next_task.s11;
-    *next_frame.add(26) = next_task.t3;
-    *next_frame.add(27) = next_task.t4;
-    *next_frame.add(28) = next_task.t5;
-    *next_frame.add(29) = next_task.t6;
-
-    // Set sp so trap_entry's loads read next task's regs.
-    core::arch::asm!("mv sp, {}", in(reg) next_sp, options(nomem));
-}
-
-/// Write sepc CSR with the given value.
-fn csrw_sepc(val: u64) {
-    unsafe {
-        core::arch::asm!("csrw sepc, {}", in(reg) val, options(nomem));
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -393,37 +111,84 @@ pub extern "C" fn start() -> ! {
     sbi_console_write(b"stvec+sie+sstatus set\n");
     sbi_console_write(b"hello from kernel\n");
 
-    // Initialise task 1.
+    // Set up Sv39 address space: identity-map [0, 0x8240_0000).
+    let root = alloc_frame();
+    sv39_map(root, 0, 0, FRAME_ALLOC_BASE + FRAME_ALLOC_SIZE, PTE_R | PTE_W | PTE_X);
+    let satp = (SATP_MODE_SV39 << 60) | ppn_of(root);
     unsafe {
-        TASKS[1].pc = task1_entry as *const () as usize as u64;
-        TASKS[1].sp = (&raw const TASK1_STACK as *const [u64; 128] as usize + 1024) as u64;
+        core::arch::asm!("csrw satp, {}", in(reg) satp, options(nomem));
+        core::arch::asm!("sfence.vma", options(nomem));
     }
-
-    // Read current mtime and set timer.
-    let mtime_now = clint_read_mtime();
-    let fire_at = mtime_now.wrapping_add(TIMER_INTERVAL);
-    sbi_timer_set(fire_at);
-    sbi_console_write(b"timer set at ");
-    let mut buf = [0u8; 18];
-    buf[0] = b'0';
-    buf[1] = b'x';
-    let mut v = fire_at;
-    for i in (2..18).rev() {
-        buf[i] = match v % 16 {
-            0..=9 => b'0' + (v % 16) as u8,
-            10..=15 => b'a' + (v % 16 - 10) as u8,
-            _ => b'?',
-        };
-        v /= 16;
-    }
-    for &b in &buf {
-        sbi_console_putchar(b);
-    }
-    sbi_console_write(b"\n");
+    sbi_console_write(b"satp enabled\n");
 
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
+    }
+}
+
+// Page frame allocator
+const FRAME_ALLOC_BASE: usize = 0x8040_0000;
+const FRAME_ALLOC_SIZE: usize = 32 * 1024 * 1024;
+static mut FRAME_ALLOC_NEXT: usize = FRAME_ALLOC_BASE;
+
+fn alloc_frame() -> usize {
+    unsafe {
+        let addr = FRAME_ALLOC_NEXT;
+        FRAME_ALLOC_NEXT = FRAME_ALLOC_NEXT.checked_add(PAGE_SIZE)
+            .expect("frame allocator exhausted");
+        let mut p = addr as *mut u64;
+        for _ in 0..PAGE_SIZE / 8 {
+            p.write_volatile(0);
+            p = p.add(1);
+        }
+        addr
+    }
+}
+
+fn ppn_of(addr: usize) -> u64 {
+    (addr >> 12) as u64
+}
+
+const PAGE_SIZE: usize = 4096;
+const PTE_V: u64 = 1 << 0;
+const PTE_R: u64 = 1 << 1;
+const PTE_W: u64 = 1 << 2;
+const PTE_X: u64 = 1 << 3;
+const SATP_MODE_SV39: u64 = 8;
+
+fn sv39_map(root_pa: usize, vaddr: usize, paddr: usize, size: usize, perm: u64) {
+    assert_eq!(vaddr % PAGE_SIZE, 0);
+    assert_eq!(paddr % PAGE_SIZE, 0);
+    assert_eq!(size % PAGE_SIZE, 0);
+
+    let mut table = root_pa as *mut u64;
+
+    for offset in (0..size).step_by(PAGE_SIZE) {
+        let va = vaddr + offset;
+        let pa = paddr + offset;
+
+        let l2 = ((va >> 30) & 0x1ff) as usize;
+        let mut l2_entry = unsafe { table.add(l2).read_volatile() };
+        if l2_entry & PTE_V == 0 {
+            let child = alloc_frame();
+            l2_entry = (ppn_of(child) << 10) | PTE_V;
+            unsafe { table.add(l2).write_volatile(l2_entry) };
+        }
+        let l2_table = ((l2_entry >> 10) << 12) as *mut u64;
+
+        let l1 = ((va >> 21) & 0x1ff) as usize;
+        let mut l1_entry = unsafe { l2_table.add(l1).read_volatile() };
+        if l1_entry & PTE_V == 0 {
+            let child = alloc_frame();
+            l1_entry = (ppn_of(child) << 10) | PTE_V;
+            unsafe { l2_table.add(l1).write_volatile(l1_entry) };
+        }
+        let l1_table = ((l1_entry >> 10) << 12) as *mut u64;
+
+        let l0 = ((va >> 12) & 0x1ff) as usize;
+        let pte = (ppn_of(pa) << 10) | PTE_V | perm;
+        unsafe { l1_table.add(l0).write_volatile(pte) };
     }
 }
