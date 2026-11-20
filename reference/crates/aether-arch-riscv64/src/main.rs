@@ -691,7 +691,7 @@ fn panic(_info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
-    sbi_console_write(b"1: mtvec\n");
+    sbi_console_write(b"1\n");
     // Install trap vector.
     write_mtvec(trap_entry as *const () as usize as u64);
     sbi_console_write(b"2: task1 init\n");
