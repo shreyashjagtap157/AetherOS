@@ -55,6 +55,10 @@ name = "aether-sched-model"
 version = "0.1.0"
 
 [[package]]
+name = "aether-shell-model"
+version = "0.1.0"
+
+[[package]]
 name = "aether-state-model"
 version = "0.1.0"
 dependencies = [

@@ -10,6 +10,7 @@ members = [
     "crates/aether-dispatch-model",
     "crates/aether-storage-model",
     "crates/aether-runtime-model",
+    "crates/aether-shell-model",
     "crates/aether-comp-model",
 ]
 resolver = "3"
