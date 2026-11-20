@@ -38,39 +38,8 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
-fn sbi_console_write_u64_hex(val: u64) {
-    let mut buf = [0u8; 18];
-    buf[0] = b'0';
-    buf[1] = b'x';
-    let mut v = val;
-    for i in (2..18).rev() {
-        buf[i] = match v % 16 {
-            0..=9 => b'0' + (v % 16) as u8,
-            10..=15 => b'a' + (v % 16 - 10) as u8,
-            _ => b'?',
-        };
-        v /= 16;
-    }
-    for &b in &buf {
-        sbi_console_putchar(b);
-    }
-}
-
-fn csrr_mhartid() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("csrr {}, mhartid", out(reg) val, options(nomem));
-    }
-    val
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
-    sbi_console_write(b"start\n");
-    sbi_console_write(b"mhartid: ");
-    let v = csrr_mhartid();
-    sbi_console_write_u64_hex(v);
-    sbi_console_write(b"\n");
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
