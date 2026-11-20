@@ -8,6 +8,9 @@ const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
 const SBI_EXT_TIMER: u64 = 0x00;
 const SBI_TIMER_SET_TIMER: u64 = 0x00;
 
+const SSTATUS_SIE: u64 = 1 << 1;
+const SIE_STIE: u64 = 1 << 5;
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
@@ -46,9 +49,15 @@ fn csrw_stvec(val: u64) {
     }
 }
 
-fn csrw_stval(val: u64) {
+fn csrs_sie(bits: u64) {
     unsafe {
-        core::arch::asm!("csrw stval, {}", in(reg) val, options(nomem));
+        core::arch::asm!("csrs sie, {}", in(reg) bits, options(nomem));
+    }
+}
+
+fn csrs_sstatus(bits: u64) {
+    unsafe {
+        core::arch::asm!("csrs sstatus, {}", in(reg) bits, options(nomem));
     }
 }
 
@@ -83,7 +92,9 @@ pub extern "C" fn trap_handler(mcause: u64, sepc: u64, stval: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     csrw_stvec(trap_entry as *const () as usize as u64);
-    sbi_console_write(b"stvec set\n");
+    csrs_sie(SIE_STIE);
+    csrs_sstatus(SSTATUS_SIE);
+    sbi_console_write(b"stvec+sie+sstatus set\n");
     sbi_console_write(b"hello from kernel\n");
     sbi_timer_set(10_000_000);
     sbi_console_write(b"timer set\n");
