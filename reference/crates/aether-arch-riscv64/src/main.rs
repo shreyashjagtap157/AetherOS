@@ -690,6 +690,7 @@ fn panic(_info: &PanicInfo) -> ! {
 // arm the first timer, then hand off to rust_main.
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
+    sbi_console_write(b"start\n");
     // Install trap vector.
     write_mtvec(trap_entry as *const () as usize as u64);
 
@@ -720,6 +721,7 @@ pub extern "C" fn start() -> ! {
 /// Kernel main (task 0): receives messages from task 1 via IPC endpoint 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
+    sbi_console_write(b"rust_main\n");
     sbi_console_write(b"AetherOS RV64 kernel: IPC ready\n");
     let mut buf = [0u8; IPC_MSG_SIZE];
     loop {
