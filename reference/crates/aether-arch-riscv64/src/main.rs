@@ -691,15 +691,17 @@ fn panic(_info: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
-
+    sbi_console_write(b"a\n");
     // Enable machine timer interrupt.
     set_mie(MIE_MTIE);
+    sbi_console_write(b"b\n");
     set_mstatus(MSTATUS_MIE);
-
+    sbi_console_write(b"c\n");
     // Arm first timer interrupt.
     let now = clint_read_mtime();
+    sbi_console_write(b"d\n");
     clint_write_mtimecmp0(now.wrapping_add(TIMER_INTERVAL));
-
+    sbi_console_write(b"e\n");
     rust_main()
 }
 
