@@ -45,6 +45,7 @@ jobs:
           type=$(od -An -tu2 -j16 -N2 "$ARTIFACT" | tr -d ' ')
           test "$type" = "2" || { echo "not ET_EXEC (type=$type)"; exit 1; }
           entry=$(od -An -tx1 -j24 -N4 "$ARTIFACT" | tr -d ' ')
+          entry=$(echo "$entry" | sed 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/')
           entry="0x$entry"
           test "$entry" = "0x80200000" || { echo "bad entry $entry"; exit 1; }
           echo "ELF OK: entry=$entry machine=$machine type=$type"
