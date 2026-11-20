@@ -36,6 +36,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-dispatch-model"
+version = "0.1.0"
+dependencies = [
+ "aether-capspace",
+ "aether-types",
+]
+
+[[package]]
 name = "aether-sched-model"
 version = "0.1.0"
 
