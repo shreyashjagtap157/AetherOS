@@ -1,8 +1,9 @@
 name: RISC-V64 Boot Qualification
 
 on:
-  pull_request:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 permissions:
@@ -17,12 +18,12 @@ jobs:
     name: RV64 QEMU virt boot qualification
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    working-directory: reference/crates/aether-arch-riscv64
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+        working-directory: reference/crates/aether-arch-riscv64
       - name: Install QEMU RISC-V64 emulator
         run: |
           sudo apt-get update -y
@@ -30,6 +31,7 @@ jobs:
           qemu-system-riscv64 --version | head -n 1
       - name: Build RV64 boot checkpoint payload
         run: cargo build --release --target riscv64gc-unknown-none-elf
+        working-directory: reference/crates/aether-arch-riscv64
       - name: Verify ELF format and header
         run: |
           ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
@@ -44,6 +46,7 @@ jobs:
           entry="0x$(echo "$entry" | tr 'a-f' 'A-F')"
           test "$entry" = "0x80200000" || { echo "bad entry $entry"; exit 1; }
           echo "ELF OK: entry=$entry machine=$machine type=$type"
+        working-directory: reference/crates/aether-arch-riscv64
       - name: Boot QEMU virt RISC-V64 with OpenSBI payload
         id: boot
         timeout-minutes: 10
@@ -57,11 +60,10 @@ jobs:
             -nographic \
             -serial stdio \
             -monitor none \
-            -device virtio-blk-device,drive=img \
-            -drive file=/dev/null,format=raw,id=img \
             > boot.log 2>&1 || true
           echo "exit=$?" >> boot.status
           cp boot.log boot.log.txt
+        working-directory: reference/crates/aether-arch-riscv64
       - name: Validate boot result
         run: |
           ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
@@ -75,6 +77,7 @@ jobs:
           exit_code=$(cut -d= -f2 boot.status)
           if [ "$exit_code" != "0" ]; then echo "emulator exited $exit_code"; exit 1; fi
           echo "boot ok"
+        working-directory: reference/crates/aether-arch-riscv64
       - name: Upload boot evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -86,3 +89,4 @@ jobs:
             boot.log.txt
             boot.status
           retention-days: 30
+        working-directory: reference/crates/aether-arch-riscv64
