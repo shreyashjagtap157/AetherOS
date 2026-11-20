@@ -23,6 +23,51 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// IPC: message-queue endpoints
+// ---------------------------------------------------------------------------
+
+const IPC_QUEUE_CAP: usize = 8;
+
+static mut IPC_QUEUE: [[u8; 64]; IPC_QUEUE_CAP] = [[0u8; 64]; IPC_QUEUE_CAP];
+static mut IPC_HEAD: usize = 0;
+static mut IPC_TAIL: usize = 0;
+
+fn ipc_send(msg: &[u8]) {
+    unsafe {
+        let len = msg.len().min(64);
+        let full = (IPC_TAIL + 1) % IPC_QUEUE_CAP == IPC_HEAD;
+        if full {
+            return;
+        }
+        for i in 0..len {
+            IPC_QUEUE[IPC_TAIL][i] = msg[i];
+        }
+        IPC_QUEUE[IPC_TAIL][len] = 0; // null-terminate
+        IPC_TAIL = (IPC_TAIL + 1) % IPC_QUEUE_CAP;
+    }
+}
+
+fn ipc_receive() -> Option<[u8; 64]> {
+    unsafe {
+        if IPC_HEAD == IPC_TAIL {
+            return None;
+        }
+        let msg = IPC_QUEUE[IPC_HEAD];
+        IPC_HEAD = (IPC_HEAD + 1) % IPC_QUEUE_CAP;
+        Some(msg)
+    }
+}
+
+fn sbi_console_write_bytes(bytes: &[u8]) {
+    for &byte in bytes {
+        if byte == 0 {
+            break;
+        }
+        sbi_console_putchar(byte);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Task context (saved registers)
 // ---------------------------------------------------------------------------
 
@@ -105,11 +150,16 @@ static mut CURRENT_TASK: usize = 0;
 // Stack for task 1 (1 KiB, grows down).
 static mut TASK1_STACK: [u64; 128] = [0; 128];
 
-// Task 1 entry point.
+// Task 1 entry point: sends IPC message each time it runs.
 #[unsafe(no_mangle)]
 pub extern "C" fn task1_entry() -> ! {
     sbi_console_write(b"task1 entry\n");
+    let mut counter: u64 = 0;
     loop {
+        // Send IPC message each time we get CPU (counter as 8 bytes)
+        let bytes = counter.to_le_bytes();
+        ipc_send(&bytes);
+        counter = counter.wrapping_add(1);
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
@@ -117,8 +167,7 @@ pub extern "C" fn task1_entry() -> ! {
 }
 
 // ---------------------------------------------------------------------------
-// Trap entry (assembly) - saves all registers, calls Rust handler,
-// restores registers, sret.
+// Trap entry (assembly)
 // ---------------------------------------------------------------------------
 
 core::arch::global_asm!(
@@ -145,6 +194,24 @@ fn sbi_console_putchar(byte: u8) {
 fn sbi_console_write(bytes: &[u8]) {
     for &byte in bytes {
         sbi_console_putchar(byte);
+    }
+}
+
+fn sbi_console_write_u64_hex(val: u64) {
+    let mut buf = [0u8; 18];
+    buf[0] = b'0';
+    buf[1] = b'x';
+    let mut v = val;
+    for i in (2..18).rev() {
+        buf[i] = match v % 16 {
+            0..=9 => b'0' + (v % 16) as u8,
+            10..=15 => b'a' + (v % 16 - 10) as u8,
+            _ => b'?',
+        };
+        v /= 16;
+    }
+    for &b in &buf {
+        sbi_console_putchar(b);
     }
 }
 
@@ -280,8 +347,7 @@ pub extern "C" fn trap_handler(mcause: u64, sepc: u64) -> u64 {
     sepc
 }
 
-/// Save current task context from trap frame, switch to next task,
-/// and prepare stack for next task's register restore.
+/// Save current task context from trap frame, switch to next task.
 unsafe fn save_and_switch(sepc: u64) {
     // Current stack pointer (points to saved trap frame).
     let sp: u64;
@@ -293,7 +359,7 @@ unsafe fn save_and_switch(sepc: u64) {
     // Save program counter from sepc (passed by trap_handler).
     task.pc = sepc;
 
-    // Save all GPRs from trap frame (sp + offset, 8 bytes each).
+    // Save all GPRs from trap frame.
     let frame = sp as *mut u64;
     task.ra = *frame.add(0);
     task.gp = *frame.add(1);
@@ -338,9 +404,7 @@ unsafe fn save_and_switch(sepc: u64) {
     // Set sepc so sret returns to next task's pc.
     csrw_sepc(next_task.pc);
 
-    // Where trap_entry will restore from: it does ld reg, offset(sp) then
-    // addi sp, sp, 256. We want final sp = next_task.sp, so set sp now to
-    // next_task.sp - 256 and write next task's regs at that frame.
+    // Write next task's registers to the trap frame.
     let next_sp = next_task.sp.wrapping_sub(256);
     let next_frame = next_sp as *mut u64;
     *next_frame.add(0) = next_task.ra;
@@ -378,7 +442,6 @@ unsafe fn save_and_switch(sepc: u64) {
     core::arch::asm!("mv sp, {}", in(reg) next_sp, options(nomem));
 }
 
-/// Write sepc CSR with the given value.
 fn csrw_sepc(val: u64) {
     unsafe {
         core::arch::asm!("csrw sepc, {}", in(reg) val, options(nomem));
@@ -421,7 +484,13 @@ pub extern "C" fn start() -> ! {
     }
     sbi_console_write(b"\n");
 
+    // Kernel main loop: receive IPC messages and print them.
     loop {
+        if let Some(msg) = ipc_receive() {
+            sbi_console_write(b"recv: ");
+            sbi_console_write_bytes(&msg);
+            sbi_console_write(b"\n");
+        }
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
