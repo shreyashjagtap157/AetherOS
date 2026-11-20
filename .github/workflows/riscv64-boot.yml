@@ -76,7 +76,8 @@ jobs:
           if ! od -An -tu2 -j16 -N2 "$ARTIFACT" | tr -d ' ' | grep -q 2; then echo "not ET_EXEC"; exit 1; fi
           if ! od -An -tx1 -j24 -N8 "$ARTIFACT" | tr -d ' ' | tr 'a-f' 'A-F' | grep -q 80200000; then echo "bad entry"; exit 1; fi
           if [ ! -s boot.log ]; then echo "no console output"; exit 1; fi
-          if ! grep -q "AetherOS RV64 boot checkpoint" boot.log; then echo "marker missing"; cat boot.log; exit 1; fi
+          if ! grep -q "AetherOS RV64 kernel" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
+          if ! grep -q "tick" boot.log; then echo "timer tick missing"; cat boot.log; exit 1; fi
           exit_code=$(cut -d= -f2 boot.status)
           if [ "$exit_code" != "0" ]; then echo "emulator exited $exit_code"; exit 1; fi
           echo "boot ok"
