@@ -16,14 +16,14 @@
 
 use core::panic::PanicInfo;
 
-// SSTATUS bits
-const SSTATUS_SIE: u64 = 1 << 1;
+// MSTATUS bits
+const MSTATUS_MIE: u64 = 1 << 3;
 
-// SIE bits
-const SIE_STIE: u64 = 1 << 5;
+// MIE bits
+const MIE_MTIE: u64 = 1 << 7;
 
-// Supervisor interrupt causes
-const SCAUSE_SUPERVISOR_TIMER: u64 = 5;
+// Machine interrupt causes
+const MCAUSE_MACHINE_TIMER: u64 = 7;
 
 // CLINT (QEMU virt machine, memory-mapped)
 const CLINT_BASE: usize = 0x0200_0000;
@@ -213,10 +213,10 @@ core::arch::global_asm!(
     "  sd t5, 224(sp)",
     "  sd t6, 232(sp)",
     "",
-    "  # Pass scause, sepc, stval in a0, a1, a2",
-    "  csrr a0, scause",
-    "  csrr a1, sepc",
-    "  csrr a2, stval",
+    "  # Pass mcause, mepc, mtval in a0, a1, a2",
+    "  csrr a0, mcause",
+    "  csrr a1, mepc",
+    "  csrr a2, mtval",
     "",
     "  call trap_handler",
     "",
@@ -253,7 +253,7 @@ core::arch::global_asm!(
     "  ld ra, 0(sp)",
     "  addi sp, sp, 256",
     "",
-    "  sret",
+    "  mret",
 );
 
 // ---------------------------------------------------------------------------
@@ -273,35 +273,35 @@ core::arch::global_asm!(
 // CSR helpers (CSR address is an immediate operand, not a register)
 // ---------------------------------------------------------------------------
 
-fn write_stvec(val: u64) {
+fn write_mtvec(val: u64) {
     unsafe {
-        core::arch::asm!("csrw stvec, {}", in(reg) val, options(nomem));
+        core::arch::asm!("csrw mtvec, {}", in(reg) val, options(nomem));
     }
 }
 
-fn set_sie(bits: u64) {
+fn set_mie(bits: u64) {
     unsafe {
-        core::arch::asm!("csrs sie, {}", in(reg) bits, options(nomem));
+        core::arch::asm!("csrs mie, {}", in(reg) bits, options(nomem));
     }
 }
 
-fn set_sstatus(bits: u64) {
+fn set_mstatus(bits: u64) {
     unsafe {
-        core::arch::asm!("csrs sstatus, {}", in(reg) bits, options(nomem));
+        core::arch::asm!("csrs mstatus, {}", in(reg) bits, options(nomem));
     }
 }
 
-fn read_sepc() -> u64 {
+fn read_mepc() -> u64 {
     let val: u64;
     unsafe {
-        core::arch::asm!("csrr {}, sepc", out(reg) val, options(nomem));
+        core::arch::asm!("csrr {}, mepc", out(reg) val, options(nomem));
     }
     val
 }
 
-fn write_sepc(val: u64) {
+fn write_mepc(val: u64) {
     unsafe {
-        core::arch::asm!("csrw sepc, {}", in(reg) val, options(nomem));
+        core::arch::asm!("csrw mepc, {}", in(reg) val, options(nomem));
     }
 }
 
@@ -554,8 +554,8 @@ fn save_and_switch() {
     let current = CURRENT_TASK;
     let task = &mut TASKS[current];
 
-    // Save program counter from sepc CSR.
-    task.pc = read_sepc();
+    // Save program counter from mepc CSR.
+    task.pc = read_mepc();
 
     // Save all 31 GPRs from the trap frame (sp + offset, 8 bytes each).
     let frame = sp as *mut u64;
@@ -599,8 +599,8 @@ fn save_and_switch() {
 
     let next_task = &TASKS[next];
 
-    // Set sepc so sret returns to the next task's pc.
-    write_sepc(next_task.pc);
+    // Set mepc so mret returns to the next task's pc.
+    write_mepc(next_task.pc);
 
     // Where trap_entry will restore from: it does ld reg, offset(sp) then
     // addi sp, sp, 256. We want final sp = next_task.sp, so set sp now to
@@ -659,7 +659,7 @@ unsafe extern "C" {
 pub extern "C" fn trap_handler(_mcause: u64, mepc: u64, _mtval: u64) -> u64 {
     let mcause = _mcause;
 
-    if mcause == SCAUSE_SUPERVISOR_TIMER {
+    if mcause == MCAUSE_MACHINE_TIMER {
         unsafe {
             TICKS = TICKS.wrapping_add(1);
         }
@@ -692,15 +692,12 @@ fn panic(_info: &PanicInfo) -> ! {
 pub extern "C" fn start() -> ! {
     sbi_console_write(b"start\n");
 
-    // Install trap vector (S-mode).
-    write_stvec(trap_entry as *const () as usize as u64);
+    // Install trap vector (M-mode).
+    write_mtvec(trap_entry as *const () as usize as u64);
 
-    // Set up Sv39 address space: identity-map [0, 0x8240_0000).
-    sv39_setup(FRAME_ALLOC_BASE + FRAME_ALLOC_SIZE);
-
-    // Enable supervisor timer interrupt.
-    set_sie(SIE_STIE);
-    set_sstatus(SSTATUS_SIE);
+    // Enable machine timer interrupt.
+    set_mie(MIE_MTIE);
+    set_mstatus(MSTATUS_MIE);
 
     // Arm first timer interrupt.
     let now = clint_read_mtime();
