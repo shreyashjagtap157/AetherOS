@@ -84,9 +84,8 @@ jobs:
         with:
           name: riscv64-boot-evidence-${{ github.sha }}
           path: |
-            target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
-            boot.log
-            boot.log.txt
-            boot.status
+            reference/crates/aether-arch-riscv64/target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
+            reference/crates/aether-arch-riscv64/boot.log
+            reference/crates/aether-arch-riscv64/boot.log.txt
+            reference/crates/aether-arch-riscv64/boot.status
           retention-days: 30
-        working-directory: reference/crates/aether-arch-riscv64
