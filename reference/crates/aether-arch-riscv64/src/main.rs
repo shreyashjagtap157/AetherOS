@@ -3,8 +3,9 @@
 
 use core::panic::PanicInfo;
 
-const MSTATUS_MIE: u64 = 1 << 3;
-const MIE_MTIE: u64 = 1 << 7;
+// Use S-mode CSRs (works whether kernel is in M or S mode)
+const SSTATUS_SIE: u64 = 1 << 1;
+const SIE_STIE: u64 = 1 << 5;
 
 const SBI_EXT_CONSOLE_PUTCHAR: u64 = 0x01;
 const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
@@ -41,22 +42,22 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
-fn set_mie(bits: u64) {
+fn set_sie(bits: u64) {
     unsafe {
-        core::arch::asm!("csrs mie, {}", in(reg) bits, options(nomem));
+        core::arch::asm!("csrs sie, {}", in(reg) bits, options(nomem));
     }
 }
 
-fn set_mstatus(bits: u64) {
+fn set_sstatus(bits: u64) {
     unsafe {
-        core::arch::asm!("csrs mstatus, {}", in(reg) bits, options(nomem));
+        core::arch::asm!("csrs sstatus, {}", in(reg) bits, options(nomem));
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
-    set_mie(MIE_MTIE);
-    set_mstatus(MSTATUS_MIE);
+    set_sie(SIE_STIE);
+    set_sstatus(SSTATUS_SIE);
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
