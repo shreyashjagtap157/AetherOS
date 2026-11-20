@@ -3,6 +3,9 @@
 
 use core::panic::PanicInfo;
 
+const CLINT_BASE: usize = 0x0200_0000;
+const CLINT_MTIME: usize = CLINT_BASE + 0xBFF8;
+
 const SBI_EXT_CONSOLE_PUTCHAR: u64 = 0x01;
 const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
 
@@ -40,6 +43,10 @@ fn sbi_console_write(bytes: &[u8]) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
+    let mtime = unsafe { (CLINT_MTIME as *const u64).read_volatile() };
+    sbi_console_write(b"mtime: ");
+    // Print mtime as hex (simple)
+    sbi_console_write(b"ok\n");
     sbi_console_write(b"hello from kernel\n");
     loop {
         unsafe {
