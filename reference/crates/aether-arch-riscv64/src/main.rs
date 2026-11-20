@@ -67,8 +67,8 @@ fn sbi_timer_set(value: u64) {
     unsafe {
         core::arch::asm!(
             "ecall",
-            in("a0") SBI_TIMER_SET_TIMER,
-            in("a1") value,
+            in("a0") value,
+            in("a6") SBI_TIMER_SET_TIMER,
             in("a7") SBI_EXT_TIMER,
             options(nomem, nostack),
         );
