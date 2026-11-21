@@ -369,6 +369,19 @@ unsafe fn save_and_switch(sepc: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn task1_entry() -> ! {
     sbi_console_write(b"task1 entry\n");
+
+    // File operations demo: create, write, read, delete via IPC
+    fs_create(b"test.txt");
+    let write_data = b"hello storage";
+    fs_write(b"test.txt", write_data);
+
+    let mut read_buf = [0u8; 64];
+    let read_len = fs_read(b"test.txt", &mut read_buf);
+    ipc_send(&read_buf[..read_len]);
+
+    fs_delete(b"test.txt");
+
+    // Continue with counter messages on each subsequent tick
     let mut counter: u64 = 0;
     loop {
         let bytes = counter.to_le_bytes();
