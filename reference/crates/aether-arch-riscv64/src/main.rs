@@ -876,6 +876,184 @@ fn ipc_receive() -> Option<[u8; 64]> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Update/Recovery: A/B partition OTA + recovery model
+// ---------------------------------------------------------------------------
+
+const MAX_VERSION_LEN: usize = 16;
+const MAX_BOOT_RETRIES: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Partition {
+    A,
+    B,
+}
+
+impl Partition {
+    fn other(&self) -> Self {
+        match self {
+            Partition::A => Partition::B,
+            Partition::B => Partition::A,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PartitionState {
+    Active,
+    Pending,
+    Inactive,
+    Recovery,
+}
+
+struct Manifest {
+    version: [u8; MAX_VERSION_LEN],
+    version_len: usize,
+    hash: u64,
+    size: u64,
+}
+
+struct UpdateSystem {
+    active: Partition,
+    state_a: PartitionState,
+    state_b: PartitionState,
+    version_a: [u8; MAX_VERSION_LEN],
+    version_a_len: usize,
+    version_b: [u8; MAX_VERSION_LEN],
+    version_b_len: usize,
+    boot_retries: u32,
+    recovery_mode: bool,
+    pending_manifest: Option<Manifest>,
+    update_in_progress: bool,
+}
+
+impl UpdateSystem {
+    fn new() -> Self {
+        let mut va = [0u8; MAX_VERSION_LEN];
+        va[..5].copy_from_slice(b"1.0.0");
+        Self {
+            active: Partition::A,
+            state_a: PartitionState::Active,
+            state_b: PartitionState::Inactive,
+            version_a: va,
+            version_a_len: 5,
+            version_b: [0u8; MAX_VERSION_LEN],
+            version_b_len: 0,
+            boot_retries: 0,
+            recovery_mode: false,
+            pending_manifest: None,
+            update_in_progress: false,
+        }
+    }
+
+    fn state(&self, p: Partition) -> PartitionState {
+        match p {
+            Partition::A => self.state_a,
+            Partition::B => self.state_b,
+        }
+    }
+
+    fn set_state(&mut self, p: Partition, s: PartitionState) {
+        match p {
+            Partition::A => self.state_a = s,
+            Partition::B => self.state_b = s,
+        }
+    }
+
+    fn set_version(&mut self, p: Partition, v: &[u8], len: usize) {
+        match p {
+            Partition::A => {
+                self.version_a[..len].copy_from_slice(v);
+                self.version_a_len = len;
+            }
+            Partition::B => {
+                self.version_b[..len].copy_from_slice(v);
+                self.version_b_len = len;
+            }
+        }
+    }
+
+    fn begin_update(&mut self, manifest: Manifest) -> Result<(), &'static str> {
+        if self.update_in_progress {
+            return Err("update already in progress");
+        }
+        if manifest.hash == 0 {
+            return Err("invalid manifest hash");
+        }
+        if manifest.size == 0 {
+            return Err("invalid manifest size");
+        }
+        let target = self.active.other();
+        self.pending_manifest = Some(manifest);
+        self.update_in_progress = true;
+        self.set_state(target, PartitionState::Pending);
+        Ok(())
+    }
+
+    fn apply_update(&mut self) -> Result<(), &'static str> {
+        if !self.update_in_progress {
+            return Err("no update in progress");
+        }
+        let manifest = self
+            .pending_manifest
+            .as_ref()
+            .ok_or("no pending manifest")?;
+        let target = self.active.other();
+        let version = manifest.version;
+        let version_len = manifest.version_len;
+        self.set_version(target, &version, version_len);
+        self.boot_retries = 0;
+        Ok(())
+    }
+
+    fn confirm_boot(&mut self) -> Result<(), &'static str> {
+        let target = self.active.other();
+        if self.state(target) != PartitionState::Pending {
+            return Err("no pending partition to confirm");
+        }
+        self.set_state(self.active, PartitionState::Inactive);
+        self.active = target;
+        self.set_state(self.active, PartitionState::Active);
+        self.update_in_progress = false;
+        self.pending_manifest = None;
+        self.boot_retries = 0;
+        Ok(())
+    }
+
+    fn record_boot_failure(&mut self) -> bool {
+        self.boot_retries += 1;
+        if self.boot_retries >= MAX_BOOT_RETRIES {
+            let old = self.active;
+            let failed = self.active.other();
+            self.set_state(failed, PartitionState::Inactive);
+            self.set_state(old, PartitionState::Active);
+            self.update_in_progress = false;
+            self.pending_manifest = None;
+            self.boot_retries = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn enter_recovery(&mut self) {
+        self.recovery_mode = true;
+        self.set_state(self.active, PartitionState::Recovery);
+    }
+
+    fn exit_recovery(&mut self) {
+        self.recovery_mode = false;
+        self.set_state(self.active, PartitionState::Active);
+    }
+
+    fn active_version(&self) -> &[u8] {
+        match self.active {
+            Partition::A => &self.version_a[..self.version_a_len],
+            Partition::B => &self.version_b[..self.version_b_len],
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
     csrw_stvec(trap_entry as *const () as usize as u64);
@@ -883,6 +1061,57 @@ pub extern "C" fn start() -> ! {
     csrs_sstatus(SSTATUS_SIE);
     sbi_console_write(b"stvec+sie+sstatus set\n");
     sbi_console_write(b"hello from kernel\n");
+
+    // ---------------------------------------------------------------------------
+    // Update/Recovery initialization: A/B partition OTA demo
+    // ---------------------------------------------------------------------------
+    let mut update = UpdateSystem::new();
+    sbi_console_write(b"active partition: ");
+    sbi_console_putchar(match update.active {
+        Partition::A => b'A',
+        Partition::B => b'B',
+    });
+    sbi_console_write(b", version: ");
+    for &b in update.active_version() {
+        sbi_console_putchar(b);
+    }
+    sbi_console_write(b"\n");
+
+    // Begin an OTA update to partition B (version 2.0.0)
+    let manifest = Manifest {
+        version: [b'2', b'.', b'0', b'.', b'0', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        version_len: 5,
+        hash: 0xDEAD,
+        size: 1024,
+    };
+    update.begin_update(manifest).unwrap();
+    sbi_console_write(b"update begun: target partition ");
+    sbi_console_putchar(match update.active.other() {
+        Partition::A => b'A',
+        Partition::B => b'B',
+    });
+    sbi_console_write(b", state: pending\n");
+
+    // Apply the update
+    update.apply_update().unwrap();
+    sbi_console_write(b"update applied: partition B version ");
+    for &b in &update.version_b[..update.version_b_len] {
+        sbi_console_putchar(b);
+    }
+    sbi_console_write(b"\n");
+
+    // Confirm boot (simulate successful boot on partition B)
+    update.confirm_boot().unwrap();
+    sbi_console_write(b"boot confirmed: active partition ");
+    sbi_console_putchar(match update.active {
+        Partition::A => b'A',
+        Partition::B => b'B',
+    });
+    sbi_console_write(b", version ");
+    for &b in update.active_version() {
+        sbi_console_putchar(b);
+    }
+    sbi_console_write(b"\n");
 
     unsafe {
         TASKS[1].pc = task1_entry as *const () as usize as u64;
