@@ -2,6 +2,8 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
+use core::ptr::{read_unaligned, write_unaligned, copy_nonoverlapping};
+
 const SBI_EXT_CONSOLE_PUTCHAR: u64 = 0x01;
 const SBI_CONSOLE_PUTCHAR: u64 = 0x00;
 const SBI_EXT_TIMER: u64 = 0x00;
@@ -1156,3 +1158,7 @@ pub extern "C" fn start() -> ! {
         }
     }
 }
+
+// ============================================================================
+// VirtIO Block Device Support (Phase 3)
+// ============================================================================
