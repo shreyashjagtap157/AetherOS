@@ -368,42 +368,295 @@ unsafe fn save_and_switch(sepc: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn task1_entry() -> ! {
-    sbi_console_write(b"task1 (shell) entry\n");
+    sbi_console_write(b"task1 (runtime VM) entry\n");
 
-    // File operations demo: create, write, read, delete via IPC
-    fs_create(b"test.txt");
-    let write_data = b"hello storage";
-    fs_write(b"test.txt", write_data);
+    // ---------------------------------------------------------------------------
+    // Runtime VM: userspace execution engine model
+    // Executes a small program via SBI console output.
+    // ---------------------------------------------------------------------------
 
-    let mut read_buf = [0u8; 64];
-    let read_len = fs_read(b"test.txt", &mut read_buf);
-    ipc_send(&read_buf[..read_len]);
+    const NUM_REGS: usize = 8;
+    const MEM_SIZE: usize = 64 * 1024;
+    const SYS_PRINT: u64 = 1;
+    const SYS_EXIT: u64 = 2;
 
-    fs_delete(b"test.txt");
+    #[derive(Clone, Copy)]
+    struct Inst {
+        op: u64,
+        a: u64,
+        b: u64,
+        c: u64,
+    }
 
-    // Shell command loop: built-in commands executed via IPC
-    let commands: [&[u8]; 3] = [
-        b"help" as &[u8],
-        b"ls" as &[u8],
-        b"echo hello world" as &[u8],
+    #[derive(Clone, Copy)]
+    #[repr(u8)]
+    enum Op {
+        Nop = 0,
+        Mov = 1,
+        Add = 2,
+        Sub = 3,
+        Load = 4,
+        Store = 5,
+        Jmp = 6,
+        Jz = 7,
+        Jnz = 8,
+        Call = 9,
+        Ret = 10,
+        Syscall = 11,
+        Halt = 12,
+    }
+
+    struct Process {
+        regs: [u64; NUM_REGS],
+        pc: usize,
+        sp: usize,
+        mem: [u8; MEM_SIZE],
+        call_stack: [usize; 16],
+        call_sp: usize,
+        stdout: [u8; 256],
+        stdout_len: usize,
+        exited: bool,
+        exit_code: u64,
+    }
+
+    impl Process {
+        fn new() -> Self {
+            Self {
+                regs: [0; NUM_REGS],
+                pc: 0,
+                sp: MEM_SIZE - 1,
+                mem: [0; MEM_SIZE],
+                call_stack: [0; 16],
+                call_sp: 0,
+                stdout: [0; 256],
+                stdout_len: 0,
+                exited: false,
+                exit_code: 0,
+            }
+        }
+
+        fn load_program(&mut self, program: &[Inst]) {
+            for (i, inst) in program.iter().enumerate() {
+                let offset = i * 32;
+                if offset + 32 > MEM_SIZE {
+                    break;
+                }
+                self.mem[offset..offset + 8].copy_from_slice(&inst.op.to_le_bytes());
+                self.mem[offset + 8..offset + 16].copy_from_slice(&inst.a.to_le_bytes());
+                self.mem[offset + 16..offset + 24].copy_from_slice(&inst.b.to_le_bytes());
+                self.mem[offset + 24..offset + 32].copy_from_slice(&inst.c.to_le_bytes());
+            }
+        }
+
+        fn read_u64(&self, addr: usize) -> Result<u64, ()> {
+            if addr + 8 > MEM_SIZE {
+                return Err(());
+            }
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&self.mem[addr..addr + 8]);
+            Ok(u64::from_le_bytes(bytes))
+        }
+
+        fn write_u64(&mut self, addr: usize, val: u64) -> Result<(), ()> {
+            if addr + 8 > MEM_SIZE {
+                return Err(());
+            }
+            let bytes = val.to_le_bytes();
+            self.mem[addr..addr + 8].copy_from_slice(&bytes);
+            Ok(())
+        }
+
+        fn fetch(&self) -> Result<Inst, ()> {
+            if self.pc + 32 > MEM_SIZE {
+                return Err(());
+            }
+            let op = self.read_u64(self.pc)?;
+            let a = self.read_u64(self.pc + 8)?;
+            let b = self.read_u64(self.pc + 16)?;
+            let c = self.read_u64(self.pc + 24)?;
+            Ok(Inst { op, a, b, c })
+        }
+
+        fn step(&mut self) -> Result<(), ()> {
+            if self.exited {
+                return Err(());
+            }
+            let inst = self.fetch()?;
+            match inst.op {
+                0 => {
+                    self.pc += 32;
+                }
+                1 => {
+                    let rd = inst.a as usize;
+                    if rd >= NUM_REGS {
+                        return Err(());
+                    }
+                    if inst.b == 1 {
+                        self.regs[rd] = inst.c;
+                    } else {
+                        let rs = inst.c as usize;
+                        if rs >= NUM_REGS {
+                            return Err(());
+                        }
+                        self.regs[rd] = self.regs[rs];
+                    }
+                    self.pc += 32;
+                }
+                2 => {
+                    let rd = inst.a as usize;
+                    let rs = inst.b as usize;
+                    if rd >= NUM_REGS || rs >= NUM_REGS {
+                        return Err(());
+                    }
+                    self.regs[rd] = self.regs[rd].wrapping_add(self.regs[rs]);
+                    self.pc += 32;
+                }
+                3 => {
+                    let rd = inst.a as usize;
+                    let rs = inst.b as usize;
+                    if rd >= NUM_REGS || rs >= NUM_REGS {
+                        return Err(());
+                    }
+                    self.regs[rd] = self.regs[rd].wrapping_sub(self.regs[rs]);
+                    self.pc += 32;
+                }
+                4 => {
+                    let rd = inst.a as usize;
+                    let addr = inst.b as usize;
+                    if rd >= NUM_REGS {
+                        return Err(());
+                    }
+                    self.regs[rd] = self.read_u64(addr)?;
+                    self.pc += 32;
+                }
+                5 => {
+                    let addr = inst.a as usize;
+                    let rs = inst.b as usize;
+                    if rs >= NUM_REGS {
+                        return Err(());
+                    }
+                    self.write_u64(addr, self.regs[rs])?;
+                    self.pc += 32;
+                }
+                6 => {
+                    self.pc = inst.a as usize;
+                }
+                7 => {
+                    let rd = inst.a as usize;
+                    let addr = inst.b as usize;
+                    if rd >= NUM_REGS {
+                        return Err(());
+                    }
+                    if self.regs[rd] == 0 {
+                        self.pc = addr;
+                    } else {
+                        self.pc += 32;
+                    }
+                }
+                8 => {
+                    let rd = inst.a as usize;
+                    let addr = inst.b as usize;
+                    if rd >= NUM_REGS {
+                        return Err(());
+                    }
+                    if self.regs[rd] != 0 {
+                        self.pc = addr;
+                    } else {
+                        self.pc += 32;
+                    }
+                }
+                9 => {
+                    self.call_stack[self.call_sp] = self.pc + 32;
+                    self.call_sp += 1;
+                    self.pc = inst.a as usize;
+                }
+                10 => {
+                    if self.call_sp == 0 {
+                        return Err(());
+                    }
+                    self.call_sp -= 1;
+                    self.pc = self.call_stack[self.call_sp];
+                }
+                11 => {
+                    let num = inst.a;
+                    match num {
+                        SYS_PRINT => {
+                            let reg = inst.b as usize;
+                            if reg >= NUM_REGS {
+                                return Err(());
+                            }
+                            let val = self.regs[reg];
+                            if self.stdout_len < self.stdout.len() {
+                                self.stdout[self.stdout_len] = (val & 0xFF) as u8;
+                                self.stdout_len += 1;
+                            }
+                        }
+                        SYS_EXIT => {
+                            self.exited = true;
+                            self.exit_code = inst.b;
+                            return Err(());
+                        }
+                        _ => return Err(()),
+                    }
+                    self.pc += 32;
+                }
+                12 => {
+                    self.exited = true;
+                    self.exit_code = 0;
+                    return Err(());
+                }
+                _ => return Err(()),
+            }
+            Ok(())
+        }
+
+        fn flush_stdout(&mut self) {
+            for i in 0..self.stdout_len {
+                sbi_console_putchar(self.stdout[i]);
+            }
+            self.stdout_len = 0;
+        }
+    }
+
+    // Program: MOV r0, 65; SYSCALL print r0; MOV r0, 66; SYSCALL print r0;
+    //          MOV r0, 67; SYSCALL print r0; HALT
+    let program: [Inst; 11] = [
+        Inst { op: 1, a: 0, b: 1, c: 65 },   // MOV r0, 65 ('A')
+        Inst { op: 11, a: 1, b: 0, c: 0 },   // SYSCALL print r0
+        Inst { op: 1, a: 0, b: 1, c: 66 },   // MOV r0, 66 ('B')
+        Inst { op: 11, a: 1, b: 0, c: 0 },   // SYSCALL print r0
+        Inst { op: 1, a: 0, b: 1, c: 67 },   // MOV r0, 67 ('C')
+        Inst { op: 11, a: 1, b: 0, c: 0 },   // SYSCALL print r0
+        Inst { op: 12, a: 0, b: 0, c: 0 },   // HALT
+        Inst { op: 0, a: 0, b: 0, c: 0 },    // NOP
+        Inst { op: 0, a: 0, b: 0, c: 0 },    // NOP
+        Inst { op: 0, a: 0, b: 0, c: 0 },    // NOP
+        Inst { op: 0, a: 0, b: 0, c: 0 },    // NOP
     ];
-    let mut cmd_idx: usize = 0;
 
+    let mut proc = Process::new();
+    proc.load_program(&program);
+
+    // Execute one instruction per timer tick via the runtime VM
     loop {
-        let cmd = commands[cmd_idx];
-        cmd_idx = (cmd_idx + 1) % commands.len();
-
-        let output: &[u8] = if cmd == b"help" {
-            b"Available commands: help, ls, echo\n" as &[u8]
-        } else if cmd == b"ls" {
-            b"Files: test.txt\n" as &[u8]
-        } else if cmd == b"echo hello world" {
-            b"hello world\n" as &[u8]
-        } else {
-            b"unknown command\n" as &[u8]
-        };
-
-        ipc_send(output);
+        match proc.step() {
+            Ok(()) => {
+                proc.flush_stdout();
+            }
+            Err(()) => {
+                if proc.exited {
+                    sbi_console_write(b"\nruntime VM exited with code ");
+                    sbi_console_putchar(b'0' + (proc.exit_code & 0xFF) as u8);
+                    sbi_console_write(b"\n");
+                }
+                // Halt forever after program completion
+                loop {
+                    unsafe {
+                        core::arch::asm!("wfi", options(nomem, nostack));
+                    }
+                }
+            }
+        }
 
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
