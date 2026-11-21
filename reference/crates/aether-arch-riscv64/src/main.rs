@@ -89,6 +89,22 @@ fn clint_write_mtimecmp0(val: u64) {
     }
 }
 
+fn csrr_scause() -> u64 {
+    let val: u64;
+    unsafe {
+        core::arch::asm!("csrr {}, scause", out(reg) val, options(nomem));
+    }
+    val
+}
+
+fn csrr_sepc() -> u64 {
+    let val: u64;
+    unsafe {
+        core::arch::asm!("csrr {}, sepc", out(reg) val, options(nomem));
+    }
+    val
+}
+
 unsafe extern "C" {
     fn trap_entry();
 }
