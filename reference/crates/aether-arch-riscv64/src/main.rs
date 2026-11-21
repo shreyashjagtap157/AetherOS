@@ -49,24 +49,6 @@ fn sbi_console_write(bytes: &[u8]) {
     }
 }
 
-fn sbi_console_write_u64_hex(val: u64) {
-    let mut buf = [0u8; 18];
-    buf[0] = b'0';
-    buf[1] = b'x';
-    let mut v = val;
-    for i in (2..18).rev() {
-        buf[i] = match v % 16 {
-            0..=9 => b'0' + (v % 16) as u8,
-            10..=15 => b'a' + (v % 16 - 10) as u8,
-            _ => b'?',
-        };
-        v /= 16;
-    }
-    for &b in &buf {
-        sbi_console_putchar(b);
-    }
-}
-
 fn csrw_stvec(val: u64) {
     unsafe {
         core::arch::asm!("csrw stvec, {}", in(reg) val, options(nomem));
@@ -105,22 +87,6 @@ fn clint_write_mtimecmp0(val: u64) {
     unsafe {
         (CLINT_MTIMECMP0 as *mut u64).write_volatile(val);
     }
-}
-
-fn csrr_scause() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("csrr {}, scause", out(reg) val, options(nomem));
-    }
-    val
-}
-
-fn csrr_sepc() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("csrr {}, sepc", out(reg) val, options(nomem));
-    }
-    val
 }
 
 unsafe extern "C" {
