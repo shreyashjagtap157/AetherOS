@@ -368,7 +368,7 @@ unsafe fn save_and_switch(sepc: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn task1_entry() -> ! {
-    sbi_console_write(b"task1 entry\n");
+    sbi_console_write(b"task1 (shell) entry\n");
 
     // File operations demo: create, write, read, delete via IPC
     fs_create(b"test.txt");
@@ -381,12 +381,30 @@ pub extern "C" fn task1_entry() -> ! {
 
     fs_delete(b"test.txt");
 
-    // Continue with counter messages on each subsequent tick
-    let mut counter: u64 = 0;
+    // Shell command loop: built-in commands executed via IPC
+    let commands: [&[u8]; 3] = [
+        b"help" as &[u8],
+        b"ls" as &[u8],
+        b"echo hello world" as &[u8],
+    ];
+    let mut cmd_idx: usize = 0;
+
     loop {
-        let bytes = counter.to_le_bytes();
-        ipc_send(&bytes);
-        counter = counter.wrapping_add(1);
+        let cmd = commands[cmd_idx];
+        cmd_idx = (cmd_idx + 1) % commands.len();
+
+        let output: &[u8] = if cmd == b"help" {
+            b"Available commands: help, ls, echo\n" as &[u8]
+        } else if cmd == b"ls" {
+            b"Files: test.txt\n" as &[u8]
+        } else if cmd == b"echo hello world" {
+            b"hello world\n" as &[u8]
+        } else {
+            b"unknown command\n" as &[u8]
+        };
+
+        ipc_send(output);
+
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
