@@ -4,19 +4,23 @@
 
 set -e
 
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
 echo "=== Documentation validators ==="
-cd docs 2>/dev/null || true
+DOCS_DIR="$REPO_ROOT/docs"
 
 # Python documentation validators
-for validator in tools/verify-authority.py tools/verify-decision-records.py tools/verify-generated.py tools/verify-glossary.py tools/verify-rfc.py; do
-    if [ -f "$validator" ]; then
+for validator in verify-authority.py verify-decision-records.py verify-generated.py verify-glossary.py verify-rfc.py; do
+    VAL="$DOCS_DIR/tools/$validator"
+    if [ -f "$VAL" ]; then
         echo "Running $validator..."
-        python3 "$validator" || python "$validator"
+        python3 "$VAL" || python "$VAL"
     fi
 done
 
 echo "=== Rust reference validation ==="
-cd reference
+REFERENCE_DIR="$REPO_ROOT/reference"
+cd "$REFERENCE_DIR"
 
 # cargo fmt
 echo "Running cargo fmt..."

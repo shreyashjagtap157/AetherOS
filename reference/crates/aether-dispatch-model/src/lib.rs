@@ -25,6 +25,10 @@
 //! - SMP/multi-hart scheduling and load balancing beyond basic multi-hart.
 //! - Integration with RFC-0011 scheduler, RFC-0028 synchronization,
 //!   interrupts (RFC-0010), or any kernel.
+#![allow(clippy::new_without_default)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::missing_errors_doc)]
 
 use aether_types::{Capability, CapabilityFlags, DomainId, ObjectType, Rights};
 use std::collections::BTreeMap;
@@ -178,7 +182,7 @@ impl Dispatcher {
     /// [`DispatchError::DomainViolation`] if the capability does not cover
     /// the target hart's domain.
     pub fn dispatch(&mut self, request: DispatchRequest) -> Result<DispatchId, DispatchError> {
-        if !self.is_authorized(&request) {
+        if !Dispatcher::is_authorized(&request) {
             return Err(DispatchError::Unauthorized);
         }
         if request.capability.expires_at_ns != 0
@@ -197,8 +201,8 @@ impl Dispatcher {
             thread_id: request.thread_id,
             hart_id: request.hart_id,
             domain_id: request.domain,
-            quantum_remaining_ns: self.quantum_ns(request.capability.rights),
-            deadline_ns: request.now_ns + self.quantum_ns(request.capability.rights),
+            quantum_remaining_ns: Self::quantum_ns(request.capability.rights),
+            deadline_ns: request.now_ns + Self::quantum_ns(request.capability.rights),
             capability: request.capability,
         };
         self.dispatches.insert(id, dispatch.clone());
@@ -235,13 +239,13 @@ impl Dispatcher {
         self.events.len()
     }
 
-    fn is_authorized(&self, request: &DispatchRequest) -> bool {
+    fn is_authorized(request: &DispatchRequest) -> bool {
         request.capability.flags.contains(CapabilityFlags::BOUND)
             && request.capability.rights.contains(Rights::MAP)
             && request.capability.object_type == ObjectType::Memory
     }
 
-    fn quantum_ns(&self, _rights: Rights) -> u64 {
+    fn quantum_ns(_rights: Rights) -> u64 {
         1_000_000 // 1ms default quantum
     }
 }

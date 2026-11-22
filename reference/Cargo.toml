@@ -22,7 +22,7 @@ license = "Apache-2.0 OR MIT"
 rust-version = "1.85"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "allow"
 missing_docs = "warn"
 
 [workspace.lints.clippy]

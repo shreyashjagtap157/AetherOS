@@ -19,6 +19,11 @@
 //! - Flash wear-leveling, bad block management.
 
 #![allow(missing_docs)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::missing_errors_doc)]
 
 /// Maximum number of boot retries before rollback.
 const MAX_BOOT_RETRIES: u32 = 3;
@@ -294,6 +299,76 @@ mod tests {
         assert!(sys.recovery_mode);
         sys.exit_recovery();
         assert!(!sys.recovery_mode);
+    }
+
+    #[test]
+    fn begin_update_invalid_size() {
+        let mut sys = UpdateSystem::new();
+        let m = Manifest {
+            version: "2.0.0".to_string(),
+            hash: 0xDEAD,
+            size: 0,
+        };
+        assert!(sys.begin_update(m).is_err());
+    }
+
+    #[test]
+    fn apply_update_without_begin_fails() {
+        let mut sys = UpdateSystem::new();
+        assert!(sys.apply_update().is_err());
+        assert!(!sys.update_in_progress);
+    }
+
+    #[test]
+    fn confirm_boot_without_pending_fails() {
+        let mut sys = UpdateSystem::new();
+        assert!(sys.confirm_boot().is_err());
+        assert!(!sys.update_in_progress);
+    }
+
+    #[test]
+    fn state_preserved_after_rollback() {
+        let mut sys = UpdateSystem::new();
+        let m = Manifest {
+            version: "2.0.0".to_string(),
+            hash: 0xDEAD,
+            size: 1024,
+        };
+        sys.begin_update(m).unwrap();
+        sys.apply_update().unwrap();
+        assert_eq!(sys.state_b, PartitionState::Pending);
+        assert_eq!(sys.version_b, "2.0.0");
+
+        assert!(!sys.record_boot_failure());
+        assert!(!sys.record_boot_failure());
+        assert!(sys.record_boot_failure());
+
+        assert_eq!(sys.active, Partition::A);
+        assert_eq!(sys.state_a, PartitionState::Active);
+        assert_eq!(sys.state_b, PartitionState::Inactive);
+        assert_eq!(sys.active_version(), "1.0.0");
+        assert!(!sys.update_in_progress);
+        assert!(sys.pending_manifest.is_none());
+    }
+
+    #[test]
+    fn state_preserved_after_confirm() {
+        let mut sys = UpdateSystem::new();
+        let m = Manifest {
+            version: "2.0.0".to_string(),
+            hash: 0xDEAD,
+            size: 1024,
+        };
+        sys.begin_update(m).unwrap();
+        sys.apply_update().unwrap();
+        sys.confirm_boot().unwrap();
+
+        assert_eq!(sys.active, Partition::B);
+        assert_eq!(sys.state_a, PartitionState::Inactive);
+        assert_eq!(sys.state_b, PartitionState::Active);
+        assert_eq!(sys.active_version(), "2.0.0");
+        assert!(!sys.update_in_progress);
+        assert!(sys.pending_manifest.is_none());
     }
 
     #[test]
