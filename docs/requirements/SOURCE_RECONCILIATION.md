@@ -61,15 +61,15 @@ The implementation status must be reconciled to source, tests, logs and exact HE
 
 ## 5. Current Git and CI evidence (23 November 2026)
 
-Observed public `main` HEAD: `91478e592be1077bd79a0996f4207faf53d9fdc8`.
+Observed public `main` baseline before PR #12: `91478e592be1077bd79a0996f4207faf53d9fdc8`. PR #12 head at the time of the recorded runs: `4f5294625b1493c138c5a7d1793336d4ea931d85`.
 
-- `RISC-V64 Boot Qualification` run 131 (ID `45012374998`) succeeded for this exact commit.
-- `Reference validation` run 184 (ID `45012375003`) failed during `./check.sh` because `docs/AetherOS_Final_Usable_OS_Goal_v3_2026-11-21.md` lacked its mandatory `Classification:` metadata. No reference-evidence artifact was produced after this early failure.
-- The v3 document now receives the missing informative classification and is explicitly marked historical in this documentation change.
-- Commit `91478e5` records implementation work for VirtIO block/network drivers, TCP data transfer and protected process execution. The commit message is not a substitute for end-to-end verification of each subfeature.
-- The successful QEMU boot is a real milestone, but the first usable release and ultimate v4 whole-platform objective remain unqualified.
-
-After this docs-only correction, re-run the reference-validation gate and inspect any later failures. Do not assume that correcting the metadata proves the remaining code/model tests pass.
+- The historical main-branch `RISC-V64 Boot Qualification` run 131 (ID `45012374998`) succeeded on base commit `91478e5`.
+- The historical main-branch `Reference validation` run 184 (ID `45012375003`) failed before tests because the v3 goal lacked mandatory `Classification:` metadata. PR #12 adds that metadata and marks v3 as historical.
+- PR-head `Reference validation` run 45229893980 passed: 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847282024 contains the run context and full check log.
+- PR-head QEMU run 45229894224 passed ELF validation and observed the `hello` boot marker, then QEMU was stopped by the 60-second observation timeout. The previous workflow captured `$?` after `|| true`, masking the true timeout status. PR #12 replaces this with explicit status capture, accepts only exit 0 or expected timeout 124 after the boot marker, and rejects other exits. A fresh rerun is required after this correction.
+- The host `cargo clippy` step completed but emitted 22 warnings in `aether-runtime-model`; `./check.sh` does not use `-D warnings`. These are cleanup work, not test failures.
+- Commit `91478e5` records VirtIO block/network work, TCP data transfer and protected process execution. Commit messages remain change summaries rather than proof of each device, transport, syscall or system integration requirement.
+- Neither QEMU boot nor host reference tests qualify a complete usable OS, installer, physical board, all devices, or the ultimate v4 whole-platform goal.
 
 ## 6. Requirement ID policy
 

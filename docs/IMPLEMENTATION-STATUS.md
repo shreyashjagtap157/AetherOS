@@ -3,10 +3,22 @@
 Classification: Operational
 Authoritative Source: IMPLEMENTATION-STATUS.md
 
-This document tracks the implementation status of every component in the platform. It is updated as implementation progresses and is the authoritative source for "what is done and what is not."
+This document tracks implementation claims and evidence. The current-main baseline and most recent PR-head validation evidence are stated below; each detailed row must still be interpreted within its stated scope.
 
 ---
 
+## Current public-main baseline and latest PR evidence — 23 November 2026
+
+**Observed public `main` baseline:** `91478e592be1077bd79a0996f4207faf53d9fdc8`. **PR #12 head at the time of this evidence:** `4f5294625b1493c138c5a7d1793336d4ea931d85`.
+
+- The historical main `Reference validation` run 184 failed before tests because the v3 goal file lacked `Classification:` metadata. PR #12 repairs this.
+- PR-head [Reference validation run 45229893980](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229893980) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847282024 contains `run-context.txt` and `check.log` (SHA-256 `1091e44db28a129b987447286beac0dbbe0f262b56cd959b0878e88e2124bd2f`).
+- PR-head [QEMU boot run 45229894224](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229894224) validated the RISC-V64 ELF and observed the `hello` boot marker. QEMU was terminated by the 60-second observation timeout; the former workflow then masked the timeout as exit 0. PR #12 corrects that logic, accepting only clean exit 0 or expected timeout 124 after the marker, and rejecting other exit codes. A fresh boot run is required after the correction.
+- The host `cargo clippy` command completed but emitted 22 warnings in `aether-runtime-model`. `./check.sh` does not enforce `-D warnings`; the warnings remain cleanup work.
+
+**Evidence boundary:** these runs establish a host reference/model validation and a bounded QEMU boot-marker scenario. They do not qualify clean shutdown, long-duration stability, live-media safety, installation, installed persistence, physical boards, complete device coverage, or the first usable and ultimate v4.0 product outcomes.
+
+---
 ## Architecture Documents — Status
 
 | Document | Status | Notes |
@@ -177,7 +189,7 @@ This document tracks the implementation status of every component in the platfor
 | Pre-Phase 1: RFC-COMPILER-001 drafted | 2026-06-09 | **Drafted** | Compiler boundary RFC drafted; pending review and acceptance |
 | Pre-Phase 1: RFC-DRIVER-001 drafted | 2026-06-09 | **Drafted** | Driver framework RFC drafted; pending review and acceptance |
 | Pre-Phase 1: Three RFCs accepted | TBD | **Not started** | All three RFCs accepted as Active; Implementation Baseline v1.2 |
-| Phase B: RISC-V64 boot checkpoint | 2026-11-22 | **QEMU boot qualification passed on public `main`** | QEMU `virt` RISC-V64 boot workflow run 131, ID `45012374998`, exact HEAD `91478e5`; broader Phase B exit criteria and real hardware remain open. |
+| Phase B: RISC-V64 boot checkpoint | 2026-11-23 | **PR-head QEMU boot marker observed; bounded run; strict status rerun required** | QEMU `virt` run 133, ID `45229894224`, head `4f52946`: ELF checks passed and `hello` appeared; QEMU was terminated by the 60-second timeout. PR #12 corrects exit-status masking and will rerun. This does not prove clean shutdown, long-duration stability or physical hardware. |
 | Phase 2: x86-64 + ARM64 ports | TBD | **Not started** | Deployment platforms |
 | All 5 peer architectures running | TBD | **Not started** | After Phase 2 |
 | Multi-architecture support (Phase 3) | TBD | **Not started** | After Phase 2 |
@@ -194,4 +206,4 @@ This document tracks the implementation status of every component in the platfor
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-11-23 — QEMU boot qualification passed on HEAD `91478e5`. Reference-validation run 184 failed before Rust/model tests due to the v3 document metadata issue, repaired in this reconciliation; full current-HEAD reference validation must be rerun. Detailed 19-Nov model counts and local verification results remain revision-scoped.
+**Last Updated:** 2026-11-23 — PR-head reference-validation run 45229893980 passed 179 Rust tests, all 38 CTS cases and the documentation validators. The `cargo clippy` step emitted 22 non-fatal `aether-runtime-model` warnings. QEMU run 45229894224 observed the boot marker before the 60-second timeout; PR #12 fixes the masked exit status and requires a fresh run. The first usable release and ultimate v4.0 platform are not qualified.

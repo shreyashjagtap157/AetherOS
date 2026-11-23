@@ -43,12 +43,14 @@ The active product goal does not automatically promote proposed RFCs to Accepted
 
 ## Live evidence snapshot — 23 November 2026
 
-Current public `main` HEAD inspected: `91478e592be1077bd79a0996f4207faf53d9fdc8`.
+Public `main` baseline inspected: `91478e592be1077bd79a0996f4207faf53d9fdc8`. PR #12 head at the time of these runs: `4f5294625b1493c138c5a7d1793336d4ea931d85`.
 
-- The `RISC-V64 Boot Qualification` workflow succeeded on this exact commit (run 131, ID `45012374998`).
-- The `Reference validation` workflow failed at `./check.sh` because the historical v3 goal document lacked the required `Classification:` header. This is a documentation-governance failure, not evidence that QEMU boot failed. The v3 document receives the missing classification in this change and is explicitly historical.
-- The latest commit summary records VirtIO block/network driver work, TCP data transfer and protected user-mode process execution. Commit messages are change summaries; each behavior still requires its own end-to-end evidence.
-- QEMU boot does not prove a complete usable desktop OS, physical hardware, live-media safety, installer, broad driver coverage or ultimate platform completion.
-- The active goal requires first live-media/install delivery and subsequent whole-platform phases. Incomplete requirements remain Open.
+- The historical main-branch reference-validation run 184 failed before tests because the v3 goal file lacked the required `Classification:` header. PR #12 adds the metadata and marks v3 as historical.
+- PR-head [Reference validation run 45229893980](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229893980) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. It uploaded run context and the full check log as artifact 14847282024.
+- PR-head [QEMU boot run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229894224) passed ELF validation and observed the `hello` boot marker. QEMU was terminated by the workflow's 60-second observation timeout. This is bounded boot-marker evidence, not clean-shutdown or long-duration stability evidence.
+- The previous boot workflow masked the timeout result by executing `|| true` before reading `$?`. PR #12 corrects this: the rerun accepts either clean exit 0 or expected timeout 124 after the boot marker, and rejects other exit codes.
+- The latest base-main commit records VirtIO block/network work, TCP data transfer and protected process execution. Commit messages remain implementation leads; each behavior still needs source and end-to-end evidence.
+- A successful bounded QEMU boot does not prove a complete usable desktop OS, safe live-media behavior, installer, persistence, physical-board support, broad device coverage or ultimate platform completion.
+- The active goal requires the first live-media/install experience and all subsequent whole-platform phases. Incomplete requirements remain Open.
 
-Re-run `./check.sh` and inspect CI on the resulting commit. This page is not a replacement for executable verification.
+Recheck the updated PR workflows after the boot-status correction and the merge result before treating the evidence as current.
