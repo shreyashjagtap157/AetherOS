@@ -79,13 +79,15 @@ not be generic ("update", "fix stuff", "wip", etc.).
 
 ### Pre-Commit Gate
 
-`.githooks/pre-commit` runs the full validation gate before every commit:
+`.githooks/pre-commit` runs the repository documentation and host-reference validation gate before every commit:
 
 1. Python documentation validators (`docs/tools/verify-authority.py`,
    `docs/tools/verify-decision-records.py`, `docs/tools/verify-generated.py`,
    `docs/tools/verify-glossary.py`, `docs/tools/verify-rfc.py`)
 2. Rust reference validation (`cargo fmt`, `cargo check`, `cargo test`,
-   `cargo clippy`, `cargo doc`, `cargo run -p aether-cts-runner`)
+   `cargo clippy`, `cargo doc`, `cargo run -p aether-cts-runner`). The current
+   script does not enforce `-D warnings` or run every release/reproducibility
+   check; use the separate supply-chain and reproducibility tools for those gates.
 
 Run the complete gate manually at any time:
 
@@ -149,7 +151,7 @@ reads it back from the GitHub API, and asserts the expected state.
 
 | Command | What it does |
 |---------|-------------|
-| `./check.sh` | Full validation gate (docs + Rust + reproducible) |
+| `./check.sh` | Documentation + Rust host-reference + CTS validation |
 | `git log --oneline --graph` | Visual history |
 | `git rerere` | Reapply previously resolved conflicts automatically |
 | `git diff --check` | Check for whitespace errors |
