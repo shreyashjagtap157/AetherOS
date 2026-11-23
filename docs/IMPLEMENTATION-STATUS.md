@@ -9,11 +9,11 @@ This document tracks implementation claims and evidence. The current-main baseli
 
 ## Current public-main baseline and latest PR evidence — 23 November 2026
 
-**Observed public `main` baseline:** `91478e592be1077bd79a0996f4207faf53d9fdc8`. **PR #12 head at the time of this evidence:** `4f5294625b1493c138c5a7d1793336d4ea931d85`.
+**Observed public `main` baseline:** `91478e592be1077bd79a0996f4207faf53d9fdc8`. **PR #12 head with corrected workflows:** `3c49da7a783eae7f0cac834ccda2070c06c20145`.
 
 - The historical main `Reference validation` run 184 failed before tests because the v3 goal file lacked `Classification:` metadata. PR #12 repairs this.
-- PR-head [Reference validation run 45229893980](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229893980) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847282024 contains `run-context.txt` and `check.log` (SHA-256 `1091e44db28a129b987447286beac0dbbe0f262b56cd959b0878e88e2124bd2f`).
-- PR-head [QEMU boot run 45229894224](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229894224) validated the RISC-V64 ELF and observed the `hello` boot marker. QEMU was terminated by the 60-second observation timeout; the former workflow then masked the timeout as exit 0. PR #12 corrects that logic, accepting only clean exit 0 or expected timeout 124 after the marker, and rejecting other exit codes. A fresh boot run is required after the correction.
+- PR-head [Reference validation run 45231381272](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231381272) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847087634 contains `run-context.txt` and `check.log` (SHA-256 `9ccdf7a7d25f9e535efb30c6343c5ea4c53b7c890507c58f78bd39e4e786496a`).
+- Corrected PR-head [QEMU boot run 45231380667](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231380667) validated the RISC-V64 ELF, observed `hello` and recorded exit status `124`, the expected 60-second observation timeout. The validator explicitly accepted this bounded-run result and rejects unexpected exit codes. Boot artifact 14848115771 contains the ELF and boot logs (SHA-256 `726bd5408897f29590e7a4ae41a859076b7d39b000a7f138c8700bb37d2a1575`).
 - The host `cargo clippy` command completed but emitted 22 warnings in `aether-runtime-model`. `./check.sh` does not enforce `-D warnings`; the warnings remain cleanup work.
 
 **Evidence boundary:** these runs establish a host reference/model validation and a bounded QEMU boot-marker scenario. They do not qualify clean shutdown, long-duration stability, live-media safety, installation, installed persistence, physical boards, complete device coverage, or the first usable and ultimate v4.0 product outcomes.
@@ -189,7 +189,7 @@ This document tracks implementation claims and evidence. The current-main baseli
 | Pre-Phase 1: RFC-COMPILER-001 drafted | 2026-06-09 | **Drafted** | Compiler boundary RFC drafted; pending review and acceptance |
 | Pre-Phase 1: RFC-DRIVER-001 drafted | 2026-06-09 | **Drafted** | Driver framework RFC drafted; pending review and acceptance |
 | Pre-Phase 1: Three RFCs accepted | TBD | **Not started** | All three RFCs accepted as Active; Implementation Baseline v1.2 |
-| Phase B: RISC-V64 boot checkpoint | 2026-11-23 | **PR-head QEMU boot marker observed; bounded run; strict status rerun required** | QEMU `virt` run 133, ID `45229894224`, head `4f52946`: ELF checks passed and `hello` appeared; QEMU was terminated by the 60-second timeout. PR #12 corrects exit-status masking and will rerun. This does not prove clean shutdown, long-duration stability or physical hardware. |
+| Phase B: RISC-V64 boot checkpoint | 2026-11-23 | **QEMU boot marker and bounded exit status verified on PR head** | QEMU `virt` run 133, ID `45231380667`, head `3c49da7`: ELF checks passed, `hello` appeared and exit status `124` was confirmed as the expected 60-second observation timeout. Clean shutdown, long-duration stability and physical hardware remain unverified. |
 | Phase 2: x86-64 + ARM64 ports | TBD | **Not started** | Deployment platforms |
 | All 5 peer architectures running | TBD | **Not started** | After Phase 2 |
 | Multi-architecture support (Phase 3) | TBD | **Not started** | After Phase 2 |
@@ -206,4 +206,4 @@ This document tracks implementation claims and evidence. The current-main baseli
 
 To update this document: edit the relevant table entry to reflect the current status, then update the "Last Updated" date below.
 
-**Last Updated:** 2026-11-23 — PR-head reference-validation run 45229893980 passed 179 Rust tests, all 38 CTS cases and the documentation validators. The `cargo clippy` step emitted 22 non-fatal `aether-runtime-model` warnings. QEMU run 45229894224 observed the boot marker before the 60-second timeout; PR #12 fixes the masked exit status and requires a fresh run. The first usable release and ultimate v4.0 platform are not qualified.
+**Last Updated:** 2026-11-23 — PR-head reference-validation run 45231381272 passed 179 Rust tests, all 38 CTS cases and the documentation validators. The `cargo clippy` step emitted 22 non-fatal `aether-runtime-model` warnings. Corrected QEMU run 45231380667 observed the boot marker and explicitly accepted expected exit status 124. The first usable release and ultimate v4.0 platform are not qualified.

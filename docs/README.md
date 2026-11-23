@@ -9,7 +9,7 @@ The suite is the deliverable corresponding to one question:
 
 > *What would an operating system architecture look like if every measurable dimension were optimized simultaneously, with tradeoffs explicit rather than accidental, and with each subsystem specified precisely enough to be implemented?*
 
-The answer is not a single kernel. It is a **specification**: a set of normative invariants, a decomposition into five peer architectures, a verification-tier system, a complexity budget methodology, and a roadmap of the 41 RFCs needed to make any conforming implementation possible.
+The answer is not a single kernel. It is a **specification**: a set of normative invariants, a decomposition into five peer architectures, a verification-tier system, a complexity budget methodology, and a roadmap of the 42 numbered RFC files needed to make any conforming implementation possible.
 
 ---
 
@@ -36,7 +36,7 @@ Top-level documents (read in order):
 | `Governance-RFC.md` | How this specification is amended. |
 | `Profiles-Specification.md` | Deployment profiles (Embedded, Desktop, Cloud, HPC, Safety-Critical). |
 | `Conformance-Test-Suite-Methodology.md` | How conformance is measured. |
-| `00-RFC-Index.md` | Master index of the 41 normative RFCs. |
+| `00-RFC-Index.md` | Master index of the 42 numbered RFC files (plus 3 Pre-Phase-1 drafts). |
 
 Peer architecture subdirectories:
 
@@ -67,7 +67,7 @@ Peer architecture subdirectories:
 
 The repository is both an architecture/specification suite and an active implementation repository. The current constitutional architecture remains `Platform-Architecture-Specification-v1.1.md`, classified as a **Validation Candidate**; it is not frozen until the declared evidence gates pass. The complete owner product goal is maintained separately in `project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md`. A first usable RISC-V64 release is an intermediate milestone, not the ultimate project goal.
 
-As observed on 23 November 2026, public `main` baseline was `91478e592be1077bd79a0996f4207faf53d9fdc8`. Its historical QEMU boot qualification passed in run 131; its reference-validation run 184 stopped before tests because the historical v3 goal lacked required `Classification:` metadata. Both documentation and evidence capture were repaired in [PR #12](https://github.com/shreyashjagtap157/AetherOS/pull/12). On PR head `4f5294625b1493c138c5a7d1793336d4ea931d85`, reference-validation run 45229893980 passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and 38 CTS cases, and uploaded a run-context/check-log artifact. QEMU run 45229894224 passed ELF and `hello` boot-marker checks; QEMU was stopped by the 60-second observation timeout. The former workflow masked its exit status; PR #12 corrects status capture and requires a fresh boot run before merge.
+As observed on 23 November 2026, public `main` baseline was `91478e592be1077bd79a0996f4207faf53d9fdc8`. Its historical reference-validation run 184 stopped before tests because the v3 goal lacked `Classification:` metadata. PR #12 fixes that documentation issue and the boot workflow's exit-status capture. On PR head `3c49da7a783eae7f0cac834ccda2070c06c20145`, reference-validation run 45231381272 passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and 38 CTS cases (artifact 14847087634). Corrected QEMU run 45231380667 validated the ELF, observed `hello`, captured expected timeout exit `124` after 60 seconds and uploaded boot evidence artifact 14848115771. This proves the bounded boot-marker scenario only, not clean shutdown, long-duration stability or the complete OS.
 
 The current repository contains host-side reference models and a RISC-V64 kernel/architecture implementation. These are separate evidence domains: a host model is not a hardware implementation, a successful QEMU boot is not a complete OS release, and a component test is not whole-system qualification. The v4 requirements register keeps incomplete subsystems, hardware profiles and ecosystem features visible.
 

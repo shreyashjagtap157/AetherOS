@@ -15,9 +15,9 @@ The active product-goal authority is now [AetherOS Complete Platform Goal v4.0](
 **Observed public `main` HEAD:** `91478e592be1077bd79a0996f4207faf53d9fdc8`.
 
 - RISC-V64 QEMU `virt` boot qualification passed on this exact commit: [run 131](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45012374998).
-- Historical main Reference validation run 184 stopped at the documentation-authority gate because the v3 goal lacked `Classification:` metadata. PR-head [run 45229893980](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229893980) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases.
+- Historical main Reference validation run 184 stopped at the documentation-authority gate because the v3 goal lacked `Classification:` metadata. Corrected PR-head [run 45231381272](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231381272) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases.
 - The 21–22 November implementation commits report boot/trap handling, executor/context switching, IPC, storage wiring, shell command handling, a userspace VM path, A/B update/recovery, VirtIO block/network work, TCP data transfer, PMP protection and protected process execution. Treat commit summaries as inspection leads, not proof that every listed subsystem has complete end-to-end behavior.
-- PR-head QEMU [run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45229894224) observed the `hello` boot marker and passed ELF checks before the 60-second timeout. The previous workflow masked the timeout status; PR #12 corrects it and requires a fresh run. This is a bounded QEMU boot-marker scenario, not the first usable live-media/installer release, physical-board support, complete integration or whole-platform qualification.
+- Corrected PR-head QEMU [run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231380667) validated the ELF, observed the `hello` boot marker and explicitly accepted the expected timeout exit status `124`. This remains a bounded QEMU boot-marker scenario, not the first usable live-media/installer release, physical-board support, complete integration or whole-platform qualification.
 
 ### Current product delivery horizons
 

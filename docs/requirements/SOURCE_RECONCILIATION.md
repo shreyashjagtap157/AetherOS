@@ -61,13 +61,12 @@ The implementation status must be reconciled to source, tests, logs and exact HE
 
 ## 5. Current Git and CI evidence (23 November 2026)
 
-Observed public `main` baseline before PR #12: `91478e592be1077bd79a0996f4207faf53d9fdc8`. PR #12 head at the time of the recorded runs: `4f5294625b1493c138c5a7d1793336d4ea931d85`.
+Observed public `main` baseline before PR #12: `91478e592be1077bd79a0996f4207faf53d9fdc8`. PR #12 head with the corrected validation and boot workflows: `3c49da7a783eae7f0cac834ccda2070c06c20145`.
 
-- The historical main-branch `RISC-V64 Boot Qualification` run 131 (ID `45012374998`) succeeded on base commit `91478e5`.
-- The historical main-branch `Reference validation` run 184 (ID `45012375003`) failed before tests because the v3 goal lacked mandatory `Classification:` metadata. PR #12 adds that metadata and marks v3 as historical.
-- PR-head `Reference validation` run 45229893980 passed: 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847282024 contains the run context and full check log.
-- PR-head QEMU run 45229894224 passed ELF validation and observed the `hello` boot marker, then QEMU was stopped by the 60-second observation timeout. The previous workflow captured `$?` after `|| true`, masking the true timeout status. PR #12 replaces this with explicit status capture, accepts only exit 0 or expected timeout 124 after the boot marker, and rejects other exits. A fresh rerun is required after this correction.
-- The host `cargo clippy` step completed but emitted 22 warnings in `aether-runtime-model`; `./check.sh` does not use `-D warnings`. These are cleanup work, not test failures.
+- Historical main `Reference validation` run 184 (ID `45012375003`) stopped before tests because the v3 goal lacked mandatory `Classification:` metadata. PR #12 adds that metadata and marks v3 historical.
+- Latest PR-head `Reference validation` run 45231381272 passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847087634 contains `run-context.txt` and `check.log` (SHA-256 `9ccdf7a7d25f9e535efb30c6343c5ea4c53b7c890507c58f78bd39e4e786496a`).
+- Corrected PR-head QEMU run 45231380667 validated the RISC-V64 ELF, observed the `hello` boot marker and recorded exit status `124` for the expected 60-second observation timeout. The validation explicitly accepts this bounded-run result and rejects unexpected exit codes. Boot artifact 14848115771 contains the ELF and logs (SHA-256 `726bd5408897f29590e7a4ae41a859076b7d39b000a7f138c8700bb37d2a1575`).
+- Host `cargo clippy` completed but emitted 22 warnings in `aether-runtime-model`; `./check.sh` does not use `-D warnings`. These remain cleanup work.
 - Commit `91478e5` records VirtIO block/network work, TCP data transfer and protected process execution. Commit messages remain change summaries rather than proof of each device, transport, syscall or system integration requirement.
 - Neither QEMU boot nor host reference tests qualify a complete usable OS, installer, physical board, all devices, or the ultimate v4 whole-platform goal.
 
