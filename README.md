@@ -1,105 +1,63 @@
 # AetherOS
 
-## Current verified status — 12 November 2026 (PR-branch evidence)
+Classification: Informative
 
-> **Project classification: architecture/specification and host-reference prototype, not a working OS kernel.** There is still no bootable kernel, compiler, hardware design or QEMU RISC-V64 product slice in this repository.
->
-> PR #7, PR #8, PR #9 and PR #10 are merged into `main`. The host-reference CTS baseline on `main` is 17 cases (including per-access live capability revalidation and the serialized host runtime). The working tree adds a further 21 cases (CTS-CAP-EXPIRY/BOUND-001, CTS-SCHED-*, CTS-COMP-*, CTS-STATE-CONFLICT/SNAPSHOT/CRASH-001/OUTBOX-DISPATCH-001, CTS-PROF-SELECT/COMBINE-001, CTS-ROUTING-GRANT/DENY-001, CTS-COMP-CONF-001..004) bringing it to 38; these additions are validated locally (full `reference/check.sh` and root `./check.sh` pass, exit 0) but are not merged, not committed, and not CI-validated. The host model is not a real kernel MMU or production scheduler.
->
-> `main` validation on `ac55bb3` passed the full gate including the reproducibility check ([workflow run](https://github.com/shreyashjagtap157/AetherOS/actions/runs/43245580188)). On this Windows host the reproducibility step previously failed identically on unmodified `main` because MSVC `link.exe` embeds a wall-clock PE `TimeDateStamp`; `tools/verify-reproducible-reference.sh` now passes `-C link-arg=/Brepro` on MINGW/MSYS/CYGWIN hosts so the gate's byte-identical-build assertion holds there too (Linux CI unchanged; assertion preserved, not weakened). The full `./check.sh` now exits 0 on this host. This is still a host-reference prototype: no kernel CTS, real MMU backend, production scheduler, formal proof, or product release is claimed.
+AetherOS is the implementation and specification project for one coherent, general-purpose operating system spanning desktop, laptop, tablet, foldable and mobile profiles. The initial qualification target is RISC-V64 on QEMU `virt`; that is the first reference platform, not the limit of the long-term hardware strategy.
 
----
-AetherOS is the working name for the **Ideal Computing Platform**: a candidate architecture and research programme for a general-purpose operating system built around capability-only authority, thirteen candidate invariants, and five peer architectures (Composition, Execution, State, Communication, Observability).
+## Current verified repository state — 23 November 2026
 
-The repository contains the specification suite — **not** a working kernel, compiler, or hardware design. Implementation repositories will be separate.
+**Canonical branch:** `main`  
+**Inspected HEAD:** `91478e592be1077bd79a0996f4207faf53d9fdc8`
 
-## Status
+- **QEMU boot qualification:** succeeded on this exact commit in [RISC-V64 Boot Qualification run 131](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45012374998).
+- **Reference/documentation validation:** historical main [run 184](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45012375003) failed at the early documentation-authority gate because the historical v3 goal lacked its required `Classification:` header. PR #12 fixes it. The latest PR-head [reference validation run](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231381272) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases; evidence artifact 14847087634 was uploaded.
+- The latest commit summary records VirtIO block/network driver work, TCP data transfer and protected process execution. Commit summaries are not acceptance evidence for every behavior; inspect implementation and its end-to-end tests.
+- The corrected PR-head [QEMU boot run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231380667) validated the ELF, observed the expected `hello` boot marker and captured exit status `124` as the expected 60-second timeout. The validator accepted this bounded-run result and rejects other unexpected exit codes; artifact 14848115771 was uploaded. This is not clean-shutdown, long-duration stability or full-OS qualification.
+- The successful QEMU boot is a real milestone. It does **not** prove the first usable desktop release, live-media safety, installation, physical-board support, complete networking, the entire driver ecosystem or ultimate platform completion.
 
-| Item                              | State                                                                 |
-|-----------------------------------|-----------------------------------------------------------------------|
-| Top-level architecture            | **Validation candidate v1.2**; not frozen until executable evidence exists |
-| RFC corpus                        | **42 legacy proposals + 3 Pre-Phase-1 drafts**; metadata and semantics under reconciliation |
-| AI-native validation objective    | **Explicit**; AI-native operation is a conformance scenario, not a new RFC or subsystem |
-| Conformance Test Suite            | **17 cases on main; 38 with the uncommitted working-tree slices (capability lifetime/flags, scheduler Layer 1, composition models incl. conformance reporting, transaction conflicts, crash-consistency sweep and outbox dispatch) (local gates green; CI pending)**; no kernel CTS yet |
-| Implementation                    | Host semantic prototype only; QEMU RISC-V64 product slice **not started** |
-| Product/feasibility baseline      | Active; see `docs/PRODUCT-FEASIBILITY-AND-SCOPE.md`                    |
-| Compatibility strategy           | Active; see `docs/COMPATIBILITY-STRATEGY.md`                           |
-| UASA storage integration         | Review packet imported from `main`; implementation evidence pending |
+The active product mandate is **AetherOS Complete Platform Goal v4.0**. The first usable RISC-V64 release is an intermediate milestone; the actual project goal is the fully integrated platform and all required profile, service, runtime, security, user-experience and ecosystem capabilities. Unimplemented requirements must remain visible and Open.
 
-## What Is In This Repository
+## Project goals and authoritative documentation
 
+Start with [the project index](docs/project/README.md), then read:
+
+1. [Complete Platform Goal v4.0](docs/project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md) — active user goal and execution mandate.
+2. [Reconstructed user requirements](docs/requirements/USER_REQUIREMENTS_BASELINE.md) — complete traceable product baseline.
+3. [Source reconciliation](docs/requirements/SOURCE_RECONCILIATION.md) — provenance and authority rules.
+4. [Platform Architecture Specification v1.1](docs/Platform-Architecture-Specification-v1.1.md) — current constitutional architecture baseline; Validation Candidate, not yet frozen.
+5. [Architecture Governance](docs/ARCHITECTURE-GOVERNANCE.md), [RFC Index](docs/00-RFC-Index.md), applicable RFCs and accepted ADRs.
+6. [Implementation Roadmap](docs/IMPLEMENTATION-ROADMAP.md) and [Implementation Status](docs/IMPLEMENTATION-STATUS.md) — always reconcile against live source and exact CI commit.
+
+The earlier v3 goal remains available as an informative historical checkpoint. The complete v1.0 convergence source is preserved under `docs/archive/architecture/`; neither historical source overrides the current v1.1 constitutional architecture, governance, accepted ADRs or active RFC state.
+
+## Repository map
+
+- `docs/project/` — active product goal, navigation and architecture/source reconciliation.
+- `docs/requirements/` — reconstructed user requirements and traceability.
+- `docs/archive/` — preserved historical source documents, explicitly non-normative.
+- `docs/RFCs/`, `docs/Platform-Architecture-Specification-v1.1.md` — architectural contracts and governance.
+- `reference/` — host semantic/reference models and the RISC-V64 kernel/architecture implementation; inspect each crate's actual status.
+- `schemas/`, `tools/`, `.github/workflows/` — machine-readable records, validators and CI qualification.
+
+## Validation
+
+Run the documented repository gate from the repository root:
+
+```sh
+./check.sh
 ```
-AetherOS/
-├── docs/        The full specification suite (entry: docs/README.md)
-├── reference/   Executable capability reference model and CTS prototype
-└── .kilo/       Local editor / agent configuration
-```
 
-Run **`./check.sh`** for the complete local documentation and host-reference validation gate. The pinned Rust toolchain is declared in `rust-toolchain.toml`.
+Use the pinned toolchain from `rust-toolchain.toml`. For target work, also run the relevant RISC-V build and QEMU boot workflow. Report exact command, target, commit, environment, workflow/run ID and result. A documentation gate, host-model suite, kernel build and QEMU boot are different evidence classes and must not be conflated.
 
-The canonical entry point is **[`docs/README.md`](docs/README.md)**. From there the reading order is:
+## Development and safety rules
 
-1. `docs/REPOSITORY-PRINCIPLES.md` — one-page orientation
-2. `docs/Platform-Architecture-Specification-v1.1.md` — validation-candidate architecture with 13 invariants
-3. `docs/ARCHITECTURE-GOVERNANCE.md` — how the spec is amended
-4. `docs/00-RFC-Index.md` — master index of the 41 normative RFCs (and the 3 Pre-Phase-1 drafts)
+- Preserve the canonical `main` history; do not force-push or rewrite history.
+- Inspect the real worktree, remote, staged/unstaged/untracked/ignored files and nested repositories before modifying a local checkout.
+- Do not discard user work, hard-reset, clean or overwrite a workspace.
+- Prefer disposable QEMU disks for install/recovery testing. Never write to a real target disk, alter firmware/boot state or make privileged host changes without the applicable explicit authorization.
+- Keep private signing keys, credentials and tokens outside Git and build artifacts.
+- Work continuously through dependency-ready research, implementation, integration, testing and documentation. Do not stop at a plan, audit, boot checkpoint or first release.
 
-Peer architectures are organised under `docs/RFCs/`:
+## License
 
-| Directory                            | RFCs | Includes                                                |
-|--------------------------------------|------|---------------------------------------------------------|
-| `docs/RFCs/00-Composition/`          | 5    | RFC-0002 … RFC-0006                                     |
-| `docs/RFCs/01-Execution/`            | 8    | RFC-0007 … RFC-0014                                     |
-| `docs/RFCs/02-State/`                | 9    | RFC-0015 … RFC-0023                                     |
-| `docs/RFCs/03-Communication/`        | 7    | RFC-0024 … RFC-0030                                     |
-| `docs/RFCs/04-Observability/`        | 6    | RFC-0031 … RFC-0036                                     |
-| `docs/RFCs/05-Cross-Cutting/`        | 7    | RFC-0037 … RFC-0043                                     |
-| `docs/RFCs/06-Pre-Phase-1/`          | 3    | RFC-ALLOC-001, RFC-COMPILER-001, RFC-DRIVER-001 (Draft) |
-
-Supporting materials live alongside the specs:
-
-- `docs/Glossary.md` — terminology used across all documents
-- `docs/REVISION-HISTORY.md` — what changed across architecture versions
-- `docs/CHANGELOG.md` — suite-level change log
-- `docs/RESEARCH-REVOCATION-IMPLEMENTATION.md` — research and implementation decision for the host capability provider's revocation graph
-- `docs/RESEARCH-RV64-MAPPING-REVOCATION.md` — capability-authorized memory mapping, PTE permissions, and RISC-V shootdown research
-- `docs/Hardware-Support-RFC.md` — hardware provider architecture
-- `docs/VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md` — product releases from 0.0.0 through 2.x
-- `docs/IMPLEMENTATION-ROADMAP.md` / `IMPLEMENTATION-STATUS.md` — phase gates and live status
-- `docs/PRE-IMPLEMENTATION-DEPENDENCY-MATRIX.md` — interfaces blocking Phase 1
-- `docs/generated/` — tool-emitted artifacts (e.g. `DECISION-INDEX.md`); never edited by hand
-- `docs/tools/` — Python scripts and `repository-policy.yaml` consumed by the repo's governance / verification toolchain
-
-## Quick Links
-
-- **One-page orientation:** `docs/REPOSITORY-PRINCIPLES.md`
-- **Architecture in 20 minutes:** `docs/Platform-Architecture-Specification-v1.1.md`
-- **Implementer reading order:** Execution → State → Communication → Composition → Observability → Cross-Cutting
-- **For reviewers:** `docs/REVIEWER-GUIDE.md` is mandatory pre-reading
-
-## What This Repository Is Not
-
-It is **not**:
-
-- A kernel, bootloader, hypervisor, driver, or production implementation. The `reference/` host models are working prototype code.
-- A compiler or runtime implementation.
-- A hardware schematic, SoC design, or benchmark suite.
-- An application ABI or wire-format protocol (those live in the RFCs that define them).
-
-It **is**:
-
-- A validation-candidate architectural specification with thirteen invariants that remain subject to evidence-driven amendment.
-- 41 normative RFCs across five peer architectures.
-- A verification-tier methodology (`RFC-0040`) and a conformance-test methodology (`Conformance-Test-Suite-Methodology.md`).
-- A governance process (`ARCHITECTURE-GOVERNANCE.md`, `Governance-RFC.md`).
-- Five deployment profiles (`Profiles-Specification.md`).
-- An initial, explicitly non-production executable capability model, table-backed provider, and machine-readable CTS runner under `reference/`.
-
-## Vocabulary of Authority
-
-- **Constitutional** — the document defines a primitive the architecture depends on. (`Platform-Architecture-Specification-v1.1.md`)
-- **Normative** — RFC or methodology. Specifies what conformant implementations must do.
-- **Generated** — emitted by tools in `docs/tools/`; never edited by hand, never authoritative.
-- **Informative** — orientation, history, status. Useful, never load-bearing.
-
-Only **one** document may be authoritative for any given fact. The architecture is the highest authority in the suite; RFCs derive from it; everything else is reference.
+See [LICENSE](LICENSE).

@@ -6,6 +6,23 @@ Authoritative Source: docs/README.md
 This file documents the development environment, git workflow, and validation
 gate for anyone contributing to AetherOS — human or agent.
 
+## Owner working preferences and repository expectations
+
+Before a non-trivial task, read [the owner preferences and repository expectations](docs/project/OWNER_WORKING_PREFERENCES_AND_REPOSITORY_EXPECTATIONS.md), [the active v4.0 product goal](docs/project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md), and the [requirements suite](docs/requirements/README.md).
+
+- Inspect and synchronize the actual remote/repository state before acting: branch, HEAD, history, staged/unstaged/untracked/ignored files, nested repositories, instructions and CI.
+- Follow the Git branch/PR/squash policy documented in this file. Preserve history; never force-push, rewrite, hard-reset, clean, overwrite or silently stash user work.
+- Implement authorized work directly: research, design, code, real consumer integration, tests, debugging, documentation and evidence. Do not stop at an audit or plan.
+- Continue through dependency-ready tasks without asking the owner to say “continue” repeatedly. Escalate only true owner-only decisions, unavailable hardware/credentials, paid dependencies, destructive real-device/host actions or fundamental contract changes.
+- Research with current official specifications, standards, maintained implementations and peer-reviewed work; assess maturity, licensing, security, compatibility, performance, power and thermal cost.
+- Use one specialist subagent at a time; close and independently verify its output before assigning the next. The primary agent remains the accountable architecture/integration lead.
+- Fix root causes. Never weaken tests, accept vacuous evidence, hide failures, or call a scaffold a functioning driver/service.
+- Distinguish designed, scaffold-only, partially implemented, implemented, integrated, verified, qualified and certified states. Tie all claims to exact commit, target, environment, command, CI run and artifacts.
+- Update all impacted requirements, architecture/ADR/RFC references, roadmap, status, risk/dependency records, tests and handoffs.
+- Build this repository into the complete, integrated AetherOS platform, not merely a reference model, boot checkpoint or first installable RISC-V image. The first usable release is an intermediate milestone.
+
+Project entry points: [project index](docs/project/README.md), [requirements suite](docs/requirements/README.md), [current implementation status](docs/IMPLEMENTATION-STATUS.md), and [complete v4.0 mandate](docs/project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md).
+
 ---
 
 ## Environment Setup
@@ -62,13 +79,15 @@ not be generic ("update", "fix stuff", "wip", etc.).
 
 ### Pre-Commit Gate
 
-`.githooks/pre-commit` runs the full validation gate before every commit:
+`.githooks/pre-commit` runs the repository documentation and host-reference validation gate before every commit:
 
 1. Python documentation validators (`docs/tools/verify-authority.py`,
    `docs/tools/verify-decision-records.py`, `docs/tools/verify-generated.py`,
    `docs/tools/verify-glossary.py`, `docs/tools/verify-rfc.py`)
 2. Rust reference validation (`cargo fmt`, `cargo check`, `cargo test`,
-   `cargo clippy`, `cargo doc`, `cargo run -p aether-cts-runner`)
+   `cargo clippy`, `cargo doc`, `cargo run -p aether-cts-runner`). The current
+   script does not enforce `-D warnings` or run every release/reproducibility
+   check; use the separate supply-chain and reproducibility tools for those gates.
 
 Run the complete gate manually at any time:
 
@@ -132,7 +151,7 @@ reads it back from the GitHub API, and asserts the expected state.
 
 | Command | What it does |
 |---------|-------------|
-| `./check.sh` | Full validation gate (docs + Rust + reproducible) |
+| `./check.sh` | Documentation + Rust host-reference + CTS validation |
 | `git log --oneline --graph` | Visual history |
 | `git rerere` | Reapply previously resolved conflicts automatically |
 | `git diff --check` | Check for whitespace errors |

@@ -55,7 +55,8 @@ jobs:
         timeout-minutes: 10
         run: |
           ARTIFACT=target/riscv64gc-unknown-none-elf/release/aether-arch-riscv64
-          timeout 60 qemu-system-riscv64 \
+          set +e
+          timeout --signal=TERM --kill-after=5s 60s qemu-system-riscv64 \
             -machine virt \
             -m 128M \
             -bios default \
@@ -63,8 +64,10 @@ jobs:
             -nographic \
             -serial stdio \
             -monitor none \
-            > boot.log 2>&1 || true
-          echo "exit=$?" >> boot.status
+            > boot.log 2>&1
+          qemu_status=$?
+          set -e
+          printf 'exit=%s\n' "$qemu_status" > boot.status
           cp boot.log boot.log.txt
         working-directory: reference/crates/aether-arch-riscv64
       - name: Validate boot result
@@ -83,12 +86,21 @@ jobs:
           test "$entry" = "0x80200000" || { echo "bad entry $entry"; exit 1; }
           if [ ! -s boot.log ]; then echo "no console output"; exit 1; fi
           if ! grep -q "hello" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
-          if [ ! -s boot.log ]; then echo "no console output"; exit 1; fi
-          if ! grep -q "hello" boot.log; then echo "kernel marker missing"; cat boot.log; exit 1; fi
-          # tick check disabled temporarily
           exit_code=$(cut -d= -f2 boot.status)
-          if [ "$exit_code" != "0" ]; then echo "emulator exited $exit_code"; exit 1; fi
-          echo "boot ok"
+          case "$exit_code" in
+            0)
+              echo "QEMU exited cleanly after emitting the boot marker."
+              ;;
+            124)
+              echo "QEMU reached the expected 60-second observation timeout after emitting the boot marker."
+              ;;
+            *)
+              echo "unexpected QEMU exit status: $exit_code"
+              cat boot.log
+              exit 1
+              ;;
+          esac
+          echo "boot marker and bounded QEMU execution verified"
         working-directory: reference/crates/aether-arch-riscv64
       - name: Upload boot evidence
         if: always()

@@ -7,7 +7,27 @@ Status: Validation Roadmap
 
 **Updated:** 2026-07-27. This roadmap replaces calendar optimism with evidence gates. Dates are forecasts only after a staffed team measures throughput. Passing a phase gate, not elapsed time, authorizes the next maturity claim.
 
-## 1. Brutally honest baseline
+
+## Current owner-goal and implementation reconciliation — 23 November 2026
+
+The active product-goal authority is now [AetherOS Complete Platform Goal v4.0](project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md), supported by the [reconstructed requirements](requirements/USER_REQUIREMENTS_BASELINE.md) and [source reconciliation](requirements/SOURCE_RECONCILIATION.md). This 27 July evidence roadmap remains useful for architecture/research gates, but its old baseline and phase forecasts are historical snapshots. It must not override the v4.0 whole-platform scope or be used to claim that the first usable release is the final project goal.
+
+**Observed public `main` HEAD:** `91478e592be1077bd79a0996f4207faf53d9fdc8`.
+
+- RISC-V64 QEMU `virt` boot qualification passed on this exact commit: [run 131](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45012374998).
+- Historical main Reference validation run 184 stopped at the documentation-authority gate because the v3 goal lacked `Classification:` metadata. Corrected PR-head [run 45231381272](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231381272) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases.
+- The 21–22 November implementation commits report boot/trap handling, executor/context switching, IPC, storage wiring, shell command handling, a userspace VM path, A/B update/recovery, VirtIO block/network work, TCP data transfer, PMP protection and protected process execution. Treat commit summaries as inspection leads, not proof that every listed subsystem has complete end-to-end behavior.
+- Corrected PR-head QEMU [run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231380667) validated the ELF, observed the `hello` boot marker and explicitly accepted the expected timeout exit status `124`. This remains a bounded QEMU boot-marker scenario, not the first usable live-media/installer release, physical-board support, complete integration or whole-platform qualification.
+
+### Current product delivery horizons
+
+- **First usable release:** v4.0 Phases 0–9, from baseline recovery and RISC-V64 boot contract through protected userspace, real storage/network/device slices, functional desktop, safe live media and installer, package/app use, updates/recovery/security hardening, physical target qualification and a stable release.
+- **Ultimate platform completion:** v4.0 Phases 10–18, covering shared platform semantics, complete device/driver/hardware profiles, multimedia/graphics, communications, runtimes and applications, Context-centric UX and shells, governed intelligence/privacy, resource/reliability/enterprise operations, and full integration/profile conformance/final qualification.
+- The detailed acceptance criteria and non-negotiable scope are in v4.0. Keep every unimplemented requirement Open with dependencies and evidence criteria. These horizons do not replace the architecture's own phase/RFC verification gates.
+
+---
+
+## 1. Historical baseline captured 27 July 2026 (not the current implementation state)
 
 There is currently no kernel, bootloader, HAL, target driver, target runtime, filesystem implementation, benchmark programme, formal machine proof, supported hardware configuration, or application compatibility result in this repository. PR #7, PR #8, PR #9 and PR #10 have been merged into `main`, bringing the executable **host reference CTS prototype** to 17 cases, including an experimental RV64/Sv39 memory-mapping model, dispatch-facing address-space activation/residency checks, per-access live capability revalidation, and a serialized host façade for capability/mapping state. Main head `ac55bb3` passed its push validation workflow, including capability-space tests in debug and release, all CTS cases, repository and supply-chain validators, formatting, Clippy, Rustdoc, reproducibility, and the evidence gates. These are host-reference results, not target-kernel or product conformance. The uncommitted working tree adds scheduling-time lifetime enforcement (RFC-0037.14), capability flags (RFC-0037.7) and CAPF_BOUND transfer refusal (RFC-0037.15) in both reference providers, with two additional CTS cases (19 total); those changes are locally verified but not committed, merged or CI-validated. Forty-one architecture RFCs and three draft implementation-boundary RFCs are design inputs, not implementation evidence. The architecture is a validation candidate, not frozen fact.
 
@@ -44,7 +64,7 @@ The product-version realization of these gates is defined in `VERSIONED-PRODUCT-
 
 ## 4. Phase B — QEMU RISC-V64 vertical slice
 
-**Minimum plausible duration:** 12-24 months after Phase A gate. **Current state:** target approved 2026-11-19 (QEMU `virt` RISC-V64 + OpenSBI, per VERSIONED-PRODUCT-IMPLEMENTATION-PLAN.md); a boot-checkpoint ELF is built and cross-compile verified (entry `0x80200000`, EM_RISCV); boot NOT verified (QEMU absent on this host); no milestone claimed.
+**Historical status text superseded:** the earlier 19 November note said boot was not verified because QEMU was absent on that development host. The current public `main` has since passed the CI QEMU RISC-V64 boot qualification on 22 November 2026 (run 131, ID `45012374998`). This validates the workflow's declared QEMU boot scenario only; it does not qualify the complete Phase B exit gate or the first usable release.
 
 Implement only: OpenSBI/QEMU boot, minimal executor, physical/page allocation, Sv39 address spaces, traps/timer, compact capability spaces, one IPC path, one isolated component, UART, virtio-block, append-only transactional state prototype, batched audit commitment, outbox recovery, deterministic test harness, and crash/fault injection.
 

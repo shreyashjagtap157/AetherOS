@@ -23,7 +23,22 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - name: Validate repository
-        run: ./check.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/evidence
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "ref=$GITHUB_REF"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "event=$GITHUB_EVENT_NAME"
+            echo "workflow_run_id=$GITHUB_RUN_ID"
+            echo "workflow_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee artifacts/evidence/run-context.txt
+          ./check.sh 2>&1 | tee artifacts/evidence/check.log
       - name: Retain reference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

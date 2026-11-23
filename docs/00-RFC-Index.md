@@ -3,7 +3,7 @@
 Classification: Generated
 Authoritative Source: All normative and cross-cutting RFCs
 
-This index enumerates the 41 normative RFCs required by v1 of `Platform-Architecture-Specification-v1.1.md`. Each RFC is expected to exist as a file in the relevant `RFCs/` subdirectory.
+This index enumerates 42 numbered RFC files across the five peer architecture domains (RFC-0002 through RFC-0043), plus 3 Pre-Phase-1 implementation-boundary drafts. The top-level `Conformance-Test-Suite-Methodology.md` is the same normative content as RFC-0041 and is a navigation duplicate, not a separate numbered RFC.
 
 ---
 
@@ -79,7 +79,7 @@ This index enumerates the 41 normative RFCs required by v1 of `Platform-Architec
 | RFC-0042   | Cohort Update Governance             | Not started   | `RFCs/05-Cross-Cutting/RFC-0042.md`|
 | RFC-0043   | Capability Rights Algebra            | Not started   | `RFCs/05-Cross-Cutting/RFC-0043.md`|
 
-> **Note:** The `Conformance-Test-Suite-Methodology.md` file at the suite root is the same document that would be reproduced in this project numbering as `RFC-0041` if the suite were numbered from RFC-0041 explicitly. The cross-cutting list above contains 5 RFCs; the methodology file is included as the 41st by counting it under the cross-cutting list at the top-level file rather than as a separate RFC. Both numbering schemes are documented.
+> **Note:** The `Conformance-Test-Suite-Methodology.md` file at the suite root is the same document that would be reproduced in this project numbering as `RFC-0041` if the suite were numbered from RFC-0041 explicitly. The cross-cutting list contains 7 numbered RFC files (RFC-0037 through RFC-0043). The root methodology document and `RFC-0041.md` refer to the same normative content; the root copy is not an additional RFC.
 
 ## Pre-Phase 1 (3 RFCs)
 
