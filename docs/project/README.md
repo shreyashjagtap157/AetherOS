@@ -43,11 +43,11 @@ The active product goal does not automatically promote proposed RFCs to Accepted
 
 ## Live evidence snapshot — 23 November 2026
 
-Public `main` baseline inspected: `91478e592be1077bd79a0996f4207faf53d9fdc8`. PR #12 head at the time of these runs: `4f5294625b1493c138c5a7d1793336d4ea931d85`.
+Public `main` after PR #12 squash merge: `8fe51c0428441c9951056641f839cb52f45e13fe`. PR #12: https://github.com/shreyashjagtap157/AetherOS/pull/12.
 
 - The historical main-branch reference-validation run 184 failed before tests because the v3 goal file lacked the required `Classification:` header. PR #12 adds the metadata and marks v3 as historical.
-- PR-head [Reference validation run 45231381272](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231381272) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. It uploaded run context and the full check log as artifact 14847087634.
-- Corrected PR-head [QEMU boot run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45231380667) validated the ELF, observed the `hello` boot marker and captured exit status `124` as the expected 60-second timeout. The boot validator accepted this bounded observation and rejects unexpected exit codes.
+- Merged-main [Reference validation run 45233948385](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45233948385) passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases; artifact 14848865763 was uploaded.
+- Corrected PR-head [QEMU boot run 133](https://github.com/shreyashjagtap157/AetherOS/actions/runs/45232860086) validated the ELF, observed `hello` and captured the expected timeout status `124`; artifact 14846774779 was uploaded. The automatic main-head QEMU rerun 45233948258 remained in progress at the last status refresh.
 - Boot evidence artifact 14848115771 was uploaded with the ELF and boot logs. This does not establish clean shutdown, long-duration stability, installer behavior or full OS qualification.
 - The latest base-main commit records VirtIO block/network work, TCP data transfer and protected process execution. Commit messages remain implementation leads; each behavior still needs source and end-to-end evidence.
 - A successful bounded QEMU boot does not prove a complete usable desktop OS, safe live-media behavior, installer, persistence, physical-board support, broad device coverage or ultimate platform completion.
