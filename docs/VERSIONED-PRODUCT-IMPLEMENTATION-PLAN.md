@@ -9,6 +9,11 @@ Status: Active Planning Baseline
 **Scope:** Product implementation versions, not architecture-document versions.
 **Current repository mapping:** Host reference prototype only; approximately a partial `0.0.3` evidence set. No product version has shipped.
 
+
+**Reconciliation note — 23 November 2026:** the preceding repository mapping is a historical estimate from the original 1 August 2026 plan, not the current implementation state. The live `main` now contains a RISC-V64 kernel implementation and passed the QEMU `virt` boot qualification workflow on commit `91478e592be1077bd79a0996f4207faf53d9fdc8` (run 131, ID `45012374998`). The reference-validation workflow on that same commit failed earlier in the documentation gate; full post-kernel model/test validation must be rerun after its metadata repair. No product version is thereby shipped or qualified.
+
+Use [AetherOS Complete Platform Goal v4.0](project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md) as the owner-approved whole-platform scope. This versioned plan remains a release-gate and product-version design aid, but its former description of `2.0.0` as the complete end of the product must not be interpreted as a ceiling on the v4.0 whole-platform objective. The first usable release is intermediate; all later v4.0 requirements remain tracked until accepted and qualified.
+
 ## 1. Purpose and interpretation
 
 This plan starts at a hypothetical empty implementation (`0.0.0`), maps the evidence already present in this repository, defines a minimal useful product at `1.0.0`, expands it to the intended complete supported product at `2.0.0`, and reserves `2.0.1+` for independently gated evolution. It does **not** claim that changing a version number makes a gate pass.

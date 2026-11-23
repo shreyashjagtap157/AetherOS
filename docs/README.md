@@ -20,6 +20,10 @@ Top-level documents (read in order):
 | File | Purpose |
 |------|---------|
 | `README.md` | This document. Entry point. |
+| `project/README.md` | Active owner goal, product scope, source authority and navigation. |
+| `project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md` | Active v4.0 whole-platform execution mandate. |
+| `requirements/USER_REQUIREMENTS_BASELINE.md` | Reconstructed user requirements and traceability keys. |
+| `requirements/SOURCE_RECONCILIATION.md` | Source provenance and v1.0/v1.1 authority reconciliation. |
 | `Glossary.md` | Terminology used across all documents. |
 | `Platform-Architecture-Specification-v1.1.md` | Validation-candidate constitutional baseline. |
 | `PRODUCT-FEASIBILITY-AND-SCOPE.md` | Honest product priorities, limits, installation composition, and production criteria. |
@@ -49,11 +53,11 @@ Peer architecture subdirectories:
 
 ## How To Read This Suite
 
-**If you want the architecture in 20 minutes:** read only `Platform-Architecture-Specification-v1.1.md`.
+**If you want the product goal:** read `project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md`. **If you want the architecture in 20 minutes:** read `Platform-Architecture-Specification-v1.1.md`.
 
 **If you want a specific subsystem:** find the relevant RFC in `00-RFC-Index.md`.
 
-**If you intend to implement something:** read the top-level architecture, then the relevant peer architecture RFCs in order. Begin implementation only after reading the conformance test methodology.
+**If you intend to implement something:** read the product goal, top-level architecture, applicable accepted ADRs and peer architecture RFCs in order. Begin implementation only after reading the conformance test methodology and verifying the current implementation baseline.
 
 **If you intend to critique:** every RFC is normative. Critique should reference specific invariants, specific RFC sections, and propose concrete mechanism alternatives — not architectural slogans.
 
@@ -61,27 +65,13 @@ Peer architecture subdirectories:
 
 ## Status
 
-The v1.1 text is the current constitutional baseline and a **validation candidate**. The legacy RFC corpus is Proposed until executable models, CTS fixtures, prototypes, and measured evidence justify acceptance. Specifications are not implementation evidence.
+The repository is both an architecture/specification suite and an active implementation repository. The current constitutional architecture remains `Platform-Architecture-Specification-v1.1.md`, classified as a **Validation Candidate**; it is not frozen until the declared evidence gates pass. The complete owner product goal is maintained separately in `project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md`. A first usable RISC-V64 release is an intermediate milestone, not the ultimate project goal.
 
-This suite does **not** contain:
-- A working kernel or production OS implementation
-- Compiler implementations
-- Hardware schematics
-- Performance benchmarks
+As observed on 23 November 2026, public `main` is at `91478e592be1077bd79a0996f4207faf53d9fdc8`. The QEMU RISC-V64 boot qualification workflow succeeded on this exact commit (run 131, ID `45012374998`). The reference-validation workflow (run 184, ID `45012375003`) failed before reference tests because the v3 goal document lacked a required `Classification:` header; that metadata defect is corrected as part of the documentation reconciliation. Re-run the gate on the resulting commit and inspect all subsequent validation results.
 
-These belong in separate implementation repositories.
+The current repository contains host-side reference models and a RISC-V64 kernel/architecture implementation. These are separate evidence domains: a host model is not a hardware implementation, a successful QEMU boot is not a complete OS release, and a component test is not whole-system qualification. The v4 requirements register keeps incomplete subsystems, hardware profiles and ecosystem features visible.
 
-This suite **does** contain:
-- Host-side executable reference models under `../reference/`
-- A validation-candidate architectural specification
-- 41 normative RFCs
-- A verification methodology
-- A conformance test methodology
-- A governance process
-- Profile specifications
-
----
-
+The complete architecture and product-goal status must be read with the exact source revision, RFC/ADR acceptance state, test logs and target evidence. Specifications are not implementation evidence; implementation is not proof or certification.
 ## Document Conventions
 
 Throughout this suite:

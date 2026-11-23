@@ -2,6 +2,11 @@
 
 ## Version 3.0 — From an integrated RISC-V64 kernel to a usable, installable operating system
 
+Classification: Informative
+Authoritative Source: docs/project/AetherOS_Complete_Platform_Goal_v4_2026-11-21.md
+
+> Historical v3.0 execution snapshot. Retained for decision history and implementation provenance. The active v4.0 mandate supersedes v3.0 as the definition of the ultimate project goal; the current constitutional architecture and governance continue to control normative system contracts.
+
 **Date:** 21 November 2026  
 **Status:** Active continuation goal  
 **Primary execution environment:** The user's existing local AetherOS workspace, operated through OpenCode  
