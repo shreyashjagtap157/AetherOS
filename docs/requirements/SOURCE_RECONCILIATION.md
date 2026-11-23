@@ -61,15 +61,14 @@ The implementation status must be reconciled to source, tests, logs and exact HE
 
 ## 5. Current Git and CI evidence (23 November 2026)
 
-Observed public `main` baseline before PR #12: `91478e592be1077bd79a0996f4207faf53d9fdc8`. PR #12 head with the corrected validation and boot workflows: `3c49da7a783eae7f0cac834ccda2070c06c20145`.
+Public `main` after PR #12 squash merge: `8fe51c0428441c9951056641f839cb52f45e13fe`. PR #12 head: `4386f580f2d974af4ebfa01f1ff531916b5e96a8`.
 
-- Historical main `Reference validation` run 184 (ID `45012375003`) stopped before tests because the v3 goal lacked mandatory `Classification:` metadata. PR #12 adds that metadata and marks v3 historical.
-- Latest PR-head `Reference validation` run 45231381272 passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and all 38 CTS cases. Evidence artifact 14847087634 contains `run-context.txt` and `check.log` (SHA-256 `9ccdf7a7d25f9e535efb30c6343c5ea4c53b7c890507c58f78bd39e4e786496a`).
-- Corrected PR-head QEMU run 45231380667 validated the RISC-V64 ELF, observed the `hello` boot marker and recorded exit status `124` for the expected 60-second observation timeout. The validation explicitly accepts this bounded-run result and rejects unexpected exit codes. Boot artifact 14848115771 contains the ELF and logs (SHA-256 `726bd5408897f29590e7a4ae41a859076b7d39b000a7f138c8700bb37d2a1575`).
+- PR #12 was squash-merged into `main`; see [the merged PR](https://github.com/shreyashjagtap157/AetherOS/pull/12).
+- Merged-main `Reference validation` run 45233948385 passed 104 document/authority checks, 59 glossary terms, 42 RFC structural checks, 179 Rust tests and 38 CTS cases. Evidence artifact 14848865763 has SHA-256 `8a37ca5766c0b900851db11466835e86e275d9bb2c567107dfe406b35584af7d`.
+- Corrected PR-head QEMU run 45232860086 passed ELF validation, observed `hello` and recorded expected timeout exit status `124` after 60 seconds. The validation explicitly accepted that bounded observation; artifact 14846774779 has SHA-256 `79572d696508cc832061ca39fc0d93065ef1a35cdae5983cd12fdf597d227bc4`.
+- The automated QEMU rerun on merged `main`, run 45233948258, remained in progress at the last refresh; verify its final state before describing post-merge QEMU as passed.
 - Host `cargo clippy` completed but emitted 22 warnings in `aether-runtime-model`; `./check.sh` does not use `-D warnings`. These remain cleanup work.
-- Commit `91478e5` records VirtIO block/network work, TCP data transfer and protected process execution. Commit messages remain change summaries rather than proof of each device, transport, syscall or system integration requirement.
-- Neither QEMU boot nor host reference tests qualify a complete usable OS, installer, physical board, all devices, or the ultimate v4 whole-platform goal.
-
+- These checks do not qualify clean guest shutdown, long-duration stability, live-media safety, installation, persistent installed state, physical hardware, every device class or the ultimate v4 whole-platform goal.
 ## 6. Requirement ID policy
 
 The `AOS-UR-*` keys in `USER_REQUIREMENTS_BASELINE.md` are cross-document traceability labels. They deliberately do not reuse or pre-empt `ARCH-*`, RFC, ADR, INTF or existing project IDs. If the project later decides to make a reconstructed user requirement normative, allocate a permanent ID using the repository's accepted namespace policy, map it to its architectural contract and acceptance method, and amend specifications only through governance.
