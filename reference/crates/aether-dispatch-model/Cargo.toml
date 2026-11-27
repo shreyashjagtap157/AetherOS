@@ -7,7 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 aether-types = { path = "../aether-types" }
-aether-capspace = { path = "../aether-capspace" }
+aether-exec-domain-model = { path = "../aether-exec-domain-model" }
+aether-address-space-model = { path = "../aether-address-space-model" }
 
 [lints]
 workspace = true

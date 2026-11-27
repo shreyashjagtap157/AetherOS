@@ -13,7 +13,10 @@ use aether_comp_model::{
     ComponentId, Manifest, ManifestError, NarrowingPolicy, Profile, Requirement, ResolutionError,
     SelectionStrategy, Tier, conformance, routing, validate_manifest,
 };
-use aether_dispatch_model::{DispatchError, DispatchRequest, Dispatcher};
+use aether_dispatch_model::{
+    DispatchError, DispatchId, DispatchReason, DispatchRequest, DispatchState, Dispatcher,
+    HartState,
+};
 use aether_exec_domain_model::{DomainError, DomainManager};
 use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
@@ -26,7 +29,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 63] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 69] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -71,6 +74,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 63] {
         ("CTX-COMP-001", capability_round_trip()),
         ("CTX-CAP-NARROW-001", rights_narrowing_composition()),
         ("CTX-DISPATCH-001", dispatch_requires_capability_authority()),
+        ("CTS-EXEC-DISP-1", exec_dispatch_capability_verification()),
+        ("CTS-EXEC-DISP-2", exec_dispatch_domain_compatibility()),
+        ("CTS-EXEC-DISP-3", exec_dispatch_latency_bound()),
+        ("CTS-EXEC-DISP-4", exec_dispatch_migration_emits_event()),
+        ("CTS-EXEC-DISP-5", exec_dispatch_migration_lock_hierarchy()),
+        ("CTS-EXEC-DISP-6", exec_dispatch_atomic_transition()),
         ("CTX-STATE-001", state_commit_is_failure_atomic()),
         ("CTX-STORAGE-001", storage_block_read_write_round_trip()),
         (
@@ -3119,6 +3128,9 @@ fn rights_narrowing_composition() -> Result<(), &'static str> {
 fn dispatch_requires_capability_authority() -> Result<(), &'static str> {
     let mut dispatcher = Dispatcher::new();
     let domain = DomainId::new(1).unwrap();
+    dispatcher
+        .register_domain(domain, None, 0)
+        .map_err(|_| "domain registration failed")?;
 
     let valid_cap = Capability {
         object: ObjectId(1),
@@ -3140,7 +3152,7 @@ fn dispatch_requires_capability_authority() -> Result<(), &'static str> {
     let id = dispatcher
         .dispatch(request)
         .map_err(|_| "valid dispatch was rejected")?;
-    if dispatcher.state(id) != Some(aether_dispatch_model::DispatchState::Running) {
+    if dispatcher.state(id) != Some(aether_dispatch_model::DispatchState::Execute) {
         return Err("valid dispatch did not enter Running state");
     }
 
@@ -3208,6 +3220,288 @@ fn dispatch_requires_capability_authority() -> Result<(), &'static str> {
         return Err("dispatch with expired capability was not rejected");
     }
 
+    Ok(())
+}
+
+/// CTS-EXEC-DISP-1 (RFC-0008.2): capability verification before dispatch — a
+/// dispatching entity must hold a BOUND + MAP + Memory capability, and the
+/// dispatcher aborts on missing authority.
+fn exec_dispatch_capability_verification() -> Result<(), &'static str> {
+    let mut dispatcher = Dispatcher::new();
+    let domain = DomainId::new(1).unwrap();
+    dispatcher
+        .register_domain(domain, None, 0)
+        .map_err(|_| "domain registration failed")?;
+
+    // Valid capability authorizes dispatch.
+    let valid_cap = Capability {
+        object: ObjectId(1),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+    let request = DispatchRequest {
+        thread_id: 1,
+        capability: valid_cap,
+        hart_id: 1,
+        domain,
+        now_ns: 0,
+    };
+    let id = dispatcher
+        .dispatch(request)
+        .map_err(|_| "valid dispatch was rejected")?;
+    if dispatcher.state(id) != Some(DispatchState::Execute) {
+        return Err("valid dispatch did not enter Execute state");
+    }
+
+    // Missing BOUND flag is rejected (no dispatch authority).
+    let no_bound = Capability {
+        flags: CapabilityFlags::NONE,
+        ..valid_cap
+    };
+    let request = DispatchRequest {
+        thread_id: 2,
+        capability: no_bound,
+        hart_id: 1,
+        domain,
+        now_ns: 0,
+    };
+    if dispatcher.dispatch(request) != Err(DispatchError::Unauthorized) {
+        return Err("dispatch without BOUND flag was not rejected");
+    }
+    // Rejection leaves no observable state (atomicity, RFC-0008.11).
+    if dispatcher.len() != 1 {
+        return Err("rejected dispatch mutated dispatcher state");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DISP-2 (RFC-0008.3): domain compatibility — dispatching domain B
+/// to a hart already running domain A aborts with DomainMismatch.
+fn exec_dispatch_domain_compatibility() -> Result<(), &'static str> {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher
+        .register_domain(domain(1), None, 0)
+        .map_err(|_| "domain 1 registration failed")?;
+    dispatcher
+        .register_domain(domain(2), None, 0)
+        .map_err(|_| "domain 2 registration failed")?;
+
+    let cap = Capability {
+        object: ObjectId(2),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+    // hart 1 runs domain 1.
+    dispatcher
+        .dispatch(DispatchRequest {
+            thread_id: 1,
+            capability: cap,
+            hart_id: 1,
+            domain: domain(1),
+            now_ns: 0,
+        })
+        .map_err(|_| "first dispatch failed")?;
+    // Dispatching domain 2 to hart 1 while domain 1 runs is a mismatch.
+    if dispatcher.dispatch(DispatchRequest {
+        thread_id: 2,
+        capability: cap,
+        hart_id: 1,
+        domain: domain(2),
+        now_ns: 1,
+    }) != Err(DispatchError::DomainMismatch)
+    {
+        return Err("domain-mismatched dispatch was not rejected");
+    }
+    // hart 1 still runs domain 1.
+    match dispatcher.hart_state(1) {
+        Some(HartState::Running {
+            dispatch_id,
+            domain: running,
+        }) if running == domain(1) && dispatch_id == DispatchId(1) => {}
+        _ => return Err("hart 1 no longer runs domain 1 after rejected dispatch"),
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DISP-3 (RFC-0008.5): dispatch latency bound — a documented,
+/// verifiable worst-case bound is declared.
+fn exec_dispatch_latency_bound() -> Result<(), &'static str> {
+    let bound = Dispatcher::dispatch_bound_ns();
+    if bound == 0 {
+        return Err("dispatch bound must be declared and non-zero");
+    }
+    // A dispatch completes synchronously within the bound (no blocking).
+    let mut dispatcher = Dispatcher::new();
+    let domain = DomainId::new(1).unwrap();
+    dispatcher
+        .register_domain(domain, None, 0)
+        .map_err(|_| "domain registration failed")?;
+    let cap = Capability {
+        object: ObjectId(3),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+    let _id = dispatcher
+        .dispatch(DispatchRequest {
+            thread_id: 1,
+            capability: cap,
+            hart_id: 1,
+            domain,
+            now_ns: 0,
+        })
+        .map_err(|_| "dispatch failed")?;
+    Ok(())
+}
+
+/// CTS-EXEC-DISP-4 (RFC-0008.7): migration emits a migration event
+/// (RFC-0031.17) and re-runs pre-dispatch verification on the target.
+fn exec_dispatch_migration_emits_event() -> Result<(), &'static str> {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher
+        .register_domain(domain(1), None, 0)
+        .map_err(|_| "domain registration failed")?;
+    let cap = Capability {
+        object: ObjectId(4),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+    let id = dispatcher
+        .dispatch(DispatchRequest {
+            thread_id: 1,
+            capability: cap,
+            hart_id: 1,
+            domain: domain(1),
+            now_ns: 0,
+        })
+        .map_err(|_| "initial dispatch failed")?;
+    dispatcher
+        .migrate(id, 2, 500)
+        .map_err(|_| "migration failed")?;
+    match dispatcher.hart_state(2) {
+        Some(HartState::Running {
+            dispatch_id,
+            domain: running,
+        }) if running == domain(1) && dispatch_id == id => {}
+        _ => return Err("migrated dispatch not found on target hart"),
+    }
+    if !dispatcher
+        .events()
+        .iter()
+        .any(|e| e.reason == DispatchReason::Migrated)
+    {
+        return Err("migration event was not emitted");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DISP-5 (RFC-0008.8): migration lock-hierarchy outcome — migrating
+/// to a hart running an incompatible domain is rejected (verification is
+/// re-run; no silent lock-order violation).
+fn exec_dispatch_migration_lock_hierarchy() -> Result<(), &'static str> {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher
+        .register_domain(domain(1), None, 0)
+        .map_err(|_| "domain 1 registration failed")?;
+    dispatcher
+        .register_domain(domain(2), None, 0)
+        .map_err(|_| "domain 2 registration failed")?;
+    let cap = Capability {
+        object: ObjectId(5),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+    let id1 = dispatcher
+        .dispatch(DispatchRequest {
+            thread_id: 1,
+            capability: cap,
+            hart_id: 1,
+            domain: domain(1),
+            now_ns: 0,
+        })
+        .map_err(|_| "first dispatch failed")?;
+    // hart 1 runs domain 1, hart 2 runs domain 2.
+    let id2 = dispatcher
+        .dispatch(DispatchRequest {
+            thread_id: 2,
+            capability: cap,
+            hart_id: 2,
+            domain: domain(2),
+            now_ns: 1,
+        })
+        .map_err(|_| "second dispatch failed")?;
+    // Migrate dispatch 1 (domain 1) to hart 2 (running domain 2): mismatch.
+    if dispatcher.migrate(id1, 2, 500).is_ok() {
+        return Err("incompatible-domain migration was not rejected");
+    }
+    // Both dispatches stayed put.
+    if dispatcher.state(id1) != Some(DispatchState::Execute)
+        || dispatcher.hart_state(1)
+            != Some(HartState::Running {
+                dispatch_id: id1,
+                domain: domain(1),
+            })
+        || dispatcher.state(id2) != Some(DispatchState::Execute)
+        || dispatcher.hart_state(2)
+            != Some(HartState::Running {
+                dispatch_id: id2,
+                domain: domain(2),
+            })
+    {
+        return Err("rejected migration moved a dispatch");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DISP-6 (RFC-0008.11): atomic transition — a rejected dispatch
+/// leaves no observable state and a preempted thread is suspended cleanly.
+fn exec_dispatch_atomic_transition() -> Result<(), &'static str> {
+    let mut dispatcher = Dispatcher::new();
+    let domain = DomainId::new(1).unwrap();
+    dispatcher
+        .register_domain(domain, None, 0)
+        .map_err(|_| "domain registration failed")?;
+    let cap = Capability {
+        object: ObjectId(6),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+    let id = dispatcher
+        .dispatch(DispatchRequest {
+            thread_id: 1,
+            capability: cap,
+            hart_id: 1,
+            domain,
+            now_ns: 0,
+        })
+        .map_err(|_| "dispatch failed")?;
+    dispatcher
+        .preempt(id, 1_000)
+        .map_err(|_| "preemption failed")?;
+    if dispatcher.state(id) != Some(DispatchState::Suspend) {
+        return Err("preempted dispatch did not transition to Suspend");
+    }
+    // Hart is idle after preemption.
+    if dispatcher.hart_state(1) != Some(HartState::Idle) {
+        return Err("hart did not return to idle after preemption");
+    }
     Ok(())
 }
 

@@ -55,7 +55,8 @@ dependencies = [
 name = "aether-dispatch-model"
 version = "0.1.0"
 dependencies = [
- "aether-capspace",
+ "aether-address-space-model",
+ "aether-exec-domain-model",
  "aether-types",
 ]
 
