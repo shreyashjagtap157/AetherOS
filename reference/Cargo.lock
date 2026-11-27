@@ -41,6 +41,7 @@ dependencies = [
  "aether-comp-model",
  "aether-dispatch-model",
  "aether-exec-domain-model",
+ "aether-integrity-model",
  "aether-interrupt-model",
  "aether-mediation-model",
  "aether-object-identity",
@@ -68,6 +69,15 @@ name = "aether-exec-domain-model"
 version = "0.1.0"
 dependencies = [
  "aether-types",
+]
+
+[[package]]
+name = "aether-integrity-model"
+version = "0.1.0"
+dependencies = [
+ "aether-object-identity",
+ "aether-types",
+ "blake3",
 ]
 
 [[package]]

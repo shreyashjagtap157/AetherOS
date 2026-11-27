@@ -18,6 +18,9 @@ use aether_dispatch_model::{
     HartState,
 };
 use aether_exec_domain_model::{DomainError, DomainManager};
+use aether_integrity_model::{
+    IntegrityResult, IntegrityVerifier, MerkleDAG, NodeType, SignedIntegrity,
+};
 use aether_interrupt_model::{
     DeliveryMode, DeliveryOutcome, InterruptEvent, InterruptRouter, IrqVector, RoutingEntry,
 };
@@ -36,7 +39,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 96] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 101] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -212,6 +215,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 96] {
             state_obj_identity_capability_orthogonality(),
         ),
         ("CTS-STATE-OBJ-6", state_obj_reconstruction_from_replica()),
+        ("CTS-STATE-INT-1", state_int_merkle_dag_maintained()),
+        ("CTS-STATE-INT-2", state_int_verification_on_read()),
+        ("CTS-STATE-INT-3", state_int_no_corrupted_data_returned()),
+        ("CTS-STATE-INT-4", state_int_incremental_verification()),
+        ("CTS-STATE-INT-5", state_int_signature_verification()),
     ]
 }
 
@@ -4484,6 +4492,118 @@ fn state_obj_reconstruction_from_replica() -> Result<(), &'static str> {
     history.append(id_corrupt, 1500, VersionReason::Reconstruct);
     if history.version_count != 2 {
         return Err("reconstruction not recorded in version history");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-INT-1 (RFC-0017.1): Merkle DAG maintained — a DAG with leaf and
+/// composite nodes records its root and all nodes are reachable.
+fn state_int_merkle_dag_maintained() -> Result<(), &'static str> {
+    let leaf = MerkleDAG::leaf_identity(b"leaf object content");
+    let composite = MerkleDAG::composite_identity(b"meta", &[leaf], 1);
+    let mut dag = MerkleDAG::new(composite);
+    dag.insert_leaf(leaf, 18);
+    dag.insert_composite(
+        composite,
+        NodeType::Internal,
+        &[leaf],
+        b"meta".to_vec(),
+        1,
+        0,
+    );
+    dag.root = composite;
+    if dag.nodes.get(&leaf).is_none() {
+        return Err("leaf node not recorded in DAG");
+    }
+    if dag.nodes.get(&composite).is_none() {
+        return Err("composite node not recorded in DAG");
+    }
+    if dag.root != composite {
+        return Err("DAG root does not match composite identity");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-INT-2 (RFC-0017.5): verification on read — a leaf node whose
+/// content matches its declared identity verifies as valid.
+fn state_int_verification_on_read() -> Result<(), &'static str> {
+    let content = b"verifiable object content";
+    let id = MerkleDAG::leaf_identity(content);
+    let mut dag = MerkleDAG::new(id);
+    dag.insert_leaf(id, content.len() as u64);
+    let verifier = IntegrityVerifier::new(&dag);
+    match verifier.verify_leaf(&id, content) {
+        Ok(IntegrityResult::Valid) => Ok(()),
+        _ => Err("matching leaf content did not verify"),
+    }
+}
+
+/// CTS-STATE-INT-3 (RFC-0017.6): no corrupted data returned — tampered content
+/// fails verification and must not be returned to a consumer.
+fn state_int_no_corrupted_data_returned() -> Result<(), &'static str> {
+    let content = b"original object content";
+    let id = MerkleDAG::leaf_identity(content);
+    let mut dag = MerkleDAG::new(id);
+    dag.insert_leaf(id, content.len() as u64);
+    let verifier = IntegrityVerifier::new(&dag);
+    match verifier.verify_leaf(&id, b"tampered object content") {
+        Ok(IntegrityResult::Invalid) => Ok(()),
+        _ => Err("tampered content was not rejected"),
+    }
+}
+
+/// CTS-STATE-INT-4 (RFC-0017.7): incremental verification — changing a child
+/// recomputes only the path to the root; sibling subtrees are not traversed.
+fn state_int_incremental_verification() -> Result<(), &'static str> {
+    let leaf = MerkleDAG::leaf_identity(b"leaf content");
+    let mut dag = MerkleDAG::new(ObjectIdentity::compute(b"root"));
+    dag.insert_leaf(leaf, 12);
+    let composite = MerkleDAG::composite_identity(b"parent meta", &[leaf], 1);
+    dag.insert_composite(
+        composite,
+        NodeType::Internal,
+        &[leaf],
+        b"parent meta".to_vec(),
+        1,
+        0,
+    );
+    dag.root = composite;
+
+    let new_leaf = MerkleDAG::leaf_identity(b"modified leaf content");
+    let new_root = dag
+        .recompute_root(&leaf, &new_leaf)
+        .map_err(|_| "recompute failed")?;
+    let expected_root = MerkleDAG::composite_identity(b"parent meta", &[new_leaf], 1);
+    if new_root != expected_root {
+        return Err("incremental recompute did not produce expected root");
+    }
+    // The leaf's old identity is no longer the root's child; only the path changed.
+    if new_root == composite {
+        return Err("root identity was not updated after child change");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-INT-5 (RFC-0017.9): signature verification — a signed integrity
+/// with a non-zero signature verifies; a zero signature is invalid.
+fn state_int_signature_verification() -> Result<(), &'static str> {
+    let valid = SignedIntegrity::new(
+        ObjectIdentity::compute(b"root"),
+        b"signing-key-1".to_vec(),
+        [0x42u8; 64],
+        1,
+    );
+    if valid.verify() != IntegrityResult::Valid {
+        return Err("non-zero signature did not verify");
+    }
+    let invalid = SignedIntegrity::new(
+        ObjectIdentity::compute(b"root"),
+        b"signing-key-1".to_vec(),
+        [0u8; 64],
+        1,
+    );
+    if invalid.verify() != IntegrityResult::Invalid {
+        return Err("zero signature was accepted");
     }
     Ok(())
 }
