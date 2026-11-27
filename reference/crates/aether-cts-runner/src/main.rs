@@ -22,7 +22,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 38] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 40] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -41,6 +41,8 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 38] {
             "CTS-CAP-BOUND-001",
             bound_capability_cannot_be_transferred(),
         ),
+        ("CTX-COMP-001", capability_round_trip()),
+        ("CTX-CAP-NARROW-001", rights_narrowing_composition()),
         ("CTS-SCHED-ADMIT-001", admission_bound_matches_rfc_0011_7()),
         (
             "CTS-SCHED-DETERMINISM-001",
@@ -2021,6 +2023,168 @@ fn outbox_dispatch_matches_persistence_baseline() -> Result<(), &'static str> {
         || engine.effect_status(OperationId(104)) != Some(EffectStatus::Rejected)
     {
         return Err("redelivery was not routed through the receiver (blind ack)");
+    }
+    Ok(())
+}
+
+/// Capability round-trip: derive a narrowed child, then authorize at exactly
+/// the derived rights and bounds. The authorized capability must match what the
+/// derivation produced — not the parent's authority — and the model and the
+/// table-backed provider must agree.
+fn capability_round_trip() -> Result<(), &'static str> {
+    let (mut model, model_bootstrap, mut system, system_bootstrap) = pair();
+    let model_root = model
+        .create_root(&model_bootstrap, domain(1), root())
+        .map_err(|_| "model root failed")?;
+    let system_root = system
+        .create_root(&system_bootstrap, domain(1), root())
+        .map_err(|_| "system root failed")?;
+
+    let narrowed_rights = Rights::READ.union(Rights::WRITE);
+    let narrowed_bounds = bounds(100, 200);
+    let model_child = model
+        .derive(
+            domain(1),
+            model_root,
+            narrowed_rights,
+            narrowed_bounds,
+            NOW_NS,
+        )
+        .map_err(|_| "model derivation failed")?;
+    let system_child = system
+        .derive(
+            domain(1),
+            system_root,
+            narrowed_rights,
+            narrowed_bounds,
+            NOW_NS,
+        )
+        .map_err(|_| "system derivation failed")?;
+
+    let model_auth = model
+        .authorize(
+            domain(1),
+            model_child,
+            ObjectType::Memory,
+            narrowed_rights,
+            narrowed_bounds,
+            NOW_NS,
+        )
+        .map_err(|_| "model authorization failed")?;
+    let system_auth = system
+        .authorize(
+            domain(1),
+            system_child,
+            ObjectType::Memory,
+            narrowed_rights,
+            narrowed_bounds,
+            NOW_NS,
+        )
+        .map_err(|_| "system authorization failed")?;
+    compare_auth(Ok(model_auth), Ok(system_auth))?;
+
+    if model_auth != system_auth {
+        return Err("model and system round-trip capabilities differ");
+    }
+    if model_auth.rights != narrowed_rights || model_auth.bounds != narrowed_bounds {
+        return Err("round-trip did not preserve the derived rights and bounds");
+    }
+    if model_auth.object != system_auth.object || model_auth.object_type != system_auth.object_type
+    {
+        return Err("round-trip changed the capability object or type");
+    }
+    Ok(())
+}
+
+/// Rights narrowing composes: each derivation attenuates, rights can never be
+/// re-expanded, bounds can never be widened, and the model and provider agree
+/// at every step. Authorize at the final narrowed bounds succeeds; authorize
+/// outside them fails with Bounds in both implementations.
+fn rights_narrowing_composition() -> Result<(), &'static str> {
+    let (mut model, model_bootstrap, mut system, system_bootstrap) = pair();
+    let model_root = model
+        .create_root(&model_bootstrap, domain(1), root())
+        .map_err(|_| "model root failed")?;
+    let system_root = system
+        .create_root(&system_bootstrap, domain(1), root())
+        .map_err(|_| "system root failed")?;
+
+    let full_rights = Rights::READ.union(Rights::WRITE).union(Rights::GRANT);
+    let child_bounds = bounds(0, 4096);
+    let grandchild_bounds = bounds(1024, 2048);
+
+    let model_child = model
+        .derive(domain(1), model_root, Rights::READ, child_bounds, NOW_NS)
+        .map_err(|_| "first model derivation failed")?;
+    let system_child = system
+        .derive(domain(1), system_root, Rights::READ, child_bounds, NOW_NS)
+        .map_err(|_| "first system derivation failed")?;
+
+    let model_grandchild = model
+        .derive(
+            domain(1),
+            model_child,
+            Rights::READ,
+            grandchild_bounds,
+            NOW_NS,
+        )
+        .map_err(|_| "second model derivation failed")?;
+    let system_grandchild = system
+        .derive(
+            domain(1),
+            system_child,
+            Rights::READ,
+            grandchild_bounds,
+            NOW_NS,
+        )
+        .map_err(|_| "second system derivation failed")?;
+
+    // Rights cannot be re-expanded from a READ-only child.
+    compare_handle_error(
+        model.derive(domain(1), model_child, full_rights, child_bounds, NOW_NS),
+        system.derive(domain(1), system_child, full_rights, child_bounds, NOW_NS),
+        CapError::Rights,
+    )?;
+
+    // Authorize exactly at the narrowed bounds: both sides agree.
+    compare_auth(
+        model.authorize(
+            domain(1),
+            model_grandchild,
+            ObjectType::Memory,
+            Rights::READ,
+            grandchild_bounds,
+            NOW_NS,
+        ),
+        system.authorize(
+            domain(1),
+            system_grandchild,
+            ObjectType::Memory,
+            Rights::READ,
+            grandchild_bounds,
+            NOW_NS,
+        ),
+    )?;
+
+    // Authorize outside the narrowed bounds: both sides reject with Bounds.
+    let model_oob = model.authorize(
+        domain(1),
+        model_grandchild,
+        ObjectType::Memory,
+        Rights::READ,
+        child_bounds,
+        NOW_NS,
+    );
+    let system_oob = system.authorize(
+        domain(1),
+        system_grandchild,
+        ObjectType::Memory,
+        Rights::READ,
+        child_bounds,
+        NOW_NS,
+    );
+    if model_oob != Err(CapError::Bounds) || system_oob != Err(CapError::Bounds) {
+        return Err("out-of-bounds authorization was not rejected in both implementations");
     }
     Ok(())
 }
