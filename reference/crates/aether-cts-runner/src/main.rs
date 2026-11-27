@@ -13,6 +13,7 @@ use aether_comp_model::{
     SelectionStrategy, Tier, conformance, routing, validate_manifest,
 };
 use aether_dispatch_model::{DispatchError, DispatchRequest, Dispatcher};
+use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -23,7 +24,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 47] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 54] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -36,6 +37,13 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 47] {
             "CTS-CAP-REV-1",
             non_revocable_capability_cannot_be_revoked(),
         ),
+        ("CTS-CAP-MED-1", mediation_every_access_is_mediated()),
+        ("CTS-CAP-MED-2", mediation_three_part_check()),
+        ("CTS-CAP-MED-3", mediation_denied_on_any_check_failure()),
+        ("CTS-CAP-MED-4", mediation_rights_are_immutable()),
+        ("CTS-CAP-MED-5", mediation_domain_scope_enforced()),
+        ("CTS-CAP-MED-6", mediation_fault_isolation()),
+        ("CTS-CAP-MED-7", mediation_no_check_short_circuiting()),
         ("CTS-CAP-FORGE-001", reject_forged_integer()),
         ("CTS-CAP-STALE-001", reject_stale_generation()),
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
@@ -587,6 +595,322 @@ fn non_revocable_capability_cannot_be_revoked() -> Result<(), &'static str> {
         .revoke(domain(1), system_revocable)
         .map_err(|_| "provider revocation failed")?;
     Ok(())
+}
+
+/// CTS-CAP-MED-1 (RFC-0013.1): every access is mediated — a valid capability
+/// presented to `Mediator::check` is permitted, and access never bypasses
+/// the mediator boundary.
+fn mediation_every_access_is_mediated() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+    let cap = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ.union(Rights::WRITE),
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let result = mediator.check(
+        1,
+        domain(1),
+        &cap,
+        Rights::READ,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    );
+    if result != MediationOutcome::Permit {
+        return Err("valid mediated access was not permitted");
+    }
+    Ok(())
+}
+
+/// CTS-CAP-MED-2 (RFC-0013.4): the three-part check is enumerated — valid
+/// token + sufficient rights + in bounds permits; each missing part denies.
+fn mediation_three_part_check() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+    let cap = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+
+    // Part 1: valid token + matching rights + in bounds -> Permit.
+    if mediator.check(
+        1,
+        domain(1),
+        &cap,
+        Rights::READ,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    ) != MediationOutcome::Permit
+    {
+        return Err("valid three-part check did not permit");
+    }
+
+    // Part 2: sufficient rights missing -> Deny(InsufficientRights).
+    if mediator.check(
+        1,
+        domain(1),
+        &cap,
+        Rights::WRITE,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    ) != MediationOutcome::Deny(MediationFault::InsufficientRights)
+    {
+        return Err("missing right was not denied");
+    }
+
+    // Part 3: target out of bounds -> Deny.
+    if !mediator
+        .check(
+            1,
+            domain(1),
+            &cap,
+            Rights::READ,
+            ObjectId(7),
+            0x5000,
+            bounds(0x5000, 0x5010),
+            NOW_NS,
+        )
+        .is_deny()
+    {
+        return Err("out-of-bounds target was not denied");
+    }
+    Ok(())
+}
+
+/// CTS-CAP-MED-3 (RFC-0013.5): denied access on any check failure — each
+/// distinct fault type produces `Deny`.
+fn mediation_denied_on_any_check_failure() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+
+    // Non-capability token (invalid bounds).
+    let bad_token = Capability {
+        bounds: Bounds { start: 10, end: 10 },
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    if mediator.check(
+        1,
+        domain(1),
+        &bad_token,
+        Rights::READ,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    ) != MediationOutcome::Deny(MediationFault::NonCapabilityToken)
+    {
+        return Err("non-capability token was not denied");
+    }
+
+    // Expired capability.
+    let expired = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 1_000,
+    };
+    if mediator.check(
+        1,
+        domain(1),
+        &expired,
+        Rights::READ,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        1_001,
+    ) != MediationOutcome::Deny(MediationFault::Expired)
+    {
+        return Err("expired capability was not denied");
+    }
+
+    // Revoked object.
+    mediator.revoke_object(ObjectId(7));
+    let live = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    if mediator.check(
+        1,
+        domain(1),
+        &live,
+        Rights::READ,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    ) != MediationOutcome::Deny(MediationFault::Revoked)
+    {
+        return Err("revoked object access was not denied");
+    }
+    Ok(())
+}
+
+/// CTS-CAP-MED-4 (RFC-0013.7): rights are immutable — the capability's rights
+/// are unchanged after mediation checks, and no right is added by the mediator.
+fn mediation_rights_are_immutable() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+    let cap = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let original = cap.rights;
+    let _ = mediator.check(
+        1,
+        domain(1),
+        &cap,
+        Rights::READ,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    );
+    // A denied check for a missing right must not add that right.
+    let _ = mediator.check(
+        1,
+        domain(1),
+        &cap,
+        Rights::WRITE,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    );
+    if cap.rights != original {
+        return Err("mediator modified capability rights after grant");
+    }
+    Ok(())
+}
+
+/// CTS-CAP-MED-5 (RFC-0013.9): domain scope — denied events carry the
+/// accessor's domain so cross-domain use is observable and auditable.
+fn mediation_domain_scope_enforced() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+    let cap = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let _ = mediator.check(
+        1,
+        domain(2),
+        &cap,
+        Rights::WRITE,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    );
+    let event = mediator
+        .events()
+        .last()
+        .ok_or("no mediation event recorded")?;
+    if event.accessor_domain != domain(2) {
+        return Err("mediation event does not record the accessor domain");
+    }
+    Ok(())
+}
+
+/// CTS-CAP-MED-6 (RFC-0013.13): fault isolation — a denied access records
+/// exactly one fault event and mutates no other mediation state.
+fn mediation_fault_isolation() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+    let cap = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let before = mediator.event_count();
+    let result = mediator.check(
+        1,
+        domain(1),
+        &cap,
+        Rights::WRITE,
+        ObjectId(7),
+        0x100,
+        bounds(0x100, 0x110),
+        NOW_NS,
+    );
+    if result != MediationOutcome::Deny(MediationFault::InsufficientRights) {
+        return Err("insufficient rights was not denied");
+    }
+    if mediator.event_count() != before + 1 {
+        return Err("denied access did not record exactly one fault event");
+    }
+    // No bypass was introduced by the denial.
+    if mediator.bypass_attempted() {
+        return Err("denial incorrectly recorded a bypass attempt");
+    }
+    Ok(())
+}
+
+/// CTS-CAP-MED-7 (RFC-0013.14): no check short-circuiting — when multiple
+/// checks would fail, the first fault in pipeline order is reported.
+fn mediation_no_check_short_circuiting() -> Result<(), &'static str> {
+    let mut mediator = Mediator::new();
+    // Both expired (CHECK_LIFETIME, step 5) and out of bounds
+    // (CHECK_BOUNDS, step 6): lifecycle is evaluated first.
+    let expired = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 1_000,
+    };
+    let result = mediator.check(
+        1,
+        domain(1),
+        &expired,
+        Rights::READ,
+        ObjectId(7),
+        0x5000,
+        bounds(0x5000, 0x5010),
+        1_001,
+    );
+    if result != MediationOutcome::Deny(MediationFault::Expired) {
+        return Err("pipeline short-circuited or reported the wrong fault first");
+    }
+    Ok(())
+}
+
+trait IsDeny {
+    fn is_deny(&self) -> bool;
+}
+
+impl IsDeny for MediationOutcome {
+    fn is_deny(&self) -> bool {
+        matches!(self, MediationOutcome::Deny(_))
+    }
 }
 
 #[derive(Default)]

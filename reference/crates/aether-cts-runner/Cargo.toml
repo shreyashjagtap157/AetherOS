@@ -9,6 +9,7 @@ rust-version.workspace = true
 aether-comp-model = { path = "../aether-comp-model" }
 aether-cap-model = { path = "../aether-cap-model" }
 aether-capspace = { path = "../aether-capspace" }
+aether-mediation-model = { path = "../aether-mediation-model" }
 aether-state-model = { path = "../aether-state-model" }
 aether-sched-model = { path = "../aether-sched-model" }
 aether-dispatch-model = { path = "../aether-dispatch-model" }
