@@ -12,6 +12,7 @@ aether-capspace = { path = "../aether-capspace" }
 aether-mediation-model = { path = "../aether-mediation-model" }
 aether-exec-domain-model = { path = "../aether-exec-domain-model" }
 aether-interrupt-model = { path = "../aether-interrupt-model" }
+aether-object-identity = { path = "../aether-object-identity" }
 aether-time-model = { path = "../aether-time-model" }
 aether-address-space-model = { path = "../aether-address-space-model" }
 aether-state-model = { path = "../aether-state-model" }

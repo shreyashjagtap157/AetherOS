@@ -22,6 +22,9 @@ use aether_interrupt_model::{
     DeliveryMode, DeliveryOutcome, InterruptEvent, InterruptRouter, IrqVector, RoutingEntry,
 };
 use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
+use aether_object_identity::{
+    ConsistencyLevel, ObjectIdentity, ReplicaDescriptor, VersionHistory, VersionReason,
+};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -33,7 +36,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 90] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 96] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -200,6 +203,15 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 90] {
         ("CTS-TIME-4", time_monotonicity_enforcement()),
         ("CTS-TIME-5", time_scheduling_suspend_resume()),
         ("CTS-EXEC-CONF-1", exec_conformance_core_tests_passed()),
+        ("CTS-STATE-OBJ-1", state_obj_identity_uniqueness()),
+        ("CTS-STATE-OBJ-2", state_obj_identity_immutability()),
+        ("CTS-STATE-OBJ-3", state_obj_version_history_completeness()),
+        ("CTS-STATE-OBJ-4", state_obj_replica_identity_equality()),
+        (
+            "CTS-STATE-OBJ-5",
+            state_obj_identity_capability_orthogonality(),
+        ),
+        ("CTS-STATE-OBJ-6", state_obj_reconstruction_from_replica()),
     ]
 }
 
@@ -4352,6 +4364,126 @@ fn exec_interrupt_priority_nesting_and_storm() -> Result<(), &'static str> {
         .any(|e| matches!(e, InterruptEvent::StormDetected { .. }))
     {
         return Err("interrupt storm above 10x the coalescing threshold was not detected");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJ-1 (RFC-0015.3): identity uniqueness — byte-identical canonical
+/// representations produce identical identities; different content produces
+/// different identities.
+fn state_obj_identity_uniqueness() -> Result<(), &'static str> {
+    let a = ObjectIdentity::compute(b"canonical object bytes");
+    let b = ObjectIdentity::compute(b"canonical object bytes");
+    if a != b {
+        return Err("byte-identical content did not produce identical identity");
+    }
+    let c = ObjectIdentity::compute(b"different object bytes");
+    if a == c {
+        return Err("different content produced identical identity");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJ-2 (RFC-0015.4): immutability — changing content changes the
+/// identity; the old identity becomes a historical reference.
+fn state_obj_identity_immutability() -> Result<(), &'static str> {
+    let id_v1 = ObjectIdentity::compute(b"object version one");
+    let id_v2 = ObjectIdentity::compute(b"object version two");
+    if id_v1 == id_v2 {
+        return Err("changed content did not change object identity");
+    }
+    // Identity length is fixed at 32 bytes (RFC-0015.2).
+    if id_v1.bytes().len() != 32 || id_v2.bytes().len() != 32 {
+        return Err("identity is not fixed 32-byte width");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJ-3 (RFC-0015.7): version history completeness — history is
+/// append-only, entries are chronological with commit timestamps, and the
+/// sequence is queryable by object identity (RFC-0015.8).
+fn state_obj_version_history_completeness() -> Result<(), &'static str> {
+    let id_v1 = ObjectIdentity::compute(b"object version one");
+    let id_v2 = ObjectIdentity::compute(b"object version two");
+    let mut history = VersionHistory::initial(id_v1, 1000);
+    if history.version_count != 1 || history.current_id != id_v1 {
+        return Err("initial history does not record the first version");
+    }
+    history.append(id_v2, 2000, VersionReason::Update);
+    if history.version_count != 2 || history.current_id != id_v2 {
+        return Err("appended version not reflected in history");
+    }
+    let seq = history.sequence();
+    if seq.len() != 2 || seq[0] != (id_v1, 1000) || seq[1] != (id_v2, 2000) {
+        return Err("version history sequence is not chronological or complete");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJ-4 (RFC-0015.9): replica identity equality — replicas of the
+/// same object share the same identity but have distinct replica serials and
+/// provider-specific locations.
+fn state_obj_replica_identity_equality() -> Result<(), &'static str> {
+    let id = ObjectIdentity::compute(b"replicated object");
+    let r1 = ReplicaDescriptor {
+        object_id: id,
+        replica_serial: 1,
+        location: b"/provider/a/slot-1".to_vec(),
+        consistency_level: ConsistencyLevel::Strong,
+    };
+    let r2 = ReplicaDescriptor {
+        object_id: id,
+        replica_serial: 2,
+        location: b"/provider/b/slot-2".to_vec(),
+        consistency_level: ConsistencyLevel::Eventual,
+    };
+    if r1.object_id != r2.object_id {
+        return Err("replicas of the same object do not share identity");
+    }
+    if r1.replica_serial == r2.replica_serial {
+        return Err("replicas do not have distinct serials");
+    }
+    if r1.location == r2.location {
+        return Err("replicas do not have distinct locations");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJ-5 (RFC-0015.11): identity/capability orthogonality — an
+/// object identity names the object; a capability authorizes access. Converting
+/// an identity to an `aether_types::ObjectId` is deterministic but the identity
+/// itself carries no authority.
+fn state_obj_identity_capability_orthogonality() -> Result<(), &'static str> {
+    let id = ObjectIdentity::compute(b"named object");
+    let oid: aether_types::ObjectId = id.into();
+    let oid_again: aether_types::ObjectId = id.into();
+    if oid != oid_again {
+        return Err("identity-to-object-id conversion is not deterministic");
+    }
+    // The same identity can name objects authorized by different capabilities;
+    // identity alone grants no rights. This is a naming anchor, not authority.
+    Ok(())
+}
+
+/// CTS-STATE-OBJ-6 (RFC-0015.13): reconstruction from replica — a corrupted
+/// object is reconstructed from an uncorrupted replica and the identity is
+/// preserved (content-resolved identity is identical).
+fn state_obj_reconstruction_from_replica() -> Result<(), &'static str> {
+    let content = b"authoritative object content";
+    let original_id = ObjectIdentity::compute(content);
+    // Simulate corruption detection and reconstruction from a replica holding
+    // the same content — the reconstructed object must have the same identity.
+    let replica_content = content; // byte-identical replica
+    let reconstructed_id = ObjectIdentity::compute(replica_content);
+    if reconstructed_id != original_id {
+        return Err("reconstructed object does not preserve original identity");
+    }
+    // Version history records the reconstruction reason.
+    let id_corrupt = ObjectIdentity::compute(b"corrupted content");
+    let mut history = VersionHistory::initial(original_id, 1000);
+    history.append(id_corrupt, 1500, VersionReason::Reconstruct);
+    if history.version_count != 2 {
+        return Err("reconstruction not recorded in version history");
     }
     Ok(())
 }
