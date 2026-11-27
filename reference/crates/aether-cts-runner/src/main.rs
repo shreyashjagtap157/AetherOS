@@ -34,6 +34,10 @@ use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_object_identity::{
     ConsistencyLevel, ObjectIdentity, ReplicaDescriptor, VersionHistory, VersionReason,
 };
+use aether_replay_model::{
+    Checkpoint, ReplayEngine, ReplayLogHeader, ReplayLogReader, ReplayLogWriter, ReplayState,
+    ReplayStep, serialize_event,
+};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -47,7 +51,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 118] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 123] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -245,6 +249,14 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 118] {
         ("CTS-OBS-SPAN-3", obs_span_event_correlation()),
         ("CTS-OBS-SPAN-4", obs_span_sampling_policy()),
         ("CTS-OBS-SPAN-5", obs_span_high_urgency_always_recorded()),
+        ("CTS-OBS-REPLAY-1", obs_replay_log_record_format()),
+        ("CTS-OBS-REPLAY-2", obs_replay_deterministic_replay()),
+        (
+            "CTS-OBS-REPLAY-3",
+            obs_replay_nondeterministic_inputs_replaced(),
+        ),
+        ("CTS-OBS-REPLAY-4", obs_replay_replay_to_pause()),
+        ("CTS-OBS-REPLAY-5", obs_replay_checkpoint_consistency()),
     ]
 }
 
@@ -5228,6 +5240,188 @@ fn obs_span_high_urgency_always_recorded() -> Result<(), &'static str> {
         .map_err(|_| "emit failed")?;
     if emitter.event_count() != 1 {
         return Err("high-urgency event not recorded despite sampling");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-REPLAY-1 (RFC-0033.1): log record format — each record is a 4-byte
+/// length prefix followed by a serialized `PlatformEvent` and its payload.
+fn obs_replay_log_record_format() -> Result<(), &'static str> {
+    let mut writer = ReplayLogWriter::new(1, 1_000_000);
+    let event = PlatformEvent {
+        event_id: 7,
+        event_class: EventClass::State.id(),
+        event_type: 1,
+        timestamp_ns: 1_000_000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(7).unwrap(),
+        urgency: 100,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: b"replay payload".to_vec(),
+    };
+    writer.append(&event);
+    let log = writer.finalize();
+
+    // Header is present and parses.
+    let header_size = ReplayLogHeader::serialized_size();
+    if log.len() < header_size + 4 {
+        return Err("log too short for header and one record");
+    }
+    let header = ReplayLogHeader::deserialize(&log[..header_size])
+        .map_err(|_| "header deserialize failed")?;
+    if header.magic != 0x5245_504C {
+        return Err("header magic is not REPL");
+    }
+    if header.event_count != 1 {
+        return Err("header event count wrong");
+    }
+
+    // Record: 4-byte length prefix + serialized event.
+    let offset = header_size;
+    let record_len = u32::from_le_bytes(log[offset..offset + 4].try_into().unwrap()) as usize;
+    let serialized = serialize_event(&event);
+    if record_len != serialized.len() {
+        return Err("record_len does not match serialized event length");
+    }
+    let record_bytes = &log[offset + 4..offset + 4 + record_len];
+    if record_bytes != serialized.as_slice() {
+        return Err("record bytes do not match serialized event");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-REPLAY-2 (RFC-0033.3): deterministic replay — replaying the same log
+/// twice produces identical platform state.
+fn obs_replay_deterministic_replay() -> Result<(), &'static str> {
+    let mut writer = ReplayLogWriter::new(1, 1_000_000);
+    for i in 1..=10 {
+        let event = PlatformEvent {
+            event_id: i,
+            event_class: EventClass::State.id(),
+            event_type: 1,
+            timestamp_ns: 1_000_000 + i * 100_000,
+            emitter_thread: 1,
+            emitter_domain: DomainId::new(1).unwrap(),
+            urgency: 50,
+            flags: 0,
+            causation_id: 0,
+            correlation_id: 0,
+            payload: Vec::new(),
+        };
+        writer.append(&event);
+    }
+    let reader = ReplayLogReader::read(&writer.finalize()).unwrap();
+
+    let mut engine1: ReplayEngine<ReplayState> = ReplayEngine::new(reader.events().to_vec());
+    let mut engine2: ReplayEngine<ReplayState> = ReplayEngine::new(reader.events().to_vec());
+    while !engine1.is_completed() {
+        engine1.step();
+    }
+    while !engine2.is_completed() {
+        engine2.step();
+    }
+    if engine1.state() != engine2.state() {
+        return Err("deterministic replay produced different states");
+    }
+    if engine1.state().events_applied != 10 {
+        return Err("wrong number of events applied");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-REPLAY-3 (RFC-0033.4): non-deterministic inputs replaced — hardware
+/// inputs are suppressed during replay and only explicit log events are applied.
+fn obs_replay_nondeterministic_inputs_replaced() -> Result<(), &'static str> {
+    let mut writer = ReplayLogWriter::new(1, 1_000_000);
+    let event = PlatformEvent {
+        event_id: 1,
+        event_class: EventClass::Interrupt.id(),
+        event_type: 1,
+        timestamp_ns: 1_000_000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: 0,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    };
+    writer.append(&event);
+    let reader = ReplayLogReader::read(&writer.finalize()).unwrap();
+
+    let mut engine: ReplayEngine<ReplayState> = ReplayEngine::new(reader.events().to_vec());
+    engine.set_hardware_inputs_suppressed(true);
+    if !engine.is_hardware_inputs_suppressed() {
+        return Err("hardware inputs not suppressed");
+    }
+    let result = engine.step();
+    if result != ReplayStep::Replayed {
+        return Err("explicit interrupt event was not replayed");
+    }
+    if engine.state().events_applied != 1 {
+        return Err("synthetic event was not applied");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-REPLAY-4 (RFC-0033.5): `replay_to` pausing — replay pauses at the
+/// requested event id.
+fn obs_replay_replay_to_pause() -> Result<(), &'static str> {
+    let mut writer = ReplayLogWriter::new(1, 1_000_000);
+    for i in 1..=5 {
+        let event = PlatformEvent {
+            event_id: i,
+            event_class: EventClass::State.id(),
+            event_type: 1,
+            timestamp_ns: 1_000_000 + i * 100_000,
+            emitter_thread: 1,
+            emitter_domain: DomainId::new(1).unwrap(),
+            urgency: 50,
+            flags: 0,
+            causation_id: 0,
+            correlation_id: 0,
+            payload: Vec::new(),
+        };
+        writer.append(&event);
+    }
+    let reader = ReplayLogReader::read(&writer.finalize()).unwrap();
+    let mut engine: ReplayEngine<ReplayState> = ReplayEngine::new(reader.events().to_vec());
+
+    let result = engine.replay_to(3);
+    if result != ReplayStep::Paused {
+        return Err("replay did not pause at target event id");
+    }
+    if !engine.is_paused() {
+        return Err("engine not in paused state");
+    }
+    if engine.state().events_applied != 3 {
+        return Err("wrong number of events applied at pause point");
+    }
+    if engine.state().last_event_id != 3 {
+        return Err("last event id wrong at pause point");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-REPLAY-5 (RFC-0033.7): checkpoint consistency — an inconsistent
+/// checkpoint must not be accepted; a consistent checkpoint is valid.
+fn obs_replay_checkpoint_consistency() -> Result<(), &'static str> {
+    let dump = b"consistent state snapshot".to_vec();
+    let checkpoint = Checkpoint::consistent(1_000_000, dump.clone());
+    if !checkpoint.is_consistent() {
+        return Err("consistent checkpoint rejected");
+    }
+    if checkpoint.state_dump != dump {
+        return Err("checkpoint state dump mismatch");
+    }
+
+    // An inconsistent checkpoint must not be included (RFC-0033.7).
+    let mut inconsistent = Checkpoint::consistent(1_000_001, Vec::new());
+    inconsistent.consistent = false;
+    if inconsistent.is_consistent() {
+        return Err("inconsistent checkpoint accepted");
     }
     Ok(())
 }

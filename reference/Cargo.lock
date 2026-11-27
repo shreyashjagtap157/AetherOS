@@ -47,6 +47,7 @@ dependencies = [
  "aether-lifecycle-model",
  "aether-mediation-model",
  "aether-object-identity",
+ "aether-replay-model",
  "aether-runtime-model",
  "aether-sched-model",
  "aether-shell-model",
@@ -120,6 +121,14 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "blake3",
+]
+
+[[package]]
+name = "aether-replay-model"
+version = "0.1.0"
+dependencies = [
+ "aether-event-model",
+ "aether-types",
 ]
 
 [[package]]
