@@ -13,6 +13,7 @@ members = [
     "crates/aether-shell-model",
     "crates/aether-update-model",
     "crates/aether-comp-model",
+    "crates/aether-virtio-net-test",
 ]
 resolver = "3"
 
