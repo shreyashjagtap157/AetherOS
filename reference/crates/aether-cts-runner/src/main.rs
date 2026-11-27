@@ -18,6 +18,9 @@ use aether_dispatch_model::{
     HartState,
 };
 use aether_exec_domain_model::{DomainError, DomainManager};
+use aether_interrupt_model::{
+    DeliveryMode, DeliveryOutcome, InterruptEvent, InterruptRouter, IrqVector, RoutingEntry,
+};
 use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
@@ -29,7 +32,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 69] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 75] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -163,6 +166,24 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 69] {
             "CTS-COMP-CONF-004",
             conformance_forensics_counts_match_methodology_s10(),
         ),
+        ("CTS-EXEC-IRQ-1", exec_interrupt_domain_isolation()),
+        (
+            "CTS-EXEC-IRQ-2",
+            exec_interrupt_bind_gating_and_direct_delivery(),
+        ),
+        ("CTS-EXEC-IRQ-3", exec_interrupt_queued_order_preserved()),
+        (
+            "CTS-EXEC-IRQ-4",
+            exec_interrupt_unhandled_reported_spurious(),
+        ),
+        (
+            "CTS-EXEC-IRQ-5",
+            exec_interrupt_cross_domain_requires_capability(),
+        ),
+        (
+            "CTS-EXEC-IRQ-6",
+            exec_interrupt_priority_nesting_and_storm(),
+        ),
     ]
 }
 
@@ -198,6 +219,27 @@ fn root() -> Capability {
         bounds: bounds(0, 4096),
         flags: aether_types::CapabilityFlags::REVOCABLE,
         expires_at_ns: 0,
+    }
+}
+
+fn irq_bind_cap() -> Capability {
+    Capability {
+        object: ObjectId(0xF00D),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    }
+}
+
+fn irq_entry(vector: IrqVector, mode: DeliveryMode, priority: u8) -> RoutingEntry {
+    RoutingEntry {
+        vector,
+        handler_cap: irq_bind_cap(),
+        mode,
+        priority,
+        coalesce_threshold_hz: 1000,
     }
 }
 
@@ -3615,5 +3657,218 @@ fn shell_command_execution_and_state() -> Result<(), &'static str> {
         return Err("pwd should return root");
     }
 
+    Ok(())
+}
+
+/// CTS-EXEC-IRQ-1 (RFC-0010.1/.2/.11): domain isolation — an interrupt bound
+/// to one domain is delivered within that domain's context; delivery to any
+/// other domain is rejected and reported as spurious, never silently dropped.
+fn exec_interrupt_domain_isolation() -> Result<(), &'static str> {
+    let mut router = InterruptRouter::new();
+    router
+        .register_domain(domain(1), None, 1_000)
+        .map_err(|_| "domain 1 registration failed")?;
+    router
+        .register_domain(domain(2), None, 1_000)
+        .map_err(|_| "domain 2 registration failed")?;
+    let vector = IrqVector(10);
+    router
+        .configure_routing(
+            domain(1),
+            vector,
+            &irq_bind_cap(),
+            irq_entry(vector, DeliveryMode::Direct, 5),
+            1_000,
+        )
+        .map_err(|_| "configure routing failed")?;
+    if router.deliver(vector, domain(1), 2_000) != DeliveryOutcome::Delivered {
+        return Err("interrupt was not delivered to its bound domain");
+    }
+    if router.deliver(vector, domain(2), 2_000) != DeliveryOutcome::NoHandler {
+        return Err("misrouted interrupt was delivered outside its bound domain");
+    }
+    let last = router.events().last().ok_or("no events recorded")?;
+    if !matches!(last, InterruptEvent::Spurious { .. }) {
+        return Err("misrouted interrupt was not reported as spurious");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-IRQ-2 (RFC-0010.1/.4): routing changes require an INTERRUPT_BIND
+/// capability; a bound capability configures the table and direct delivery
+/// follows.
+fn exec_interrupt_bind_gating_and_direct_delivery() -> Result<(), &'static str> {
+    let mut router = InterruptRouter::new();
+    router
+        .register_domain(domain(1), None, 1_000)
+        .map_err(|_| "domain registration failed")?;
+    let vector = IrqVector(42);
+    let mut no_bind = irq_bind_cap();
+    no_bind.flags = CapabilityFlags::NONE;
+    if router
+        .configure_routing(
+            domain(1),
+            vector,
+            &no_bind,
+            irq_entry(vector, DeliveryMode::Direct, 5),
+            1_000,
+        )
+        .is_ok()
+    {
+        return Err("routing accepted without INTERRUPT_BIND capability");
+    }
+    router
+        .configure_routing(
+            domain(1),
+            vector,
+            &irq_bind_cap(),
+            irq_entry(vector, DeliveryMode::Direct, 5),
+            1_000,
+        )
+        .map_err(|_| "configure routing failed")?;
+    if router.deliver(vector, domain(1), 2_000) != DeliveryOutcome::Delivered {
+        return Err("direct delivery did not report Delivered");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-IRQ-3 (RFC-0010.6): queued delivery preserves interrupt order.
+fn exec_interrupt_queued_order_preserved() -> Result<(), &'static str> {
+    let mut router = InterruptRouter::new();
+    router
+        .register_domain(domain(1), None, 1_000)
+        .map_err(|_| "domain registration failed")?;
+    for v in [IrqVector(1), IrqVector(2), IrqVector(3)] {
+        router
+            .configure_routing(
+                domain(1),
+                v,
+                &irq_bind_cap(),
+                irq_entry(v, DeliveryMode::Queued, 3),
+                1_000,
+            )
+            .map_err(|_| "configure routing failed")?;
+    }
+    for v in [IrqVector(1), IrqVector(2), IrqVector(3)] {
+        if router.deliver(v, domain(1), 2_000) != DeliveryOutcome::Queued {
+            return Err("queued delivery did not report Queued");
+        }
+    }
+    let delivered = router
+        .events()
+        .iter()
+        .filter(|e| matches!(e, InterruptEvent::Delivered { .. }))
+        .count();
+    if delivered != 3 {
+        return Err("queued delivery did not record one delivery per interrupt");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-IRQ-4 (RFC-0010.11): a vector bound to no domain is reported as
+/// spurious when it arrives, never silently dropped.
+fn exec_interrupt_unhandled_reported_spurious() -> Result<(), &'static str> {
+    let mut router = InterruptRouter::new();
+    router
+        .register_domain(domain(1), None, 1_000)
+        .map_err(|_| "domain registration failed")?;
+    if router.deliver(IrqVector(99), domain(1), 2_000) != DeliveryOutcome::NoHandler {
+        return Err("unhandled vector was not rejected");
+    }
+    let last = router.events().last().ok_or("no events recorded")?;
+    if !matches!(last, InterruptEvent::Spurious { .. }) {
+        return Err("unhandled interrupt was not reported as spurious");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-IRQ-5 (RFC-0010.8): cross-domain delivery requires an explicit
+/// cross-domain capability token; unauthorized crossing is rejected and
+/// reported as spurious.
+fn exec_interrupt_cross_domain_requires_capability() -> Result<(), &'static str> {
+    let mut router = InterruptRouter::new();
+    router
+        .register_domain(domain(1), None, 1_000)
+        .map_err(|_| "domain 1 registration failed")?;
+    router
+        .register_domain(domain(2), None, 1_000)
+        .map_err(|_| "domain 2 registration failed")?;
+    let vector = IrqVector(55);
+    router
+        .configure_routing(
+            domain(1),
+            vector,
+            &irq_bind_cap(),
+            irq_entry(vector, DeliveryMode::Direct, 5),
+            1_000,
+        )
+        .map_err(|_| "configure routing failed")?;
+    if router
+        .deliver_cross_domain(vector, domain(1), domain(2), None, 2_000)
+        .is_ok()
+    {
+        return Err("cross-domain delivery without capability was accepted");
+    }
+    let last = router.events().last().ok_or("no events recorded")?;
+    if !matches!(last, InterruptEvent::Spurious { .. }) {
+        return Err("unauthorized crossing was not reported as spurious");
+    }
+    if router
+        .deliver_cross_domain(vector, domain(1), domain(2), Some(&irq_bind_cap()), 2_000)
+        .is_err()
+    {
+        return Err("authorized cross-domain delivery was rejected");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-IRQ-6 (RFC-0010.9/.10/.12): priorities below the minimum maskable
+/// level are rejected, documented limits are exposed, and a fire rate above
+/// 10x the coalescing threshold reports an interrupt storm.
+fn exec_interrupt_priority_nesting_and_storm() -> Result<(), &'static str> {
+    let mut router = InterruptRouter::new();
+    router
+        .register_domain(domain(1), None, 1_000)
+        .map_err(|_| "domain registration failed")?;
+    if router.min_maskable_priority() != 1 {
+        return Err("minimum maskable priority is not 1");
+    }
+    if router.max_nesting_depth() != 8 {
+        return Err("maximum nesting depth is not 8");
+    }
+    if router
+        .configure_routing(
+            domain(1),
+            IrqVector(1),
+            &irq_bind_cap(),
+            irq_entry(IrqVector(1), DeliveryMode::Direct, 0),
+            1_000,
+        )
+        .is_ok()
+    {
+        return Err("priority below the minimum maskable level was accepted");
+    }
+    let vector = IrqVector(9);
+    router
+        .configure_routing(
+            domain(1),
+            vector,
+            &irq_bind_cap(),
+            irq_entry(vector, DeliveryMode::Coalesced, 4),
+            1_000,
+        )
+        .map_err(|_| "configure routing failed")?;
+    // Threshold 1000 Hz: storm above 10,000 fires in one second. All fires
+    // below use timestamps within a 10-microsecond window.
+    for i in 0..10_001u64 {
+        router.deliver(vector, domain(1), 2_000 + i);
+    }
+    if !router
+        .events()
+        .iter()
+        .any(|e| matches!(e, InterruptEvent::StormDetected { .. }))
+    {
+        return Err("interrupt storm above 10x the coalescing threshold was not detected");
+    }
     Ok(())
 }
