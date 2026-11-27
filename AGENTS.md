@@ -112,6 +112,40 @@ git rebase main
 Use `git commit --amend` or `git rebase -i` to fix commit messages if the
 hook rejects a commit.
 
+### Branch and Build Cleanup
+
+**After a work branch is squash-merged into `main` and its content is
+confirmed on `main`, delete the local branch so merged work does not
+accumulate.** Because squash-merge does not mark a branch as merged in git's
+eyes, use force-delete:
+
+```sh
+git checkout main
+git branch -D <merged-branch>
+```
+
+Do not delete remote branches or branches whose work is not yet on `main`.
+
+**Remove build artifacts after every build/test run, before generating new
+ones, to save storage space.** Build logs, check outputs, error outputs, and
+`target/` directories are ephemeral and must not be committed:
+
+```sh
+# Remove ephemeral build/check logs (never commit these)
+rm -f reference/check_out.txt reference/clippy_out.txt \
+      reference/test_check.txt reference/test_run.txt \
+      reference/crates/aether-arch-riscv64/build*.txt \
+      reference/crates/aether-arch-riscv64/check*.txt \
+      reference/crates/aether-arch-riscv64/error*.txt \
+      reference/crates/aether-arch-riscv64/errors.txt
+# Remove build output directories
+rm -rf reference/crates/aether-arch-riscv64/target
+```
+
+Preserve source files (`Cargo.toml`, `Cargo.lock`, `src/`, `link.ld`,
+`fix_newlines.py`) and project documentation; remove only ephemeral build
+output.
+
 ## Enterprise Git Configuration
 
 A fresh clone does **not** inherit `.git/config`. Run `./bootstrap.sh` once
