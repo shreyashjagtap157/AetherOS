@@ -8,6 +8,7 @@ members = [
     "crates/aether-cts-runner",
     "crates/aether-sched-model",
     "crates/aether-dispatch-model",
+    "crates/aether-exec-domain-model",
     "crates/aether-mediation-model",
     "crates/aether-storage-model",
     "crates/aether-runtime-model",

@@ -13,6 +13,7 @@ use aether_comp_model::{
     SelectionStrategy, Tier, conformance, routing, validate_manifest,
 };
 use aether_dispatch_model::{DispatchError, DispatchRequest, Dispatcher};
+use aether_exec_domain_model::{DomainError, DomainManager};
 use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
@@ -24,7 +25,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 54] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 57] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -44,6 +45,9 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 54] {
         ("CTS-CAP-MED-5", mediation_domain_scope_enforced()),
         ("CTS-CAP-MED-6", mediation_fault_isolation()),
         ("CTS-CAP-MED-7", mediation_no_check_short_circuiting()),
+        ("CTS-EXEC-DOM-1", exec_domain_isolation()),
+        ("CTS-EXEC-DOM-2", exec_domain_hierarchy_dag()),
+        ("CTS-EXEC-DOM-3", exec_domain_lifecycle_and_destroy_rules()),
         ("CTS-CAP-FORGE-001", reject_forged_integer()),
         ("CTS-CAP-STALE-001", reject_stale_generation()),
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
@@ -899,6 +903,110 @@ fn mediation_no_check_short_circuiting() -> Result<(), &'static str> {
     );
     if result != MediationOutcome::Deny(MediationFault::Expired) {
         return Err("pipeline short-circuited or reported the wrong fault first");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DOM-1 (RFC-0007.1): domain isolation — same-domain access is
+/// permitted; cross-domain access without explicit grant is denied.
+fn exec_domain_isolation() -> Result<(), &'static str> {
+    let mut manager = DomainManager::new();
+    manager
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain 1 creation failed")?;
+    manager
+        .create_domain(domain(2), None, NOW_NS)
+        .map_err(|_| "domain 2 creation failed")?;
+
+    manager
+        .check_isolation(domain(1), domain(1), &[])
+        .map_err(|_| "same-domain access was denied")?;
+    if manager.check_isolation(domain(1), domain(2), &[]).is_ok() {
+        return Err("cross-domain access without grant was permitted");
+    }
+    if manager
+        .check_isolation(domain(1), domain(2), &[domain(2)])
+        .is_err()
+    {
+        return Err("cross-domain access with explicit grant was denied");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DOM-2 (RFC-0007.3/.23): hierarchy — the parent/child graph is a
+/// DAG; children record their parent and children lists are maintained.
+fn exec_domain_hierarchy_dag() -> Result<(), &'static str> {
+    let mut manager = DomainManager::new();
+    manager
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "root creation failed")?;
+    manager
+        .create_domain(domain(2), Some(domain(1)), NOW_NS)
+        .map_err(|_| "child creation failed")?;
+    manager
+        .create_domain(domain(3), Some(domain(2)), NOW_NS)
+        .map_err(|_| "grandchild creation failed")?;
+    manager
+        .create_domain(domain(4), Some(domain(1)), NOW_NS)
+        .map_err(|_| "second child creation failed")?;
+
+    if manager.parent_of(domain(2)) != Ok(Some(domain(1))) {
+        return Err("child does not record its parent");
+    }
+    if manager.children_of(domain(1)) != Ok(vec![domain(2), domain(4)]) {
+        return Err("parent children list mismatch");
+    }
+    if manager.children_of(domain(2)) != Ok(vec![domain(3)]) {
+        return Err("grandparent children list mismatch");
+    }
+    // A deep chain is still a DAG; no node is an ancestor of its parent.
+    if manager.is_ancestor(domain(3), domain(1)).unwrap_or(false) {
+        return Err("descendant incorrectly reported as ancestor");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DOM-3 (RFC-0007.5/.7): lifecycle — Created->Active is the only
+/// valid initial transition; a parent cannot be destroyed while it has
+/// children; children must be destroyed or orphaned first.
+fn exec_domain_lifecycle_and_destroy_rules() -> Result<(), &'static str> {
+    let mut manager = DomainManager::new();
+    manager
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "root creation failed")?;
+    manager
+        .activate(domain(1), NOW_NS)
+        .map_err(|_| "root activation failed")?;
+
+    // Created -> Destroyed directly is not a valid transition.
+    manager
+        .create_domain(domain(2), None, NOW_NS)
+        .map_err(|_| "domain 2 creation failed")?;
+    if manager.destroy(domain(2), NOW_NS).is_ok() {
+        return Err("unactivated domain was destroyed");
+    }
+
+    // Parent with children cannot be destroyed.
+    manager
+        .create_domain(domain(3), Some(domain(1)), NOW_NS)
+        .map_err(|_| "child creation failed")?;
+    manager
+        .activate(domain(3), NOW_NS)
+        .map_err(|_| "child activation failed")?;
+    if manager.destroy(domain(1), NOW_NS).is_ok() {
+        return Err("parent with children was destroyed");
+    }
+
+    // Destroy child first, then parent.
+    manager
+        .destroy(domain(3), NOW_NS)
+        .map_err(|_| "child destruction failed")?;
+    manager
+        .destroy(domain(1), NOW_NS)
+        .map_err(|_| "parent destruction failed")?;
+
+    if manager.state(domain(1)) != Err(DomainError::UnknownDomain) {
+        return Err("destroyed domain is still visible");
     }
     Ok(())
 }
