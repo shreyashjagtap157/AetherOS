@@ -39,6 +39,7 @@ use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
 };
 use aether_time_model::{TimeError, TimeEvent, TimeModel, TimeSourceId, TimerMode};
+use aether_trace_model::{ROOT_SPAN_ID, SpanClass, SpanOutcome, TraceEmitter, TraceSamplingPolicy};
 use aether_types::{
     Bounds, CapError, Capability, CapabilityFlags, DomainId, Handle, ObjectId, ObjectType, Rights,
 };
@@ -46,7 +47,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 113] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 118] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -239,6 +240,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 113] {
         ("CTS-STATE-LC-4", state_lc_transition_events_emitted()),
         ("CTS-STATE-LC-5", state_lc_hazard_blocks_tiering()),
         ("CTS-STATE-LC-6", state_lc_state_queryable()),
+        ("CTS-OBS-SPAN-1", obs_span_lifecycle_start_close()),
+        ("CTS-OBS-SPAN-2", obs_span_parent_child_tree()),
+        ("CTS-OBS-SPAN-3", obs_span_event_correlation()),
+        ("CTS-OBS-SPAN-4", obs_span_sampling_policy()),
+        ("CTS-OBS-SPAN-5", obs_span_high_urgency_always_recorded()),
     ]
 }
 
@@ -5086,6 +5092,142 @@ fn state_lc_state_queryable() -> Result<(), &'static str> {
         .map_err(|_| "destroy failed")?;
     if machine.state_of(&id) != Some(LifecycleState::Destroyed) {
         return Err("state query did not reflect Destroyed");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-SPAN-1 (RFC-0032.2): span lifecycle — a span is started, tracked,
+/// and closed with an outcome and timestamps.
+fn obs_span_lifecycle_start_close() -> Result<(), &'static str> {
+    let mut emitter = TraceEmitter::new(TraceSamplingPolicy::default());
+    let span_id = emitter.start_span(100, 1, SpanClass::Request, ROOT_SPAN_ID, 1_000_000);
+    let span = emitter.span(span_id).ok_or("span not tracked")?;
+    if !span.is_root() {
+        return Err("root span should have no parent");
+    }
+    if span.is_closed() {
+        return Err("newly opened span should not be closed");
+    }
+    emitter
+        .close_span(span_id, SpanOutcome::Ok, 2_000_000)
+        .map_err(|_| "close failed")?;
+    let span = emitter.span(span_id).ok_or("span lost on close")?;
+    if !span.is_closed() {
+        return Err("span not marked closed");
+    }
+    if span.outcome != Some(SpanOutcome::Ok) {
+        return Err("outcome not recorded on close");
+    }
+    if span.end_timestamp_ns != Some(2_000_000) {
+        return Err("end timestamp not recorded");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-SPAN-2 (RFC-0032.3): parent-child tree — children share `trace_id`
+/// with distinct `span_id` and reference their parent via `parent_span_id`.
+fn obs_span_parent_child_tree() -> Result<(), &'static str> {
+    let mut emitter = TraceEmitter::new(TraceSamplingPolicy::default());
+    let parent = emitter.start_span(100, 1, SpanClass::Request, ROOT_SPAN_ID, 1_000_000);
+    let child1 = emitter.start_span(100, 2, SpanClass::Internal, parent, 1_100_000);
+    let child2 = emitter.start_span(100, 2, SpanClass::Internal, parent, 1_200_000);
+
+    if emitter.span(child1).unwrap().trace_id != 100 {
+        return Err("child does not share trace_id");
+    }
+    if child1 == child2 {
+        return Err("child span ids must be distinct");
+    }
+    if emitter.span(child1).unwrap().parent_span_id != parent {
+        return Err("child parent_span_id not set");
+    }
+    if emitter.children_of(parent) != vec![child1, child2] {
+        return Err("children_of did not return both children");
+    }
+    if emitter.span(parent).unwrap().child_span_count != 2 {
+        return Err("parent child_span_count incorrect");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-SPAN-3 (RFC-0032.5): event-to-span correlation — an event emitted
+/// in a span carries the span's `trace_id` in its `correlation_id` field.
+fn obs_span_event_correlation() -> Result<(), &'static str> {
+    let mut emitter = TraceEmitter::new(TraceSamplingPolicy::default());
+    let span_id = emitter.start_span(100, 1, SpanClass::Request, ROOT_SPAN_ID, 1_000_000);
+    let event = PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::Execution.id(),
+        event_type: 1,
+        timestamp_ns: 1_050_000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: 50,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    };
+    emitter
+        .emit_event_in_span(span_id, event)
+        .map_err(|_| "emit failed")?;
+    let last_event = emitter.events().last().ok_or("no event emitted")?;
+    if last_event.correlation_id != 100 {
+        return Err("event not linked to span's trace_id");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-SPAN-4 (RFC-0032.6): sampling policy declared — a policy controls
+/// whether spans are fully recorded and whether high-urgency spans are always
+/// recorded.
+fn obs_span_sampling_policy() -> Result<(), &'static str> {
+    let policy = TraceSamplingPolicy {
+        sample_rate: 0.5,
+        always_record_high_urgency: true,
+    };
+    if !policy.should_record_fully(true) {
+        return Err("high-urgency span should always be fully recorded");
+    }
+    if policy.should_record_fully(false) {
+        return Err("sample_rate below 1.0 should not fully record");
+    }
+    let lightweight = TraceSamplingPolicy {
+        sample_rate: 1.0,
+        always_record_high_urgency: false,
+    };
+    if !lightweight.should_record_fully(false) {
+        return Err("sample_rate 1.0 should fully record all spans");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-SPAN-5 (RFC-0032.7): urgency >= 200 always recorded — a span with
+/// `sample_rate` 0.0 still records a high-urgency event.
+fn obs_span_high_urgency_always_recorded() -> Result<(), &'static str> {
+    let mut emitter = TraceEmitter::new(TraceSamplingPolicy {
+        sample_rate: 0.0,
+        always_record_high_urgency: true,
+    });
+    let span_id = emitter.start_span(100, 1, SpanClass::Request, ROOT_SPAN_ID, 1_000_000);
+    let critical = PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::Security.id(),
+        event_type: 1,
+        timestamp_ns: 1_050_000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: SECURITY_CRITICAL_URGENCY,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    };
+    emitter
+        .emit_event_in_span(span_id, critical)
+        .map_err(|_| "emit failed")?;
+    if emitter.event_count() != 1 {
+        return Err("high-urgency event not recorded despite sampling");
     }
     Ok(())
 }
