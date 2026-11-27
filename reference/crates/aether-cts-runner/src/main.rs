@@ -23,7 +23,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 42] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 45] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -46,6 +46,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 42] {
         ("CTX-CAP-NARROW-001", rights_narrowing_composition()),
         ("CTX-DISPATCH-001", dispatch_requires_capability_authority()),
         ("CTX-STATE-001", state_commit_is_failure_atomic()),
+        ("CTX-STORAGE-001", storage_block_read_write_round_trip()),
+        (
+            "CTX-RUNTIME-001",
+            runtime_instruction_execution_produces_output(),
+        ),
+        ("CTX-UPDATE-001", update_rollback_after_boot_failures()),
         ("CTS-SCHED-ADMIT-001", admission_bound_matches_rfc_0011_7()),
         (
             "CTS-SCHED-DETERMINISM-001",
@@ -2287,5 +2293,78 @@ fn dispatch_requires_capability_authority() -> Result<(), &'static str> {
         return Err("dispatch with expired capability was not rejected");
     }
 
+    Ok(())
+}
+
+/// Storage block device read/write round-trip: data written to a sector can be
+/// read back identically; out-of-range access is rejected.
+fn storage_block_read_write_round_trip() -> Result<(), &'static str> {
+    use aether_storage_model::{BlockDevice, RamBlockDevice};
+
+    const BLOCK_SIZE: usize = 512;
+    let mut dev = RamBlockDevice::new(64);
+    let data = [0xABu8; BLOCK_SIZE];
+    dev.write(0, &data).map_err(|_| "block write failed")?;
+    let mut buf = [0u8; BLOCK_SIZE];
+    dev.read(0, &mut buf).map_err(|_| "block read failed")?;
+    if buf != data {
+        return Err("read-back data does not match written data");
+    }
+    if dev.read(1000, &mut buf).is_ok() {
+        return Err("out-of-range read was not rejected");
+    }
+    if dev.write(1000, &data).is_ok() {
+        return Err("out-of-range write was not rejected");
+    }
+    Ok(())
+}
+
+/// Runtime instruction execution: a small program that prints 'A' then exits
+/// with code 42 produces the expected stdout and exit code.
+fn runtime_instruction_execution_produces_output() -> Result<(), &'static str> {
+    use aether_runtime_model::{Inst, Op, Process};
+
+    // MOV r0, 65 (imm 'A'); SYSCALL print r0; SYSCALL exit 42
+    let prog = vec![
+        Inst::new(Op::Mov, 0, 1, 65),
+        Inst::new(Op::Syscall, 1, 0, 0),
+        Inst::new(Op::Syscall, 2, 42, 0),
+    ];
+    let mut p = Process::new(&prog);
+    let code = p.run().map_err(|_| "runtime execution failed")?;
+    if code != 42 {
+        return Err("runtime exit code does not match expected value");
+    }
+    if p.stdout_string() != "A" {
+        return Err("runtime stdout does not match expected output");
+    }
+    Ok(())
+}
+
+/// Update A/B rollback: after 3 consecutive boot failures on the pending
+/// partition, the system rolls back to the previous active partition.
+fn update_rollback_after_boot_failures() -> Result<(), &'static str> {
+    use aether_update_model::{Manifest, Partition, UpdateSystem};
+
+    let mut sys = UpdateSystem::new();
+    let m = Manifest {
+        version: "2.0.0".to_string(),
+        hash: 0xDEAD,
+        size: 1024,
+    };
+    sys.begin_update(m).map_err(|_| "begin_update failed")?;
+    sys.apply_update().map_err(|_| "apply_update failed")?;
+    assert!(!sys.record_boot_failure()); // retry 1
+    assert!(!sys.record_boot_failure()); // retry 2
+    assert!(sys.record_boot_failure()); // retry 3 -> rollback
+    if sys.active != Partition::A {
+        return Err("rollback did not reactivate partition A");
+    }
+    if sys.active_version() != "1.0.0" {
+        return Err("rollback did not restore previous version");
+    }
+    if sys.update_in_progress {
+        return Err("update still in progress after rollback");
+    }
     Ok(())
 }

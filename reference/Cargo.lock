@@ -31,9 +31,12 @@ dependencies = [
  "aether-capspace",
  "aether-comp-model",
  "aether-dispatch-model",
+ "aether-runtime-model",
  "aether-sched-model",
  "aether-state-model",
+ "aether-storage-model",
  "aether-types",
+ "aether-update-model",
 ]
 
 [[package]]

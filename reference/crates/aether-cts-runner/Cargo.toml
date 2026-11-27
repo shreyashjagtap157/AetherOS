@@ -12,6 +12,9 @@ aether-capspace = { path = "../aether-capspace" }
 aether-state-model = { path = "../aether-state-model" }
 aether-sched-model = { path = "../aether-sched-model" }
 aether-dispatch-model = { path = "../aether-dispatch-model" }
+aether-storage-model = { path = "../aether-storage-model" }
+aether-runtime-model = { path = "../aether-runtime-model" }
+aether-update-model = { path = "../aether-update-model" }
 aether-types = { path = "../aether-types" }
 
 [lints]
