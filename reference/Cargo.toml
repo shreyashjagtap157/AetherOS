@@ -9,6 +9,7 @@ members = [
     "crates/aether-sched-model",
     "crates/aether-dispatch-model",
     "crates/aether-exec-domain-model",
+    "crates/aether-event-model",
     "crates/aether-address-space-model",
     "crates/aether-interrupt-model",
     "crates/aether-mediation-model",

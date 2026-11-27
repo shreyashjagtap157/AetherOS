@@ -11,6 +11,7 @@ aether-cap-model = { path = "../aether-cap-model" }
 aether-capspace = { path = "../aether-capspace" }
 aether-mediation-model = { path = "../aether-mediation-model" }
 aether-exec-domain-model = { path = "../aether-exec-domain-model" }
+aether-event-model = { path = "../aether-event-model" }
 aether-interrupt-model = { path = "../aether-interrupt-model" }
 aether-object-identity = { path = "../aether-object-identity" }
 aether-integrity-model = { path = "../aether-integrity-model" }

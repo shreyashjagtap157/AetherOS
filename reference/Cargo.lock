@@ -40,6 +40,7 @@ dependencies = [
  "aether-capspace",
  "aether-comp-model",
  "aether-dispatch-model",
+ "aether-event-model",
  "aether-exec-domain-model",
  "aether-integrity-model",
  "aether-interrupt-model",
@@ -61,6 +62,13 @@ version = "0.1.0"
 dependencies = [
  "aether-address-space-model",
  "aether-exec-domain-model",
+ "aether-types",
+]
+
+[[package]]
+name = "aether-event-model"
+version = "0.1.0"
+dependencies = [
  "aether-types",
 ]
 

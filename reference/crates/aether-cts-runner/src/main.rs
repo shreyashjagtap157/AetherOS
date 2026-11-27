@@ -17,6 +17,9 @@ use aether_dispatch_model::{
     DispatchError, DispatchId, DispatchReason, DispatchRequest, DispatchState, Dispatcher,
     HartState,
 };
+use aether_event_model::{
+    EventClass, EventEmitter, EventFlag, EventId, PlatformEvent, SECURITY_CRITICAL_URGENCY,
+};
 use aether_exec_domain_model::{DomainError, DomainManager};
 use aether_integrity_model::{
     IntegrityResult, IntegrityVerifier, MerkleDAG, NodeType, SignedIntegrity,
@@ -39,7 +42,8 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 101] {
+#[allow(clippy::too_many_lines)]
+fn cases() -> [(&'static str, Result<(), &'static str>); 107] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -220,6 +224,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 101] {
         ("CTS-STATE-INT-3", state_int_no_corrupted_data_returned()),
         ("CTS-STATE-INT-4", state_int_incremental_verification()),
         ("CTS-STATE-INT-5", state_int_signature_verification()),
+        ("CTS-OBS-EVT-1", obs_evt_event_structure()),
+        ("CTS-OBS-EVT-2", obs_evt_declared_events_emitted()),
+        ("CTS-OBS-EVT-3", obs_evt_emission_at_transition()),
+        ("CTS-OBS-EVT-4", obs_evt_causality_chain()),
+        ("CTS-OBS-EVT-5", obs_evt_security_critical_not_filtered()),
+        ("CTS-OBS-EVT-6", obs_evt_unknown_type_no_violation()),
     ]
 }
 
@@ -1447,7 +1457,7 @@ fn exec_address_space_atomic_mapping_updates() -> Result<(), &'static str> {
         .unmap(domain(1), 0x3000, 0x1000, NOW_NS)
         .map_err(|_| "unmap failed")?;
     match spaces.access(domain(1), 0x3000, 0x100, asm::MemoryAccess::Read, NOW_NS) {
-        Err(asm::AddressSpaceError::Unmapped) | Err(asm::AddressSpaceError::AddressSpaceEmpty) => {}
+        Err(asm::AddressSpaceError::Unmapped | asm::AddressSpaceError::AddressSpaceEmpty) => {}
         _ => return Err("access was possible after a completed unmap"),
     }
 
@@ -1522,7 +1532,7 @@ fn exec_address_space_explicit_page_size() -> Result<(), &'static str> {
 
     // Large page, aligned: accepted.
     let large = asm::MapRequest {
-        virtual_range: bounds(0x200000, 0x200000 + 2 * 1024 * 1024),
+        virtual_range: bounds(0x0020_0000, 0x0020_0000 + 2 * 1024 * 1024),
         resource_range: bounds(0, 2 * 1024 * 1024),
         page_size: asm::PageSize::Large2MiB,
         rights: asm::MappingRights {
@@ -1536,13 +1546,13 @@ fn exec_address_space_explicit_page_size() -> Result<(), &'static str> {
     spaces
         .map(domain(1), &map_cap, large, NOW_NS)
         .map_err(|_| "aligned large-page mapping failed")?;
-    if spaces.page_size_of(domain(1), 0x200000) != Ok(asm::PageSize::Large2MiB) {
+    if spaces.page_size_of(domain(1), 0x0020_0000) != Ok(asm::PageSize::Large2MiB) {
         return Err("large page size was not recorded");
     }
 
     // Size not a multiple of the page size is rejected.
     let bad_size = asm::MapRequest {
-        virtual_range: bounds(0x400000, 0x400000 + 4096),
+        virtual_range: bounds(0x0040_0000, 0x0040_0000 + 4096),
         resource_range: bounds(0, 4096),
         page_size: asm::PageSize::Large2MiB,
         rights: asm::MappingRights {
@@ -3643,7 +3653,7 @@ fn exec_dispatch_capability_verification() -> Result<(), &'static str> {
 }
 
 /// CTS-EXEC-DISP-2 (RFC-0008.3): domain compatibility — dispatching domain B
-/// to a hart already running domain A aborts with DomainMismatch.
+/// to a hart already running domain A aborts with `DomainMismatch`.
 fn exec_dispatch_domain_compatibility() -> Result<(), &'static str> {
     let mut dispatcher = Dispatcher::new();
     dispatcher
@@ -4197,7 +4207,7 @@ fn exec_interrupt_domain_isolation() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// CTS-EXEC-IRQ-2 (RFC-0010.1/.4): routing changes require an INTERRUPT_BIND
+/// CTS-EXEC-IRQ-2 (RFC-0010.1/.4): routing changes require an `INTERRUPT_BIND`
 /// capability; a bound capability configures the table and direct delivery
 /// follows.
 fn exec_interrupt_bind_gating_and_direct_delivery() -> Result<(), &'static str> {
@@ -4512,10 +4522,10 @@ fn state_int_merkle_dag_maintained() -> Result<(), &'static str> {
         0,
     );
     dag.root = composite;
-    if dag.nodes.get(&leaf).is_none() {
+    if !dag.nodes.contains_key(&leaf) {
         return Err("leaf node not recorded in DAG");
     }
-    if dag.nodes.get(&composite).is_none() {
+    if !dag.nodes.contains_key(&composite) {
         return Err("composite node not recorded in DAG");
     }
     if dag.root != composite {
@@ -4604,6 +4614,211 @@ fn state_int_signature_verification() -> Result<(), &'static str> {
     );
     if invalid.verify() != IntegrityResult::Invalid {
         return Err("zero signature was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-EVT-1 (RFC-0031.1): event structure fields — a `PlatformEvent` has
+/// all required fields and default flag semantics are correct.
+fn obs_evt_event_structure() -> Result<(), &'static str> {
+    let event = PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::State.id(),
+        event_type: 1,
+        timestamp_ns: 1_000_000,
+        emitter_thread: 42,
+        emitter_domain: DomainId::new(7).unwrap(),
+        urgency: 100,
+        flags: EventFlag::Persistent as u8,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: b"test payload".to_vec(),
+    };
+    if event.event_class != EventClass::State.id() {
+        return Err("event class not set");
+    }
+    if event.timestamp_ns != 1_000_000 {
+        return Err("timestamp not recorded");
+    }
+    if event.emitter_thread != 42 {
+        return Err("emitter thread not recorded");
+    }
+    if event.emitter_domain != DomainId::new(7).unwrap() {
+        return Err("emitter domain not recorded");
+    }
+    if event.urgency != 100 {
+        return Err("urgency not recorded");
+    }
+    if !event.is_persistent() {
+        return Err("persistent flag not set");
+    }
+    if event.payload.len() != 12 {
+        return Err("payload length mismatch");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-EVT-2 (RFC-0031.3): all declared events emitted — emitting events
+/// of each class succeeds and records them in order.
+fn obs_evt_declared_events_emitted() -> Result<(), &'static str> {
+    let mut emitter = EventEmitter::new();
+    let classes = [
+        EventClass::Execution,
+        EventClass::Capability,
+        EventClass::State,
+        EventClass::Communication,
+        EventClass::Storage,
+        EventClass::Interrupt,
+        EventClass::Security,
+    ];
+    for (i, class) in classes.iter().enumerate() {
+        emitter.emit(PlatformEvent {
+            event_id: 0,
+            event_class: class.id(),
+            event_type: i as u64,
+            timestamp_ns: 1000,
+            emitter_thread: 1,
+            emitter_domain: DomainId::new(1).unwrap(),
+            urgency: 0,
+            flags: 0,
+            causation_id: 0,
+            correlation_id: 0,
+            payload: Vec::new(),
+        });
+    }
+    if emitter.event_count() != 7 {
+        return Err("not all event classes emitted");
+    }
+    let ids: Vec<EventId> = emitter.events().iter().map(|e| e.event_id).collect();
+    if ids != vec![1, 2, 3, 4, 5, 6, 7] {
+        return Err("event ids not monotonically increasing");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-EVT-3 (RFC-0031.4): emission at moment of transition — an event
+/// emitted at the transition carries the scheduling time of that moment.
+fn obs_evt_emission_at_transition() -> Result<(), &'static str> {
+    let mut emitter = EventEmitter::new();
+    let transition_time = 5_000_000;
+    emitter.emit(PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::Storage.id(),
+        event_type: 1,
+        timestamp_ns: transition_time,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: 0,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    });
+    let event = emitter.last_event().ok_or("no event emitted")?;
+    if event.timestamp_ns != transition_time {
+        return Err("event does not carry transition time");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-EVT-4 (RFC-0031.5): causality chain maintained — a caused event
+/// references its parent's event id via `causation_id`.
+fn obs_evt_causality_chain() -> Result<(), &'static str> {
+    let mut emitter = EventEmitter::new();
+    let parent_id = emitter.emit(PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::Execution.id(),
+        event_type: 1,
+        timestamp_ns: 1000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: 0,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 99,
+        payload: Vec::new(),
+    });
+    emitter.emit(PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::Capability.id(),
+        event_type: 1,
+        timestamp_ns: 1100,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: 0,
+        flags: EventFlag::Caused as u8,
+        causation_id: parent_id,
+        correlation_id: 99,
+        payload: Vec::new(),
+    });
+    let child = emitter.last_event().ok_or("no child event")?;
+    if child.causation_id != parent_id {
+        return Err("causation_id does not reference parent");
+    }
+    if !child.is_caused() {
+        return Err("CAUSED flag not set on caused event");
+    }
+    if emitter.events()[0].event_id != 1 {
+        return Err("first event id is not 1");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-EVT-5 (RFC-0031.7): urgency >= 200 events not filtered —
+/// security-critical events pass the `may_filter` check; non-critical ones do.
+fn obs_evt_security_critical_not_filtered() -> Result<(), &'static str> {
+    let emitter = EventEmitter::new();
+    let critical = PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::Security.id(),
+        event_type: 1,
+        timestamp_ns: 1000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: SECURITY_CRITICAL_URGENCY,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    };
+    if !critical.is_security_critical() {
+        return Err("urgency 200 not recognized as security-critical");
+    }
+    if emitter.may_filter(&critical) {
+        return Err("security-critical event was filterable");
+    }
+    let normal = PlatformEvent {
+        urgency: SECURITY_CRITICAL_URGENCY - 1,
+        ..critical
+    };
+    if !emitter.may_filter(&normal) {
+        return Err("non-critical event was not filterable");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-EVT-6 (RFC-0031.9): unknown event types do not cause violations —
+/// an event with an undeclared type id is emitted without error.
+fn obs_evt_unknown_type_no_violation() -> Result<(), &'static str> {
+    let mut emitter = EventEmitter::new();
+    let id = emitter.emit(PlatformEvent {
+        event_id: 0,
+        event_class: EventClass::State.id(),
+        event_type: 0xFFFF_FFFF,
+        timestamp_ns: 1000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(1).unwrap(),
+        urgency: 0,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    });
+    if id != 1 {
+        return Err("unknown event type was not emitted");
+    }
+    if emitter.event_count() != 1 {
+        return Err("unknown event type caused a violation");
     }
     Ok(())
 }
