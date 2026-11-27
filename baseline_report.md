@@ -55,6 +55,7 @@ The VirtIO network code is now a complete, tested RX/TX path:
 - `virtio_net_send()` copies the packet to the TX buffer, publishes descriptor 0 on the TX avail ring, notifies the device, then polls the used ring until the transmission completes and the descriptor is reclaimed (returns false on timeout).
 - `virtio_net_recv()` posts all RX descriptors (with `VIRTQ_DESC_F_WRITE`) during `virtio_net_init()` and re-posts each consumed descriptor after draining the used ring; it strips the 12-byte `virtio_net_hdr` prefix and returns the Ethernet frame byte count.
 - Feature negotiation validates `VIRTIO_F_VERSION_1` and advertises `VIRTIO_NET_F_MAC` when offered; link status is read from device config space and exposed via `net_link_up()`.
+- The VirtIO block driver's feature negotiation now also validates `VIRTIO_F_VERSION_1` and negotiates it properly (previously read host features but discarded them and skipped version-1 negotiation).
 - The driver is connected to the network stack: the main loop polls `net_recv()` → `net_process_frame()` → `virtio_net_send()` for bidirectional packet exchange, and `virtio_net_init()` is invoked from `start()`.
 - Host unit tests (7 cases) in new crate `aether-virtio-net-test` validate DTB `reg` parsing, descriptor flags, virtqueue ring-index wrap, and Ethernet header build/parse. All pass under `cargo test --workspace`.
 

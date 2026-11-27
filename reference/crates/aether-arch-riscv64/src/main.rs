@@ -3202,25 +3202,23 @@ unsafe fn virtio_blk_init() -> bool {
     // --- Declare ourselves as a driver ---
     mmio_write(VIRTIO_MMIO_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
 
-    // --- Feature negotiation ---
-    // Select host features page 0
+    // --- Feature negotiation (both pages). This driver requires virtio 1.0.
     mmio_write(VIRTIO_MMIO_HOST_FEATURES_SEL, 0);
-    let _host_features_lo = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
+    let host_features_lo = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
     mmio_write(VIRTIO_MMIO_HOST_FEATURES_SEL, 1);
-    let _host_features_hi = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
+    let host_features_hi = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
+    let host_features: u64 = (host_features_hi as u64) << 32 | host_features_lo as u64;
 
-    // We accept VIRTIO_F_VERSION_1 from the device (bit 32, in page 1)
-    let mut guest_features: u32 = 0;
-    if _host_features_hi & 1 != 0 {
-        // VIRTIO_F_VERSION_1 is bit 32 = bit 0 of page 1
-        // We'll negotiate it by writing to page 0 of guest features (which maps to bits 0-31)
-        // Actually VIRTIO_F_VERSION_1 is bit 32, so we need to write to guest features page 1
-        // But for simplicity, we skip version 1 negotiation
+    if host_features & VIRTIO_F_VERSION_1 == 0 {
+        sbi_console_write(b"VirtIO block: host lacks VIRTIO_F_VERSION_1\n");
+        return false;
     }
+
+    let mut guest_features: u64 = VIRTIO_F_VERSION_1;
     mmio_write(VIRTIO_MMIO_GUEST_FEATURES_SEL, 0);
-    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, guest_features);
+    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, guest_features as u32);
     mmio_write(VIRTIO_MMIO_GUEST_FEATURES_SEL, 1);
-    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, 0); // high bits unused
+    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, (guest_features >> 32) as u32);
 
     // --- Set page size ---
     mmio_write(VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
