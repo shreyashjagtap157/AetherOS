@@ -27,6 +27,9 @@ use aether_integrity_model::{
 use aether_interrupt_model::{
     DeliveryMode, DeliveryOutcome, InterruptEvent, InterruptRouter, IrqVector, RoutingEntry,
 };
+use aether_lifecycle_model::{
+    LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
+};
 use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_object_identity::{
     ConsistencyLevel, ObjectIdentity, ReplicaDescriptor, VersionHistory, VersionReason,
@@ -43,7 +46,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 107] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 113] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -230,6 +233,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 107] {
         ("CTS-OBS-EVT-4", obs_evt_causality_chain()),
         ("CTS-OBS-EVT-5", obs_evt_security_critical_not_filtered()),
         ("CTS-OBS-EVT-6", obs_evt_unknown_type_no_violation()),
+        ("CTS-STATE-LC-1", state_lc_mandatory_transition_path()),
+        ("CTS-STATE-LC-2", state_lc_preconditions_enforced()),
+        ("CTS-STATE-LC-3", state_lc_only_permitted_backward()),
+        ("CTS-STATE-LC-4", state_lc_transition_events_emitted()),
+        ("CTS-STATE-LC-5", state_lc_hazard_blocks_tiering()),
+        ("CTS-STATE-LC-6", state_lc_state_queryable()),
     ]
 }
 
@@ -4819,6 +4828,264 @@ fn obs_evt_unknown_type_no_violation() -> Result<(), &'static str> {
     }
     if emitter.event_count() != 1 {
         return Err("unknown event type caused a violation");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-LC-1 (RFC-0018.3): mandatory transition path — an object walks
+/// the full forward lifecycle Created → Validated → Referenced → Active →
+/// Cold → Archived → Expired → Destroyed.
+fn state_lc_mandatory_transition_path() -> Result<(), &'static str> {
+    let mut machine = LifecycleMachine::new();
+    let id = ObjectIdentity([42u8; 32]);
+    machine.register_object(id, LifecyclePolicy::default());
+    if machine.state_of(&id) != Some(LifecycleState::Created) {
+        return Err("new object must start in Created");
+    }
+    let targets = [
+        LifecycleState::Validated,
+        LifecycleState::Referenced,
+        LifecycleState::Active,
+        LifecycleState::Cold,
+        LifecycleState::Archived,
+        LifecycleState::Expired,
+        LifecycleState::Destroyed,
+    ];
+    let mut ts = 1_000_000u64;
+    for target in targets {
+        ts += 1_000_000;
+        machine
+            .transition(id, target, TransitionTrigger::Explicit, ts, true, true)
+            .map_err(|_| "mandatory transition failed")?;
+        if machine.state_of(&id) != Some(target) {
+            return Err("state did not advance");
+        }
+    }
+    Ok(())
+}
+
+/// CTS-STATE-LC-2 (RFC-0018.6): preconditions enforced — Created→Validated
+/// requires integrity verification; Validated→Referenced requires identity.
+fn state_lc_preconditions_enforced() -> Result<(), &'static str> {
+    let mut machine = LifecycleMachine::new();
+    let id = ObjectIdentity([43u8; 32]);
+    machine.register_object(id, LifecyclePolicy::default());
+    if machine
+        .transition(
+            id,
+            LifecycleState::Validated,
+            TransitionTrigger::Explicit,
+            1_000_000,
+            false,
+            true,
+        )
+        .is_ok()
+    {
+        return Err("integrity precondition was not enforced");
+    }
+    if machine.state_of(&id) != Some(LifecycleState::Created) {
+        return Err("state changed despite failed precondition");
+    }
+    machine
+        .transition(
+            id,
+            LifecycleState::Validated,
+            TransitionTrigger::Explicit,
+            2_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "valid transition rejected")?;
+    if machine
+        .transition(
+            id,
+            LifecycleState::Referenced,
+            TransitionTrigger::Explicit,
+            3_000_000,
+            true,
+            false,
+        )
+        .is_ok()
+    {
+        return Err("identity precondition was not enforced");
+    }
+    if machine.state_of(&id) != Some(LifecycleState::Validated) {
+        return Err("state changed despite failed precondition");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-LC-3 (RFC-0018.9): only permitted backward transition — any
+/// backward step is rejected except Active→Created recovery.
+fn state_lc_only_permitted_backward() -> Result<(), &'static str> {
+    let mut machine = LifecycleMachine::new();
+    let id = ObjectIdentity([44u8; 32]);
+    machine.register_object(id, LifecyclePolicy::default());
+    machine
+        .transition(
+            id,
+            LifecycleState::Validated,
+            TransitionTrigger::Explicit,
+            1_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "setup failed")?;
+    machine
+        .transition(
+            id,
+            LifecycleState::Referenced,
+            TransitionTrigger::Explicit,
+            2_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "setup failed")?;
+    machine
+        .transition(
+            id,
+            LifecycleState::Active,
+            TransitionTrigger::Explicit,
+            3_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "setup failed")?;
+    if machine
+        .transition(
+            id,
+            LifecycleState::Validated,
+            TransitionTrigger::Explicit,
+            4_000_000,
+            true,
+            true,
+        )
+        .is_ok()
+    {
+        return Err("backward transition was not rejected");
+    }
+    machine
+        .transition(
+            id,
+            LifecycleState::Created,
+            TransitionTrigger::Explicit,
+            5_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "recovery transition rejected")?;
+    if machine.state_of(&id) != Some(LifecycleState::Created) {
+        return Err("recovery did not restore Created");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-LC-4 (RFC-0018.10): transition events — every transition emits an
+/// RFC-0031 State-class event carrying the object identity and states.
+fn state_lc_transition_events_emitted() -> Result<(), &'static str> {
+    let mut machine = LifecycleMachine::new();
+    let id = ObjectIdentity([45u8; 32]);
+    machine.register_object(id, LifecyclePolicy::default());
+    machine
+        .transition(
+            id,
+            LifecycleState::Validated,
+            TransitionTrigger::Explicit,
+            1_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "transition failed")?;
+    if machine.event_count() != 1 {
+        return Err("transition did not emit an event");
+    }
+    let event = machine.events().last().ok_or("no event")?;
+    if event.event_class != EventClass::State.id() {
+        return Err("event class is not State");
+    }
+    if &event.payload[..32] != id.as_ref() {
+        return Err("event payload does not carry object identity");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-LC-5 (RFC-0018.13): Safety-Critical hazard blocking — while a
+/// hazard is declared, Active→Cold automatic tiering is blocked.
+fn state_lc_hazard_blocks_tiering() -> Result<(), &'static str> {
+    let mut machine = LifecycleMachine::new();
+    let id = ObjectIdentity([46u8; 32]);
+    machine.register_object(id, LifecyclePolicy::default());
+    machine
+        .transition(
+            id,
+            LifecycleState::Validated,
+            TransitionTrigger::Explicit,
+            1_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "setup failed")?;
+    machine
+        .transition(
+            id,
+            LifecycleState::Referenced,
+            TransitionTrigger::Explicit,
+            2_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "setup failed")?;
+    machine
+        .transition(
+            id,
+            LifecycleState::Active,
+            TransitionTrigger::Explicit,
+            3_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "setup failed")?;
+    machine.set_hazard(true);
+    let applied = machine.check_automatic_transitions(10_000_000_000);
+    if !applied.is_empty() {
+        return Err("tiering applied during hazard period");
+    }
+    if machine.state_of(&id) != Some(LifecycleState::Active) {
+        return Err("state changed during hazard period");
+    }
+    machine.set_hazard(false);
+    let applied = machine.check_automatic_transitions(10_000_000_000);
+    if applied.len() != 1 {
+        return Err("tiering did not apply after hazard cleared");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-LC-6 (RFC-0018.11): state queryable by identity — `state_of`
+/// returns the current state for a registered object.
+fn state_lc_state_queryable() -> Result<(), &'static str> {
+    let mut machine = LifecycleMachine::new();
+    let id = ObjectIdentity([47u8; 32]);
+    machine.register_object(id, LifecyclePolicy::default());
+    if machine.state_of(&id) != Some(LifecycleState::Created) {
+        return Err("state query returned wrong initial state");
+    }
+    let unknown = ObjectIdentity([48u8; 32]);
+    if machine.state_of(&unknown).is_some() {
+        return Err("unknown object reported a state");
+    }
+    machine
+        .transition(
+            id,
+            LifecycleState::Destroyed,
+            TransitionTrigger::Explicit,
+            1_000_000,
+            true,
+            true,
+        )
+        .map_err(|_| "destroy failed")?;
+    if machine.state_of(&id) != Some(LifecycleState::Destroyed) {
+        return Err("state query did not reflect Destroyed");
     }
     Ok(())
 }

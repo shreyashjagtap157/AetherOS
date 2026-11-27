@@ -15,6 +15,7 @@ members = [
     "crates/aether-mediation-model",
     "crates/aether-object-identity",
     "crates/aether-integrity-model",
+    "crates/aether-lifecycle-model",
     "crates/aether-storage-model",
     "crates/aether-runtime-model",
     "crates/aether-shell-model",
