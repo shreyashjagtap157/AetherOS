@@ -413,10 +413,7 @@ impl InterruptRouter {
     ) -> DeliveryOutcome {
         // Track fire rate for storm detection (RFC-0010.12).
         let key = (domain, vector);
-        let tracker = self
-            .rate_trackers
-            .entry(key)
-            .or_default();
+        let tracker = self.rate_trackers.entry(key).or_default();
         tracker.fires.push_back(now_ns);
         *self.delivery_counts.entry(key).or_default() += 1;
 

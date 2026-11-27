@@ -26,13 +26,14 @@ use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEd
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
 };
+use aether_time_model::{TimeError, TimeEvent, TimeModel, TimeSourceId, TimerMode};
 use aether_types::{
     Bounds, CapError, Capability, CapabilityFlags, DomainId, Handle, ObjectId, ObjectType, Rights,
 };
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 75] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 80] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -184,6 +185,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 75] {
             "CTS-EXEC-IRQ-6",
             exec_interrupt_priority_nesting_and_storm(),
         ),
+        ("CTS-TIME-1", time_source_resolution_declaration()),
+        ("CTS-TIME-2", time_timer_facility_completeness()),
+        ("CTS-TIME-3", time_deadline_miss_detection()),
+        ("CTS-TIME-4", time_monotonicity_enforcement()),
+        ("CTS-TIME-5", time_scheduling_suspend_resume()),
     ]
 }
 
@@ -3657,6 +3663,187 @@ fn shell_command_execution_and_state() -> Result<(), &'static str> {
         return Err("pwd should return root");
     }
 
+    Ok(())
+}
+
+/// CTS-TIME-1 (RFC-0012.3): every registered time source declares a tick
+/// resolution of at most 1 nanosecond; coarser resolutions are rejected.
+#[allow(clippy::unnecessary_wraps)]
+fn time_source_resolution_declaration() -> Result<(), &'static str> {
+    let mut model = TimeModel::new();
+    // The two RFC-0012.1 sources are pre-registered at 1 ns resolution.
+    assert_eq!(model.resolution(TimeSourceId(0)).unwrap(), 1);
+    assert_eq!(model.resolution(TimeSourceId(1)).unwrap(), 1);
+    // A 2 ns source is rejected (RFC-0012.3).
+    assert_eq!(
+        model.register_source(&aether_time_model::TimeSourceDescriptor {
+            kind: aether_time_model::TimeSourceKind::WallClock,
+            resolution_ns: 2,
+            drift_ppm: 0,
+        }),
+        Err(TimeError::InvalidResolution)
+    );
+    // A 1 ns source is accepted.
+    assert!(
+        model
+            .register_source(&aether_time_model::TimeSourceDescriptor {
+                kind: aether_time_model::TimeSourceKind::WallClock,
+                resolution_ns: 1,
+                drift_ppm: 0,
+            })
+            .is_ok()
+    );
+    Ok(())
+}
+
+/// CTS-TIME-2 (RFC-0012.5/.6): the timer facility supports one-shot and
+/// periodic timers plus cancellation; timer fires are delivered as
+/// interrupts through a router whose table binds the timer's vector.
+fn time_timer_facility_completeness() -> Result<(), &'static str> {
+    let mut model = TimeModel::new();
+    let mut router = InterruptRouter::new();
+    let domain = DomainId::new(1).unwrap();
+    router.register_domain(domain, None, 0).unwrap();
+    // Bind the timer's vector in the routing table (RFC-0012.6).
+    router
+        .configure_routing(
+            domain,
+            IrqVector(7),
+            &aether_types::Capability {
+                object: aether_types::ObjectId(1),
+                object_type: aether_types::ObjectType::Memory,
+                rights: aether_types::Rights::MAP,
+                bounds: aether_types::Bounds::new(0, 4096).unwrap(),
+                flags: aether_types::CapabilityFlags::BOUND,
+                expires_at_ns: 0,
+            },
+            aether_interrupt_model::RoutingEntry {
+                vector: IrqVector(7),
+                handler_cap: aether_types::Capability {
+                    object: aether_types::ObjectId(2),
+                    object_type: aether_types::ObjectType::Memory,
+                    rights: aether_types::Rights::MAP,
+                    bounds: aether_types::Bounds::new(0, 4096).unwrap(),
+                    flags: aether_types::CapabilityFlags::BOUND,
+                    expires_at_ns: 0,
+                },
+                mode: aether_interrupt_model::DeliveryMode::Direct,
+                priority: 5,
+                coalesce_threshold_hz: 1000,
+            },
+            0,
+        )
+        .map_err(|_| "configure timer routing failed")?;
+    let one_shot = model
+        .create_timer(&aether_time_model::TimerDescriptor {
+            deadline_ns: 1000,
+            mode: TimerMode::OneShot,
+            period_ns: 0,
+            jitter_bound_ns: 100,
+            vector: IrqVector(7),
+            domain,
+            handler_cap: aether_types::Capability {
+                object: aether_types::ObjectId(3),
+                object_type: aether_types::ObjectType::Memory,
+                rights: aether_types::Rights::MAP,
+                bounds: aether_types::Bounds::new(0, 4096).unwrap(),
+                flags: aether_types::CapabilityFlags::BOUND,
+                expires_at_ns: 0,
+            },
+        })
+        .map_err(|_| "create one-shot timer failed")?;
+    assert_eq!(model.tick(500, &mut router).unwrap().len(), 0);
+    let fired = model.tick(1000, &mut router).unwrap();
+    assert!(
+        fired
+            .iter()
+            .any(|e| matches!(e, TimeEvent::TimerFired { timer_id, .. } if *timer_id == one_shot))
+    );
+    // One-shot is consumed: not refired.
+    assert_eq!(model.tick(2000, &mut router).unwrap().len(), 0);
+
+    // Periodic timer reschedules at deadline + period.
+    let periodic = model
+        .create_timer(&aether_time_model::TimerDescriptor {
+            deadline_ns: 1000,
+            mode: TimerMode::Periodic,
+            period_ns: 500,
+            jitter_bound_ns: 100,
+            vector: IrqVector(8),
+            domain,
+            handler_cap: aether_types::Capability {
+                object: aether_types::ObjectId(4),
+                object_type: aether_types::ObjectType::Memory,
+                rights: aether_types::Rights::MAP,
+                bounds: aether_types::Bounds::new(0, 4096).unwrap(),
+                flags: aether_types::CapabilityFlags::BOUND,
+                expires_at_ns: 0,
+            },
+        })
+        .map_err(|_| "create periodic timer failed")?;
+    assert_eq!(model.tick(1000, &mut router).unwrap().len(), 1);
+    assert_eq!(model.tick(1500, &mut router).unwrap().len(), 1);
+
+    // Cancellation prevents firing.
+    assert!(model.cancel_timer(periodic).is_ok());
+    assert_eq!(model.tick(3000, &mut router).unwrap().len(), 0);
+    Ok(())
+}
+
+/// CTS-TIME-3 (RFC-0012.7/.8): a deadline miss is detected once per
+/// registered deadline and emits a `DeadlineMissed` event identifying the
+/// thread, the deadline, and the degree of miss.
+#[allow(clippy::unnecessary_wraps)]
+fn time_deadline_miss_detection() -> Result<(), &'static str> {
+    let mut model = TimeModel::new();
+    let mut router = InterruptRouter::new();
+    model.set_deadline(aether_time_model::ThreadId(1), 1000);
+    let events = model.tick(1300, &mut router).unwrap();
+    assert_eq!(
+        events,
+        vec![TimeEvent::DeadlineMissed {
+            thread_id: aether_time_model::ThreadId(1),
+            deadline_ns: 1000,
+            now_ns: 1300,
+            degree_ns: 300
+        }]
+    );
+    // Counted once per registered deadline.
+    assert_eq!(model.tick(1400, &mut router).unwrap().len(), 0);
+    Ok(())
+}
+
+/// CTS-TIME-4 (RFC-0012.9): the monotonic raw source never goes backward;
+/// a backward jump is corrected forward and a `TimeSourceFault` is recorded.
+#[allow(clippy::unnecessary_wraps)]
+fn time_monotonicity_enforcement() -> Result<(), &'static str> {
+    let mut model = TimeModel::new();
+    model.advance_monotonic_raw(5000).unwrap();
+    assert_eq!(model.read(TimeSourceId(0)).unwrap(), 5000);
+    model.advance_monotonic_raw(1000).unwrap();
+    assert_eq!(model.read(TimeSourceId(0)).unwrap(), 5000);
+    assert!(
+        model
+            .events()
+            .iter()
+            .any(|e| matches!(e, TimeEvent::TimeSourceFault { .. }))
+    );
+    Ok(())
+}
+
+/// CTS-TIME-5 (RFC-0012.10): scheduling time is paused while suspended and
+/// resumes from the exact point of suspension, never reset.
+#[allow(clippy::unnecessary_wraps)]
+fn time_scheduling_suspend_resume() -> Result<(), &'static str> {
+    let mut model = TimeModel::new();
+    model.advance_scheduling_time(1000).unwrap();
+    assert_eq!(model.read(TimeSourceId(1)).unwrap(), 1000);
+    model.suspend_scheduling_time().unwrap();
+    model.advance_scheduling_time(5000).unwrap();
+    assert_eq!(model.read(TimeSourceId(1)).unwrap(), 1000);
+    model.resume_scheduling_time().unwrap();
+    model.advance_scheduling_time(6000).unwrap();
+    assert_eq!(model.read(TimeSourceId(1)).unwrap(), 6000);
     Ok(())
 }
 

@@ -15,6 +15,7 @@ members = [
     "crates/aether-storage-model",
     "crates/aether-runtime-model",
     "crates/aether-shell-model",
+    "crates/aether-time-model",
     "crates/aether-update-model",
     "crates/aether-comp-model",
     "crates/aether-virtio-net-test",

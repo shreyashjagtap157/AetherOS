@@ -48,6 +48,7 @@ dependencies = [
  "aether-shell-model",
  "aether-state-model",
  "aether-storage-model",
+ "aether-time-model",
  "aether-types",
  "aether-update-model",
 ]
@@ -109,6 +110,14 @@ dependencies = [
 name = "aether-storage-model"
 version = "0.1.0"
 dependencies = [
+ "aether-types",
+]
+
+[[package]]
+name = "aether-time-model"
+version = "0.1.0"
+dependencies = [
+ "aether-interrupt-model",
  "aether-types",
 ]
 
