@@ -33,6 +33,7 @@ dependencies = [
  "aether-dispatch-model",
  "aether-runtime-model",
  "aether-sched-model",
+ "aether-shell-model",
  "aether-state-model",
  "aether-storage-model",
  "aether-types",

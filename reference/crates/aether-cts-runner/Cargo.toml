@@ -15,6 +15,7 @@ aether-dispatch-model = { path = "../aether-dispatch-model" }
 aether-storage-model = { path = "../aether-storage-model" }
 aether-runtime-model = { path = "../aether-runtime-model" }
 aether-update-model = { path = "../aether-update-model" }
+aether-shell-model = { path = "../aether-shell-model" }
 aether-types = { path = "../aether-types" }
 
 [lints]

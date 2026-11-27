@@ -23,7 +23,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 45] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 46] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -52,6 +52,7 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 45] {
             runtime_instruction_execution_produces_output(),
         ),
         ("CTX-UPDATE-001", update_rollback_after_boot_failures()),
+        ("CTX-SHELL-001", shell_command_execution_and_state()),
         ("CTS-SCHED-ADMIT-001", admission_bound_matches_rfc_0011_7()),
         (
             "CTS-SCHED-DETERMINISM-001",
@@ -2366,5 +2367,45 @@ fn update_rollback_after_boot_failures() -> Result<(), &'static str> {
     if sys.update_in_progress {
         return Err("update still in progress after rollback");
     }
+    Ok(())
+}
+
+/// Shell command execution: touch a file, write content, read it back, then
+/// remove it — verifying state transitions through the virtual file system.
+fn shell_command_execution_and_state() -> Result<(), &'static str> {
+    use aether_shell_model::Shell;
+
+    let mut shell = Shell::new();
+
+    // touch then cat (empty content) succeeds.
+    shell
+        .run_line("touch notes.txt")
+        .map_err(|_| "touch failed")?;
+    let out = shell.run_line("cat notes.txt").map_err(|_| "cat failed")?;
+    if out != vec![""] {
+        return Err("newly created file should have empty content");
+    }
+
+    // write then cat returns the written content.
+    shell.fs.write_file("notes.txt", "hello world").unwrap();
+    let out = shell
+        .run_line("cat notes.txt")
+        .map_err(|_| "cat after write failed")?;
+    if out != vec!["hello world"] {
+        return Err("cat does not return written content");
+    }
+
+    // rm then cat fails.
+    shell.run_line("rm notes.txt").map_err(|_| "rm failed")?;
+    if shell.run_line("cat notes.txt").is_ok() {
+        return Err("cat after rm should fail");
+    }
+
+    // pwd returns the root directory.
+    let out = shell.run_line("pwd").map_err(|_| "pwd failed")?;
+    if out != vec!["/"] {
+        return Err("pwd should return root");
+    }
+
     Ok(())
 }
