@@ -135,7 +135,7 @@ Object header flags:
 
 `RFC-COMPILER-001.29`: Hardware and asynchronous faults are delivered as bounded fault records to a registered handler endpoint. If no handler exists or the handler violates policy, the component is terminated and cleanup runs from a trusted supervisor context.
 
-`RFC-COMPILER-001.30`: Error detail follows explicit disclosure policy and may carry an opaque diagnostic correlation ID. It never contains undelegated resource identity or authority.
+`RFC-COMPILER-001.30`: Error detail follows explicit disclosure policy and may carry an opaque diagnostic correlation ID. It never contains undelegated resource identity or authority. A `CAP_ERROR` token's seal is mandatory per RFC-0037.9.1: the seal binds the error code to the source that generated it, and a `CAP_ERROR` token with an invalid or absent seal is treated as non-existent.
 
 ### 2.8 Position-Independent Code and Address Space Layout (REQ-COMP-04)
 
@@ -280,12 +280,16 @@ struct component_exit_record {
 ### 4.4 Error Token (Canonical)
 
 ```c
-// The canonical error token — a constant, not a resource
+// The canonical error token — a constant, not a resource-access capability.
+// The seal is computed per RFC-0037.9.1 (HMAC-SHA256 over the first 64 bytes)
+// and is mandatory for CAP_ERROR (type 11). The token carries no resource
+// authority: presenting it to the capability-mediator for resource access
+// yields ECAPSTALE per RFC-0037.3.1.
 const struct capability_token ERROR_TOKEN = {
     .type = CAP_ERROR,                          // type 11
     .rights = 0,                                // repurposed as error code at use site
     .flags = 0,
-    .seal = {0},                                // zeroed seal — not a valid capability
+    .seal = SEAL_HMAC_SHA256,                   // valid seal per RFC-0037.9.1
     .target_object = {0},                       // zeroed — no target
 };
 ```
@@ -393,3 +397,4 @@ struct got_entry {
 |------|--------|
 | this cycle | Initial draft. ABI, capability passing, component lifecycle, error propagation, PIC, and symbol resolution specified. INTF-002, INTF-003, INTF-006 resolved. I-1, I-2, I-12, I-13 implemented. RISC-V-specific ABI defined for Phase 1. |
 | 2026-07-20 | Coordinated Specification Amendment applied with RFC-0037 §2 amendment (Cross-Impact Gate 001 authorization; PHASE-4-AUTHORIZATION-RFC-0037-S2.md). RFC-COMPILER-001.30 updated: "MAY be zeroed" removed; error tokens now MUST carry a valid HMAC-SHA256 seal per RFC-0037.9.1 (Model A mandatory sealing). |
+| this cycle | Resolved contradiction with RFC-0037.9.1: ERROR_TOKEN (type 11 CAP_ERROR) seal changed from zeroed to SEAL_HMAC_SHA256 per mandatory sealing rule; RFC-COMPILER-001.30 updated to document seal binding. |
