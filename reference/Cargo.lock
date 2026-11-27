@@ -30,6 +30,7 @@ dependencies = [
  "aether-cap-model",
  "aether-capspace",
  "aether-comp-model",
+ "aether-dispatch-model",
  "aether-sched-model",
  "aether-state-model",
  "aether-types",

@@ -12,6 +12,7 @@ use aether_comp_model::{
     ComponentId, Manifest, ManifestError, NarrowingPolicy, Profile, Requirement, ResolutionError,
     SelectionStrategy, Tier, conformance, routing, validate_manifest,
 };
+use aether_dispatch_model::{DispatchError, DispatchRequest, Dispatcher};
 use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEdf};
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
@@ -22,7 +23,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 40] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 42] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -43,6 +44,8 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 40] {
         ),
         ("CTX-COMP-001", capability_round_trip()),
         ("CTX-CAP-NARROW-001", rights_narrowing_composition()),
+        ("CTX-DISPATCH-001", dispatch_requires_capability_authority()),
+        ("CTX-STATE-001", state_commit_is_failure_atomic()),
         ("CTS-SCHED-ADMIT-001", admission_bound_matches_rfc_0011_7()),
         (
             "CTS-SCHED-DETERMINISM-001",
@@ -2186,5 +2189,103 @@ fn rights_narrowing_composition() -> Result<(), &'static str> {
     if model_oob != Err(CapError::Bounds) || system_oob != Err(CapError::Bounds) {
         return Err("out-of-bounds authorization was not rejected in both implementations");
     }
+    Ok(())
+}
+
+/// Dispatch requires capability authority: a valid BOUND + MAP + Memory
+/// capability authorizes dispatch; missing BOUND, missing MAP, wrong object
+/// type, or an expired capability are each rejected with the proper error.
+fn dispatch_requires_capability_authority() -> Result<(), &'static str> {
+    let mut dispatcher = Dispatcher::new();
+    let domain = DomainId::new(1).unwrap();
+
+    let valid_cap = Capability {
+        object: ObjectId(1),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP,
+        bounds: Bounds::new(0, 4096).unwrap(),
+        flags: CapabilityFlags::BOUND,
+        expires_at_ns: 0,
+    };
+
+    // Valid capability authorizes dispatch.
+    let request = DispatchRequest {
+        thread_id: 1,
+        capability: valid_cap,
+        hart_id: 1,
+        domain,
+        now_ns: 0,
+    };
+    let id = dispatcher
+        .dispatch(request)
+        .map_err(|_| "valid dispatch was rejected")?;
+    if dispatcher.state(id) != Some(aether_dispatch_model::DispatchState::Running) {
+        return Err("valid dispatch did not enter Running state");
+    }
+
+    // Missing BOUND flag is rejected.
+    let no_bound = Capability {
+        flags: CapabilityFlags::NONE,
+        ..valid_cap
+    };
+    let request = DispatchRequest {
+        thread_id: 2,
+        capability: no_bound,
+        hart_id: 1,
+        domain,
+        now_ns: 0,
+    };
+    if dispatcher.dispatch(request) != Err(DispatchError::Unauthorized) {
+        return Err("dispatch without BOUND flag was not rejected");
+    }
+
+    // Missing MAP right is rejected.
+    let no_map = Capability {
+        rights: Rights::READ,
+        ..valid_cap
+    };
+    let request = DispatchRequest {
+        thread_id: 3,
+        capability: no_map,
+        hart_id: 1,
+        domain,
+        now_ns: 0,
+    };
+    if dispatcher.dispatch(request) != Err(DispatchError::Unauthorized) {
+        return Err("dispatch without MAP right was not rejected");
+    }
+
+    // Wrong object type is rejected.
+    let wrong_type = Capability {
+        object_type: aether_types::ObjectType::State,
+        ..valid_cap
+    };
+    let request = DispatchRequest {
+        thread_id: 4,
+        capability: wrong_type,
+        hart_id: 1,
+        domain,
+        now_ns: 0,
+    };
+    if dispatcher.dispatch(request) != Err(DispatchError::Unauthorized) {
+        return Err("dispatch with wrong object type was not rejected");
+    }
+
+    // Expired capability is rejected.
+    let expired = Capability {
+        expires_at_ns: 100,
+        ..valid_cap
+    };
+    let request = DispatchRequest {
+        thread_id: 5,
+        capability: expired,
+        hart_id: 1,
+        domain,
+        now_ns: 101,
+    };
+    if dispatcher.dispatch(request) != Err(DispatchError::Expired) {
+        return Err("dispatch with expired capability was not rejected");
+    }
+
     Ok(())
 }
