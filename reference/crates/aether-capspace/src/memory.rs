@@ -1199,7 +1199,7 @@ mod tests {
                     object_type: ObjectType::Memory,
                     rights,
                     bounds: bounds(0, 2 * 1024 * 1024),
-                    flags: aether_types::CapabilityFlags::NONE,
+                    flags: aether_types::CapabilityFlags::REVOCABLE,
                     expires_at_ns: 0,
                 },
             )

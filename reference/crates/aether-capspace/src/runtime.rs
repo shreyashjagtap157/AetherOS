@@ -381,7 +381,7 @@ mod tests {
                     object_type: ObjectType::Memory,
                     rights: Rights::MAP.union(Rights::READ).union(Rights::GRANT),
                     bounds: bounds(0, 4096),
-                    flags: aether_types::CapabilityFlags::NONE,
+                    flags: aether_types::CapabilityFlags::REVOCABLE,
                     expires_at_ns: 0,
                 },
             )

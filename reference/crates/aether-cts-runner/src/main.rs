@@ -23,7 +23,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 46] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 47] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -31,6 +31,10 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 46] {
         (
             "CTS-CAP-REVOKE-SUBTREE-001",
             revoke_only_descendant_subtree(),
+        ),
+        (
+            "CTS-CAP-REV-1",
+            non_revocable_capability_cannot_be_revoked(),
         ),
         ("CTS-CAP-FORGE-001", reject_forged_integer()),
         ("CTS-CAP-STALE-001", reject_stale_generation()),
@@ -161,7 +165,7 @@ fn root() -> Capability {
         object_type: ObjectType::Memory,
         rights: Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
         bounds: bounds(0, 4096),
-        flags: aether_types::CapabilityFlags::NONE,
+        flags: aether_types::CapabilityFlags::REVOCABLE,
         expires_at_ns: 0,
     }
 }
@@ -498,6 +502,93 @@ fn revoke_only_descendant_subtree() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// RFC-0039.2 (CTS-CAP-REV-1): a capability without `CAPF_REVOCABLE` cannot be
+/// revoked; both the differential oracle and the table-backed provider must
+/// refuse with `RevocationDenied`, and a revocable capability still revokes.
+fn non_revocable_capability_cannot_be_revoked() -> Result<(), &'static str> {
+    let (mut model, model_bootstrap, mut system, system_bootstrap) = pair();
+
+    let non_revocable_flags = CapabilityFlags::NONE;
+    let revocable_flags = CapabilityFlags::REVOCABLE;
+
+    let model_non_revocable = model
+        .create_root(
+            &model_bootstrap,
+            domain(1),
+            Capability {
+                flags: non_revocable_flags,
+                ..root()
+            },
+        )
+        .map_err(|_| "model root failed")?;
+    let system_non_revocable = system
+        .create_root(
+            &system_bootstrap,
+            domain(1),
+            Capability {
+                flags: non_revocable_flags,
+                ..root()
+            },
+        )
+        .map_err(|_| "provider root failed")?;
+
+    if model.revoke(domain(1), model_non_revocable) != Err(CapError::RevocationDenied) {
+        return Err("model revoked a non-revocable capability");
+    }
+    if system.revoke(domain(1), system_non_revocable) != Err(CapError::RevocationDenied) {
+        return Err("provider revoked a non-revocable capability");
+    }
+
+    // No state change: both capabilities still authorize.
+    compare_auth(
+        model.authorize(
+            domain(1),
+            model_non_revocable,
+            ObjectType::Memory,
+            Rights::READ,
+            bounds(0, 1),
+            NOW_NS,
+        ),
+        system.authorize(
+            domain(1),
+            system_non_revocable,
+            ObjectType::Memory,
+            Rights::READ,
+            bounds(0, 1),
+            NOW_NS,
+        ),
+    )?;
+
+    // A capability carrying CAPF_REVOCABLE revokes successfully in both.
+    let model_revocable = model
+        .create_root(
+            &model_bootstrap,
+            domain(1),
+            Capability {
+                flags: revocable_flags,
+                ..root()
+            },
+        )
+        .map_err(|_| "model root failed")?;
+    let system_revocable = system
+        .create_root(
+            &system_bootstrap,
+            domain(1),
+            Capability {
+                flags: revocable_flags,
+                ..root()
+            },
+        )
+        .map_err(|_| "provider root failed")?;
+    model
+        .revoke(domain(1), model_revocable)
+        .map_err(|_| "model revocation failed")?;
+    system
+        .revoke(domain(1), system_revocable)
+        .map_err(|_| "provider revocation failed")?;
+    Ok(())
+}
+
 #[derive(Default)]
 struct ImmediateFences {
     activations: Vec<(HartId, AddressSpaceId)>,
@@ -555,7 +646,7 @@ fn mapping_permissions_and_revocation() -> Result<(), &'static str> {
                     .union(Rights::WRITE)
                     .union(Rights::GRANT),
                 bounds: bounds(0, 4096),
-                flags: aether_types::CapabilityFlags::NONE,
+                flags: aether_types::CapabilityFlags::REVOCABLE,
                 expires_at_ns: 0,
             },
         )
@@ -642,7 +733,7 @@ fn serialized_runtime_access_and_revocation() -> Result<(), &'static str> {
                 object_type: ObjectType::Memory,
                 rights: Rights::MAP.union(Rights::READ),
                 bounds: bounds(0, 4096),
-                flags: aether_types::CapabilityFlags::NONE,
+                flags: aether_types::CapabilityFlags::REVOCABLE,
                 expires_at_ns: 0,
             },
         )
@@ -704,7 +795,7 @@ fn cached_mapping_requires_live_capability() -> Result<(), &'static str> {
                 object_type: ObjectType::Memory,
                 rights: Rights::MAP.union(Rights::READ),
                 bounds: bounds(0, 4096),
-                flags: aether_types::CapabilityFlags::NONE,
+                flags: aether_types::CapabilityFlags::REVOCABLE,
                 expires_at_ns: 0,
             },
         )

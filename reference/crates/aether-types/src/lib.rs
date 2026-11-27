@@ -272,6 +272,8 @@ pub enum CapError {
     Stale,
     /// Capability or one of its ancestors was revoked.
     Revoked,
+    /// Revoking a capability that lacks `CAPF_REVOCABLE` (RFC-0039.2, EPERM).
+    RevocationDenied,
     /// Requested right is absent.
     Rights,
     /// Requested bounds exceed authority.

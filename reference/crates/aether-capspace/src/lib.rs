@@ -175,9 +175,18 @@ impl CapabilitySystem {
     /// Marks this lineage revoked. Descendants fail because they retain ancestors.
     ///
     /// # Errors
-    /// Returns a typed failure if the handle cannot be resolved in the domain.
+    /// Returns a typed failure if the handle cannot be resolved in the domain,
+    /// or if the capability lacks `CAPF_REVOCABLE` (RFC-0039.2, EPERM).
     pub fn revoke(&mut self, domain: DomainId, handle: Handle) -> Result<(), CapError> {
-        let lineage_id = self.resolve(domain, handle)?.lineage_id;
+        let entry = self.resolve(domain, handle)?;
+        if !entry
+            .capability
+            .flags
+            .contains(aether_types::CapabilityFlags::REVOCABLE)
+        {
+            return Err(CapError::RevocationDenied);
+        }
+        let lineage_id = entry.lineage_id;
         self.revoke_subtree(lineage_id)
     }
 
@@ -486,6 +495,14 @@ mod tests {
             expires_at_ns: 0,
         }
     }
+
+    /// A root capability carrying `CAPF_REVOCABLE`, so revocation succeeds.
+    fn revocable_root() -> Capability {
+        Capability {
+            flags: CapabilityFlags::REVOCABLE,
+            ..root()
+        }
+    }
     fn root_with_expiry(expires_at_ns: u64) -> Capability {
         Capability {
             expires_at_ns,
@@ -534,7 +551,9 @@ mod tests {
         let (mut system, bootstrap) = CapabilitySystem::bootstrap();
         system.add_domain(domain(1));
         system.add_domain(domain(2));
-        let parent = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let parent = system
+            .create_root(&bootstrap, domain(1), revocable_root())
+            .unwrap();
         let child = system
             .transfer(
                 domain(1),
@@ -577,7 +596,9 @@ mod tests {
         system.add_domain(domain(1));
         system.add_domain(domain(2));
 
-        let root = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let root = system
+            .create_root(&bootstrap, domain(1), revocable_root())
+            .unwrap();
         let branch = system
             .derive(
                 domain(1),
@@ -669,7 +690,9 @@ mod tests {
     fn removed_intermediate_handle_remains_in_ancestor_revocation_graph() {
         let (mut system, bootstrap) = CapabilitySystem::bootstrap();
         system.add_domain(domain(1));
-        let root = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let root = system
+            .create_root(&bootstrap, domain(1), revocable_root())
+            .unwrap();
         let intermediate = system
             .derive(
                 domain(1),
@@ -744,7 +767,11 @@ mod tests {
     fn deep_derivation_revocation_uses_iterative_graph_walk() {
         let (mut system, bootstrap) = CapabilitySystem::bootstrap();
         system.add_domain(domain(1));
-        let mut chain = vec![system.create_root(&bootstrap, domain(1), root()).unwrap()];
+        let mut chain = vec![
+            system
+                .create_root(&bootstrap, domain(1), revocable_root())
+                .unwrap(),
+        ];
 
         for _ in 0..128 {
             let parent = *chain.last().unwrap();
@@ -827,7 +854,9 @@ mod tests {
         let (mut system, bootstrap) = CapabilitySystem::bootstrap();
         system.add_domain(domain(1));
         system.add_domain(domain(2));
-        let parent = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        let parent = system
+            .create_root(&bootstrap, domain(1), revocable_root())
+            .unwrap();
         system.revoke(domain(1), parent).unwrap();
         assert_eq!(
             system.derive(domain(1), parent, Rights::READ, bounds(0, 1), NOW_NS),
@@ -1059,6 +1088,77 @@ mod tests {
                 NOW_NS
             ),
             Err(CapError::DomainBound)
+        );
+    }
+
+    #[test]
+    fn revocation_requires_capf_revocable_flag() {
+        let (mut system, bootstrap) = CapabilitySystem::bootstrap();
+        system.add_domain(domain(1));
+        system.add_domain(domain(2));
+
+        // A capability without CAPF_REVOCABLE cannot be revoked at all.
+        let non_revocable = system.create_root(&bootstrap, domain(1), root()).unwrap();
+        assert_eq!(
+            system.revoke(domain(1), non_revocable),
+            Err(CapError::RevocationDenied)
+        );
+        // A transferred copy of a non-revocable capability is also not revocable.
+        let transferred = system
+            .transfer(
+                domain(1),
+                non_revocable,
+                domain(2),
+                Rights::READ,
+                bounds(0, 1),
+                NOW_NS,
+            )
+            .unwrap();
+        assert_eq!(
+            system.revoke(domain(2), transferred),
+            Err(CapError::RevocationDenied)
+        );
+        // No state change: both capabilities still authorize.
+        assert!(
+            system
+                .authorize(
+                    domain(1),
+                    non_revocable,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(0, 1),
+                    NOW_NS
+                )
+                .is_ok()
+        );
+        assert!(
+            system
+                .authorize(
+                    domain(2),
+                    transferred,
+                    ObjectType::Memory,
+                    Rights::READ,
+                    bounds(0, 1),
+                    NOW_NS
+                )
+                .is_ok()
+        );
+
+        // A capability carrying CAPF_REVOCABLE revokes successfully.
+        let revocable = system
+            .create_root(&bootstrap, domain(1), revocable_root())
+            .unwrap();
+        system.revoke(domain(1), revocable).unwrap();
+        assert_eq!(
+            system.authorize(
+                domain(1),
+                revocable,
+                ObjectType::Memory,
+                Rights::READ,
+                bounds(0, 1),
+                NOW_NS
+            ),
+            Err(CapError::Revoked)
         );
     }
 }

@@ -153,13 +153,18 @@ impl CapabilityModel {
     /// Revokes a capability lineage and all descendants, including transfers.
     ///
     /// # Errors
-    /// Returns a typed failure if the handle cannot be resolved in the domain.
+    /// Returns a typed failure if the handle cannot be resolved in the domain,
+    /// or if the capability lacks `CAPF_REVOCABLE` (RFC-0039.2, EPERM).
     pub fn revoke(&mut self, domain: DomainId, handle: Handle) -> Result<(), CapError> {
-        let lineage = *self
-            .resolve(domain, handle)?
-            .lineage
-            .last()
-            .ok_or(CapError::Missing)?;
+        let record = self.resolve(domain, handle)?;
+        if !record
+            .capability
+            .flags
+            .contains(aether_types::CapabilityFlags::REVOCABLE)
+        {
+            return Err(CapError::RevocationDenied);
+        }
+        let lineage = *record.lineage.last().ok_or(CapError::Missing)?;
         self.revoked.insert(lineage);
         Ok(())
     }
@@ -365,7 +370,11 @@ mod tests {
 
     #[test]
     fn missing_domains_and_revoked_parents_fail_closed() {
-        let capability = capability(Rights::READ.union(Rights::GRANT), 0, CapabilityFlags::NONE);
+        let capability = capability(
+            Rights::READ.union(Rights::GRANT),
+            0,
+            CapabilityFlags::REVOCABLE,
+        );
         let (mut model, bootstrap) = CapabilityModel::bootstrap();
         model.add_domain(domain(1));
         assert_eq!(
