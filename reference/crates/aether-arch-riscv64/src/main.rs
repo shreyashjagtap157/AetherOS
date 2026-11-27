@@ -2473,6 +2473,29 @@ fn boot_self_test() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start() -> ! {
+    // Capture the firmware-supplied Device Tree pointer (RISC-V S-mode boot
+    // convention: a1 = FDT physical address) and use it to discover the real
+    // virtio-mmio device addresses instead of relying on hard-coded defaults.
+    // If no usable DTB is provided, the compiled-in defaults are kept so boot
+    // still works on the known QEMU `virt` layout.
+    let fdt_ptr: usize;
+    unsafe {
+        core::arch::asm!("mv {}, a1", out(reg) fdt_ptr, options(nomem));
+    }
+    unsafe {
+        let mut devices = [(0usize, VirtioDevType::Unknown); MAX_VIRTIO_DEVICES];
+        if let Ok(count) = discover_virtio_devices(fdt_ptr, &mut devices) {
+            for i in 0..count {
+                let (base, dev_type) = devices[i];
+                match dev_type {
+                    VirtioDevType::Block => VIRTIO_BLOCK_MMIO = base,
+                    VirtioDevType::Net => VIRTIO_NET_MMIO = base,
+                    VirtioDevType::Unknown => {}
+                }
+            }
+        }
+    }
+
     csrw_stvec(trap_entry as *const () as usize as u64);
     csrs_sie(SIE_STIE);
     csrs_sstatus(SSTATUS_SIE);
@@ -2615,10 +2638,313 @@ pub extern "C" fn start() -> ! {
 }
 
 // ============================================================================
+// Device Tree discovery (replaces hard-coded virtio-mmio addresses)
+// ============================================================================
+
+/// Classification of a discovered virtio-mmio device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VirtioDevType {
+    Block,
+    Net,
+    Unknown,
+}
+
+/// Runtime-discovered MMIO base addresses. The compiled-in QEMU `virt` defaults
+/// (block at 0x1000_1000, net at 0x1000_2000) are used when the firmware does
+/// not supply a usable Device Tree or when discovery finds no devices.
+static mut VIRTIO_BLOCK_MMIO: usize = VIRTIO0_MMIO;
+static mut VIRTIO_NET_MMIO: usize = VIRTIO_NET_MMIO_DEFAULT;
+
+/// Maximum number of virtio-mmio devices the fixed-size discovery buffers can hold
+/// (the kernel is `#![no_std]`, so discovery uses fixed arrays instead of `Vec`).
+const MAX_VIRTIO_DEVICES: usize = 8;
+
+/// Read a u32 from an arbitrary virtio MMIO base (registers are u32 spaced by 4 bytes).
+unsafe fn mmio_read_at(base: usize, offset: usize) -> u32 {
+    read_unaligned((base + offset * 4) as *const u32)
+}
+
+/// Write a u32 to an arbitrary virtio MMIO base.
+unsafe fn mmio_write_at(base: usize, offset: usize, value: u32) {
+    write_unaligned((base + offset * 4) as *mut u32, value);
+}
+
+// ---------------------------------------------------------------------------
+// Minimal Device Tree Blob (DTB) parser
+//
+// QEMU `virt` passes a flattened Device Tree to the guest. We walk it to find
+// `virtio,mmio` nodes and read their `reg` property (MMIO base address).
+// All DTB multi-byte fields are big-endian.
+// ---------------------------------------------------------------------------
+
+const FDT_BEGIN_NODE: u32 = 0x00000001;
+const FDT_END_NODE: u32 = 0x00000002;
+const FDT_PROP: u32 = 0x00000003;
+const FDT_NOP: u32 = 0x00000004;
+const FDT_END: u32 = 0x00000009;
+const FDT_MAGIC: u32 = 0xd00d_feed;
+
+#[repr(C)]
+struct DtbHeader {
+    magic: u32,
+    totalsize: u32,
+    off_dt_struct: u32,
+    off_dt_strings: u32,
+    off_mem_rsvmap: u32,
+    version: u32,
+    last_comp_version: u32,
+    boot_cpuid_phys: u32,
+    size_dt_strings: u32,
+    size_dt_struct: u32,
+}
+
+fn read_u32_be(buf: &[u8], off: usize) -> Option<u32> {
+    if off.checked_add(4).map_or(true, |e| e > buf.len()) {
+        return None;
+    }
+    Some(u32::from_be_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]))
+}
+
+fn read_u64_be(buf: &[u8], off: usize) -> Option<u64> {
+    if off.checked_add(8).map_or(true, |e| e > buf.len()) {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&buf[off..off + 8]);
+    Some(u64::from_be_bytes(b))
+}
+
+fn align4(n: usize) -> usize {
+    (n + 3) & !3
+}
+
+fn cstr_at(buf: &[u8], off: usize) -> Option<&str> {
+    let mut end = off;
+    while end < buf.len() && buf[end] != 0 {
+        end += 1;
+    }
+    if end >= buf.len() {
+        return None;
+    }
+    core::str::from_utf8(&buf[off..end]).ok()
+}
+
+/// Minimal in-kernel Device Tree view. Walks the flattened structure block to
+/// locate `virtio,mmio` nodes and extract their MMIO base addresses.
+struct Dtb<'a> {
+    fdt: &'a [u8],
+    strings: &'a [u8],
+    struct_off: usize,
+    struct_end: usize,
+    addr_cells: u32,
+    size_cells: u32,
+}
+
+impl<'a> Dtb<'a> {
+    fn from_bytes(fdt: &'a [u8]) -> Result<Self, &'static str> {
+        if fdt.len() < 32 {
+            return Err("dtb: too small for header");
+        }
+        let magic = u32::from_be_bytes([fdt[0], fdt[1], fdt[2], fdt[3]]);
+        if magic != FDT_MAGIC {
+            return Err("dtb: bad magic");
+        }
+        let off_dt_struct =
+            u32::from_be_bytes([fdt[8], fdt[9], fdt[10], fdt[11]]) as usize;
+        let off_dt_strings =
+            u32::from_be_bytes([fdt[12], fdt[13], fdt[14], fdt[15]]) as usize;
+        let size_dt_strings =
+            u32::from_be_bytes([fdt[32], fdt[33], fdt[34], fdt[35]]) as usize;
+        let size_dt_struct =
+            u32::from_be_bytes([fdt[36], fdt[37], fdt[38], fdt[39]]) as usize;
+        if off_dt_struct >= fdt.len() || off_dt_strings >= fdt.len() {
+            return Err("dtb: offset out of range");
+        }
+        let strings_end = off_dt_strings
+            + size_dt_strings.min(fdt.len() - off_dt_strings);
+        let strings = &fdt[off_dt_strings..strings_end];
+        let struct_end =
+            off_dt_struct + size_dt_struct.min(fdt.len() - off_dt_struct);
+        Ok(Self {
+            fdt,
+            strings,
+            struct_off: off_dt_struct,
+            struct_end,
+            addr_cells: 2, // QEMU `virt` root default
+            size_cells: 2,
+        })
+    }
+
+    fn u32_at(&self, off: usize) -> Option<u32> {
+        read_u32_be(self.fdt, off)
+    }
+
+    /// Read a null-terminated string from the strings block.
+    fn str_from_off(&self, off: usize) -> Option<&'a str> {
+        if off >= self.strings.len() {
+            return None;
+        }
+        let mut end = off;
+        while end < self.strings.len() && self.strings[end] != 0 {
+            end += 1;
+        }
+        if end >= self.strings.len() {
+            return None;
+        }
+        core::str::from_utf8(&self.strings[off..end]).ok()
+    }
+
+    /// Walk the structure block and collect MMIO base addresses of
+    /// `virtio,mmio` nodes into `out`. Returns the number of bases written.
+    fn find_virtio_mmio(&mut self, out: &mut [usize]) -> Result<usize, &'static str> {
+        let mut count: usize = 0;
+        let mut pos = self.struct_off;
+        let mut in_virtio = false;
+        let mut node_addr_cells = self.addr_cells as usize;
+        let mut node_size_cells = self.size_cells as usize;
+
+        while pos < self.struct_end {
+            let token = match self.u32_at(pos) {
+                Some(t) => t,
+                None => break,
+            };
+            pos += 4;
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = cstr_at(self.fdt, pos).unwrap_or("");
+                    let nlen = name.len() + 1;
+                    pos += align4(nlen);
+                    let is_virtio = name == "virtio,mmio" || name.starts_with("virtio");
+                    if is_virtio {
+                        in_virtio = true;
+                        node_addr_cells = self.addr_cells as usize;
+                        node_size_cells = self.size_cells as usize;
+                    } else {
+                        in_virtio = false;
+                    }
+                }
+                FDT_END_NODE => {
+                    in_virtio = false;
+                    node_addr_cells = self.addr_cells as usize;
+                    node_size_cells = self.size_cells as usize;
+                }
+                FDT_PROP => {
+                    let len = match self.u32_at(pos) {
+                        Some(l) => l as usize,
+                        None => break,
+                    };
+                    pos += 4;
+                    let nameoff = match self.u32_at(pos) {
+                        Some(n) => n as usize,
+                        None => break,
+                    };
+                    pos += 4;
+                    let prop_end = pos.checked_add(len).ok_or("dtb: prop overflow")?;
+                    if prop_end > self.fdt.len() {
+                        return Err("dtb: prop value out of range");
+                    }
+                    let pname = self.str_from_off(nameoff).unwrap_or("");
+                    if in_virtio {
+                        match pname {
+                            "#address-cells" => {
+                                node_addr_cells = self.u32_at(pos).unwrap_or(2) as usize;
+                            }
+                            "#size-cells" => {
+                                node_size_cells = self.u32_at(pos).unwrap_or(2) as usize;
+                            }
+                            "reg" => {
+                                if count < out.len() {
+                                    if let Some(base) = self.parse_reg(pos, len, node_addr_cells, node_size_cells)
+                                    {
+                                        out[count] = base;
+                                        count += 1;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    pos = align4(prop_end);
+                }
+                FDT_NOP => {}
+                FDT_END => break,
+                _ => return Err("dtb: unknown token"),
+            }
+        }
+        Ok(count)
+    }
+
+    /// Parse a `reg` property value into an MMIO base address.
+    fn parse_reg(
+        &self,
+        off: usize,
+        len: usize,
+        addr_cells: usize,
+        size_cells: usize,
+    ) -> Option<usize> {
+        if addr_cells == 0 || size_cells == 0 {
+            return None;
+        }
+        let entry_bytes = (addr_cells + size_cells) * 4;
+        if len < entry_bytes {
+            return None;
+        }
+        // Each address is `addr_cells` big-endian u32 cells; take the low cell
+        // as the base (QEMU `virt` uses 32-bit MMIO addresses).
+        read_u32_be(self.fdt, off + (addr_cells - 1) * 4).map(|c| c as usize)
+    }
+}
+
+/// Discover virtio-mmio devices from a firmware-supplied Device Tree.
+/// `fdt_ptr` is the physical address of the DTB (identity-mapped: the kernel
+/// runs without an MMU). Writes discovered (MMIO base, device type) pairs into
+/// `out` and returns the number of devices written. Falls back gracefully when
+/// no DTB is present or it is unparseable.
+unsafe fn discover_virtio_devices(
+    fdt_ptr: usize,
+    out: &mut [(usize, VirtioDevType)],
+) -> Result<usize, &'static str> {
+    if fdt_ptr == 0 {
+        return Err("discover: no device tree pointer");
+    }
+    let header = core::slice::from_raw_parts(fdt_ptr as *const u8, 32);
+    let totalsize = read_u32_be(header, 4).unwrap_or(4096) as usize;
+    let fdt = core::slice::from_raw_parts(fdt_ptr as *const u8, totalsize.max(32));
+    let mut dtb = Dtb::from_bytes(fdt)?;
+    let mut bases = [0usize; MAX_VIRTIO_DEVICES];
+    let base_count = dtb.find_virtio_mmio(&mut bases)?;
+    let mut count: usize = 0;
+    for i in 0..base_count.min(out.len()) {
+        let base = bases[i];
+        let dev_type = probe_virtio_type(base);
+        out[count] = (base, dev_type);
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Probe a virtio-mmio device's type by reading its magic/version/device-id.
+unsafe fn probe_virtio_type(base: usize) -> VirtioDevType {
+    let magic = mmio_read_at(base, VIRTIO_MMIO_MAGIC_VALUE);
+    if magic != VIRTIO_CONFIG_MAGIC {
+        return VirtioDevType::Unknown;
+    }
+    let version = mmio_read_at(base, VIRTIO_MMIO_VERSION);
+    if version != VIRTIO_CONFIG_VERSION {
+        return VirtioDevType::Unknown;
+    }
+    match mmio_read_at(base, VIRTIO_MMIO_DEVICE_ID) {
+        VIRTIO_DEVICE_TYPE_BLOCK => VirtioDevType::Block,
+        VIRTIO_DEVICE_TYPE_NET => VirtioDevType::Net,
+        _ => VirtioDevType::Unknown,
+    }
+}
+
+// ============================================================================
 // VirtIO Block Device Support (Phase 3)
 // ============================================================================
 
-/// QEMU virt VirtIO block device MMIO base address
+/// QEMU virt VirtIO block device MMIO base address (discovered from DTB when available).
 const VIRTIO0_MMIO: usize = 0x1000_1000;
 
 // ---------------------------------------------------------------------------
@@ -2743,11 +3069,11 @@ struct VirtioVq {
 // ---------------------------------------------------------------------------
 
 unsafe fn mmio_read(offset: usize) -> u32 {
-    read_unaligned((VIRTIO0_MMIO + offset * 4) as *const u32)
+    mmio_read_at(unsafe { VIRTIO_BLOCK_MMIO }, offset)
 }
 
 unsafe fn mmio_write(offset: usize, value: u32) {
-    write_unaligned((VIRTIO0_MMIO + offset * 4) as *mut u32, value);
+    mmio_write_at(unsafe { VIRTIO_BLOCK_MMIO }, offset, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -2876,25 +3202,23 @@ unsafe fn virtio_blk_init() -> bool {
     // --- Declare ourselves as a driver ---
     mmio_write(VIRTIO_MMIO_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
 
-    // --- Feature negotiation ---
-    // Select host features page 0
+    // --- Feature negotiation (both pages). This driver requires virtio 1.0.
     mmio_write(VIRTIO_MMIO_HOST_FEATURES_SEL, 0);
-    let _host_features_lo = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
+    let host_features_lo = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
     mmio_write(VIRTIO_MMIO_HOST_FEATURES_SEL, 1);
-    let _host_features_hi = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
+    let host_features_hi = mmio_read(VIRTIO_MMIO_HOST_FEATURES);
+    let host_features: u64 = (host_features_hi as u64) << 32 | host_features_lo as u64;
 
-    // We accept VIRTIO_F_VERSION_1 from the device (bit 32, in page 1)
-    let mut guest_features: u32 = 0;
-    if _host_features_hi & 1 != 0 {
-        // VIRTIO_F_VERSION_1 is bit 32 = bit 0 of page 1
-        // We'll negotiate it by writing to page 0 of guest features (which maps to bits 0-31)
-        // Actually VIRTIO_F_VERSION_1 is bit 32, so we need to write to guest features page 1
-        // But for simplicity, we skip version 1 negotiation
+    if host_features & VIRTIO_F_VERSION_1 == 0 {
+        sbi_console_write(b"VirtIO block: host lacks VIRTIO_F_VERSION_1\n");
+        return false;
     }
+
+    let mut guest_features: u64 = VIRTIO_F_VERSION_1;
     mmio_write(VIRTIO_MMIO_GUEST_FEATURES_SEL, 0);
-    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, guest_features);
+    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, guest_features as u32);
     mmio_write(VIRTIO_MMIO_GUEST_FEATURES_SEL, 1);
-    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, 0); // high bits unused
+    mmio_write(VIRTIO_MMIO_GUEST_FEATURES, (guest_features >> 32) as u32);
 
     // --- Set page size ---
     mmio_write(VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
@@ -3100,8 +3424,10 @@ unsafe fn virtio_blk_write_sector(sector: u64, buf: &[u8]) -> bool {
 // VirtIO Network Device Driver (Phase 3)
 // ============================================================================
 
-/// QEMU virt VirtIO network device MMIO base address
-const VIRTIO_NET_MMIO: usize = 0x1000_2000;
+/// Compiled-in QEMU `virt` default MMIO base for the VirtIO network device.
+/// The runtime value comes from Device Tree discovery when a usable DTB is
+/// present (`VIRTIO_NET_MMIO` static); this constant is only the fallback.
+const VIRTIO_NET_MMIO_DEFAULT: usize = 0x1000_2000;
 
 // ---------------------------------------------------------------------------
 // VirtIO MMIO register offsets (as u32 indices, each register is 4 bytes)
@@ -3149,19 +3475,33 @@ const VIRTIO_NET_CONFIG_SPEED: usize = 0x0c;
 
 // ---------------------------------------------------------------------------
 // Fixed physical addresses for network virtqueues (no MMU)
+//
+// RX buffers occupy 0x2000_2300..0x2000_A300 (16 x 2 KiB); TX structures start
+// at 0x2000_A400 so they cannot overlap the RX DMA buffers.
 // ---------------------------------------------------------------------------
 const NET_RX_DESC_TABLE: u64 = 0x2000_2000;
 const NET_RX_AVAIL_RING: u64 = 0x2000_2100;
 const NET_RX_USED_RING: u64 = 0x2000_2200;
-const NET_RX_BUF_BASE: u64 = 0x2000_2300;   // RX buffers start here (512 bytes each)
-const NET_TX_DESC_TABLE: u64 = 0x2000_2400;
-const NET_TX_AVAIL_RING: u64 = 0x2000_2500;
-const NET_TX_USED_RING: u64 = 0x2000_2600;
-const NET_TX_BUF_BASE: u64 = 0x2000_2700;   // TX buffers start here (1518 bytes each)
+const NET_RX_BUF_BASE: u64 = 0x2000_2300;   // RX buffers start here (2 KiB each)
+const NET_TX_DESC_TABLE: u64 = 0x2000_A400;
+const NET_TX_AVAIL_RING: u64 = 0x2000_A500;
+const NET_TX_USED_RING: u64 = 0x2000_A600;
+const NET_TX_BUF_BASE: u64 = 0x2000_A700;   // TX buffers start here (2 KiB each)
 
 const NET_RX_BUF_SIZE: usize = 2048;
 const NET_TX_BUF_SIZE: usize = 2048;
 const NET_QUEUE_SIZE: usize = 16;
+
+// Length of the virtio_net_hdr the device prepends to every received frame;
+// the Ethernet frame follows it.
+const VIRTIO_NET_HDR_LEN: usize = 12;
+
+// VirtIO-net feature bits we care about.
+const VIRTIO_NET_F_MAC: u64 = 1 << 5;      // device has a valid MAC address
+const VIRTIO_NET_F_STATUS: u64 = 1 << 16;  // device config status field carries link status
+
+// Link status, refreshed by virtio_net_link_status_refresh.
+static mut NET_LINK_UP: bool = false;
 
 // Network virtqueue state (separate RX and TX queues)
 struct NetVirtQueue {
@@ -3177,11 +3517,11 @@ struct NetVirtQueue {
 // ---------------------------------------------------------------------------
 
 unsafe fn net_mmio_read(offset: usize) -> u32 {
-    read_unaligned((VIRTIO_NET_MMIO + offset * 4) as *const u32)
+    mmio_read_at(unsafe { VIRTIO_NET_MMIO }, offset)
 }
 
 unsafe fn net_mmio_write(offset: usize, value: u32) {
-    write_unaligned((VIRTIO_NET_MMIO + offset * 4) as *mut u32, value);
+    mmio_write_at(unsafe { VIRTIO_NET_MMIO }, offset, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -3297,17 +3637,27 @@ unsafe fn virtio_net_init() -> bool {
     // Driver
     net_mmio_write(VIRTIO_NET_MMIO_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
 
-    // Feature negotiation (page 0)
+    // Feature negotiation (both pages). This driver requires virtio 1.0.
     net_mmio_write(VIRTIO_NET_MMIO_HOST_FEATURES_SEL, 0);
-    let _host_features_lo = net_mmio_read(VIRTIO_NET_MMIO_HOST_FEATURES);
+    let host_features_lo = net_mmio_read(VIRTIO_NET_MMIO_HOST_FEATURES);
     net_mmio_write(VIRTIO_NET_MMIO_HOST_FEATURES_SEL, 1);
-    let _host_features_hi = net_mmio_read(VIRTIO_NET_MMIO_HOST_FEATURES);
+    let host_features_hi = net_mmio_read(VIRTIO_NET_MMIO_HOST_FEATURES);
+    let host_features: u64 = (host_features_hi as u64) << 32 | host_features_lo as u64;
 
-    let mut guest_features: u32 = 0;
+    if host_features & VIRTIO_F_VERSION_1 == 0 {
+        sbi_console_write(b"VirtIO net: host lacks VIRTIO_F_VERSION_1\n");
+        return false;
+    }
+
+    // Advertise VIRTIO_F_VERSION_1, plus VIRTIO_NET_F_MAC when the host offers it.
+    let mut guest_features: u64 = VIRTIO_F_VERSION_1;
+    if host_features & VIRTIO_NET_F_MAC != 0 {
+        guest_features |= VIRTIO_NET_F_MAC;
+    }
     net_mmio_write(VIRTIO_NET_MMIO_GUEST_FEATURES_SEL, 0);
-    net_mmio_write(VIRTIO_NET_MMIO_GUEST_FEATURES, guest_features);
+    net_mmio_write(VIRTIO_NET_MMIO_GUEST_FEATURES, guest_features as u32);
     net_mmio_write(VIRTIO_NET_MMIO_GUEST_FEATURES_SEL, 1);
-    net_mmio_write(VIRTIO_NET_MMIO_GUEST_FEATURES, 0);
+    net_mmio_write(VIRTIO_NET_MMIO_GUEST_FEATURES, (guest_features >> 32) as u32);
 
     net_mmio_write(VIRTIO_NET_MMIO_GUEST_PAGE_SIZE, 4096);
 
@@ -3338,6 +3688,14 @@ unsafe fn virtio_net_init() -> bool {
     }
 
     net_mmio_write(VIRTIO_NET_MMIO_DEVICE_STATUS, VIRTIO_STATUS_FEATURES_OK);
+
+    // Post RX buffers before the device goes live so frames can be received.
+    if !unsafe { net_rx_post_all() } {
+        sbi_console_write(b"VirtIO net: failed to post RX buffers\n");
+        return false;
+    }
+    sbi_console_write(b"VirtIO net: RX buffers posted\n");
+
     net_mmio_write(VIRTIO_NET_MMIO_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
 
     let status = net_mmio_read(VIRTIO_NET_MMIO_DEVICE_STATUS);
@@ -3370,13 +3728,65 @@ unsafe fn virtio_net_init() -> bool {
     }
     sbi_console_write(b"\n");
 
+    // Read link status from device config space (VIRTIO_NET_F_STATUS).
+    unsafe { virtio_net_link_status_refresh() };
+    sbi_console_write(if unsafe { NET_LINK_UP } {
+        b"VirtIO net: link up\n"
+    } else {
+        b"VirtIO net: link down\n"
+    });
+
     sbi_console_write(b"VirtIO net: Device driver OK\n");
     true
 }
 
+/// Post all RX descriptors (with the WRITE flag) to the RX avail ring so the
+/// device can fill them with received frames. Called during init and after
+/// every consumed RX buffer (see `virtio_net_recv`).
+unsafe fn net_rx_post_all() -> bool {
+    let rx_queue = match unsafe { NET_RX_QUEUE.as_mut() } {
+        Some(q) => q,
+        None => return false,
+    };
+
+    let desc = rx_queue.desc_table;
+    for i in 0..NET_QUEUE_SIZE {
+        let d = desc.add(i);
+        d.write(VirtioDesc {
+            addr: NET_RX_BUF_BASE + (i * NET_RX_BUF_SIZE) as u64,
+            len: NET_RX_BUF_SIZE as u32,
+            flags: VIRTQ_DESC_F_WRITE,
+            next: 0xFFFF,
+        });
+    }
+
+    let avail = rx_queue.avail;
+    let mut idx = (*avail).idx as usize;
+    for i in 0..NET_QUEUE_SIZE {
+        (*avail).ring[idx % NET_QUEUE_SIZE] = i as u16;
+        idx += 1;
+    }
+    (*avail).idx = idx as u16;
+    rx_queue.avail_idx = (*avail).idx;
+    true
+}
+
+/// Refresh `NET_LINK_UP` from the device config status field (bit 1 = link up).
+unsafe fn virtio_net_link_status_refresh() {
+    let word = net_mmio_read(0x100 / 4 + (VIRTIO_NET_CONFIG_STATUS / 4));
+    let status_byte = ((word >> ((VIRTIO_NET_CONFIG_STATUS % 4) * 8)) & 0xFF) as u8;
+    unsafe { NET_LINK_UP = status_byte & 0x02 != 0; }
+}
+
+/// Link status of the network device, last refreshed at init time.
+fn net_link_up() -> bool {
+    unsafe { NET_LINK_UP }
+}
+
 /// Send a packet via the VirtIO network device (TX queue 1).
-/// Sets up a single descriptor pointing to the packet data buffer and notifies
-/// the device via the queue notify register.
+/// Owns descriptor 0 for the transfer, notifies the device, then polls the
+/// used ring until the transmission completes and the descriptor is reclaimed.
+/// Returns true on completion, false on timeout or device error.
 unsafe fn virtio_net_send(buf: &[u8]) -> bool {
     let tx_queue = match unsafe { NET_TX_QUEUE.as_mut() } {
         Some(q) => q,
@@ -3388,38 +3798,62 @@ unsafe fn virtio_net_send(buf: &[u8]) -> bool {
         return false;
     }
 
-    // Copy packet data into the transmit buffer
+    // Reclaim any previously completed transmission before reusing descriptor 0.
+    let used = tx_queue.used;
+    while (tx_queue.used_idx as usize) < (*used).idx as usize {
+        tx_queue.used_idx += 1;
+    }
+
+    // Copy packet data into the transmit buffer.
     let tx_buf_base = NET_TX_BUF_BASE as *mut u8;
     for i in 0..buf.len() {
         write_unaligned(tx_buf_base.add(i), buf[i]);
     }
 
-    // Set up descriptor 0 pointing to the TX buffer
+    // Descriptor 0: the device reads from this buffer (not WRITE).
     let desc_base = tx_queue.desc_table;
     let d0 = desc_base.add(0);
     d0.write(VirtioDesc {
         addr: NET_TX_BUF_BASE,
         len: buf.len() as u32,
-        flags: 0, // device reads from this buffer
+        flags: 0,
         next: 0xFFFF,
     });
 
-    // Add descriptor 0 to available ring
-    let avail_base = tx_queue.avail;
-    let avail_idx = (*avail_base).idx as usize;
-    (*avail_base).ring[avail_idx] = 0;
-    (*avail_base).idx = (avail_idx + 1) as u16;
-    tx_queue.avail_idx = (*avail_base).idx;
+    // Publish descriptor 0 on the avail ring and notify the device.
+    let avail = tx_queue.avail;
+    let slot = (*avail).idx as usize % NET_QUEUE_SIZE;
+    (*avail).ring[slot] = 0;
+    (*avail).idx = ((*avail).idx + 1) as u16;
+    tx_queue.avail_idx = (*avail).idx;
 
-    // Notify device
     net_mmio_write(VIRTIO_NET_MMIO_QUEUE_NOTIFY, VIRTIO_NET_S_TX as u32);
 
-    true
+    // Poll the used ring until the device completes this transmission.
+    let mut polls: usize = 0;
+    while polls < 1_000_000 {
+        polls += 1;
+        if (*used).idx as usize > tx_queue.used_idx as usize {
+            let entry = (*used).ring[tx_queue.used_idx as usize % NET_QUEUE_SIZE];
+            tx_queue.used_idx += 1;
+            if entry.id == 0 {
+                return true;
+            }
+            sbi_console_write(b"VirtIO net send: unexpected completion\n");
+            return false;
+        }
+    }
+
+    sbi_console_write(b"VirtIO net send: Timeout\n");
+    false
 }
 
 /// Receive a packet from the VirtIO network device (RX queue 0).
-/// Polls the used ring for a completed RX descriptor, copies the received
-/// packet data into the provided buffer, and returns the byte count.
+/// Drains the used ring for completed RX descriptors, strips the 12-byte
+/// virtio_net_hdr the device prepends to each received frame, copies the
+/// Ethernet frame into the caller's buffer, and re-posts every consumed
+/// descriptor so the device always has RX buffers available.
+/// Returns the Ethernet frame byte count (0 if no frame is pending).
 unsafe fn virtio_net_recv(buf: &mut [u8]) -> usize {
     let rx_queue = match unsafe { NET_RX_QUEUE.as_mut() } {
         Some(q) => q,
@@ -3430,38 +3864,40 @@ unsafe fn virtio_net_recv(buf: &mut [u8]) -> usize {
         return 0;
     }
 
-    // Check used ring for completed RX descriptors
-    let used_base = rx_queue.used;
-    let used_idx = (*used_base).idx as usize;
+    let used = rx_queue.used;
+    let avail = rx_queue.avail;
+    let mut frame_len: usize = 0;
 
-    if used_idx == 0 {
-        return 0;
-    }
+    while (rx_queue.used_idx as usize) < (*used).idx as usize {
+        let entry = (*used).ring[rx_queue.used_idx as usize % NET_QUEUE_SIZE];
+        rx_queue.used_idx += 1;
 
-    // Find our completed descriptor (descriptor 0)
-    let mut found = false;
-    let mut pkt_len: usize = 0;
-    for i in 0..used_idx {
-        let entry = (*used_base).ring[i];
-        if entry.id == 0 {
-            pkt_len = entry.len as usize;
-            found = true;
-            break;
+        let desc_id = entry.id as usize;
+        let mut pkt_len = entry.len as usize;
+        if pkt_len >= VIRTIO_NET_HDR_LEN {
+            pkt_len -= VIRTIO_NET_HDR_LEN; // strip the virtio_net_hdr prefix
+        } else {
+            pkt_len = 0; // malformed buffer, skip
         }
+
+        let copy_len = pkt_len.min(buf.len());
+        if copy_len > 0 {
+            let rx_buf =
+                (NET_RX_BUF_BASE + (desc_id * NET_RX_BUF_SIZE) as u64) as *const u8;
+            for i in 0..copy_len {
+                buf[i] = read_unaligned(rx_buf.add(VIRTIO_NET_HDR_LEN + i));
+            }
+            frame_len = copy_len;
+        }
+
+        // Re-post the consumed descriptor so the device can reuse its buffer.
+        let slot = (*avail).idx as usize % NET_QUEUE_SIZE;
+        (*avail).ring[slot] = desc_id as u16;
+        (*avail).idx = ((*avail).idx + 1) as u16;
+        rx_queue.avail_idx = (*avail).idx;
     }
 
-    if !found {
-        return 0;
-    }
-
-    // Copy received data from RX buffer to caller's buffer
-    let rx_buf_base = NET_RX_BUF_BASE as *const u8;
-    let copy_len = pkt_len.min(buf.len());
-    for i in 0..copy_len {
-        buf[i] = read_unaligned(rx_buf_base.add(i));
-    }
-
-    copy_len
+    frame_len
 }
 
 /// Network initialization wrapper
