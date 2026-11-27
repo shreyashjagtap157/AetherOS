@@ -33,7 +33,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 80] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 90] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -56,6 +56,9 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 80] {
         ("CTS-EXEC-DOM-1", exec_domain_isolation()),
         ("CTS-EXEC-DOM-2", exec_domain_hierarchy_dag()),
         ("CTS-EXEC-DOM-3", exec_domain_lifecycle_and_destroy_rules()),
+        ("CTS-EXEC-DOM-4", exec_domain_cycle_detection()),
+        ("CTS-EXEC-DOM-5", exec_domain_orphan_children()),
+        ("CTS-EXEC-DOM-6", exec_domain_isolation_violation()),
         ("CTS-EXEC-AS-1", exec_address_space_isolation()),
         (
             "CTS-EXEC-AS-2",
@@ -101,6 +104,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 80] {
             "CTS-SCHED-QUANTUM-001",
             quantum_expiry_requeues_with_new_deadline(),
         ),
+        ("CTS-SCHED-1", sched_edf_deadline_ordering()),
+        ("CTS-SCHED-2", sched_admission_bound_u_equals_one()),
+        ("CTS-SCHED-3", sched_quantum_expiry_preempts_and_requeues()),
+        ("CTS-SCHED-4", sched_deadline_miss_detected()),
+        ("CTS-SCHED-5", sched_block_unblock_transitions()),
+        ("CTS-SCHED-6", sched_exit_frees_admission_capacity()),
         (
             "CTS-COMP-RESOLVE-001",
             composition_resolution_matches_rfc_0004(),
@@ -190,6 +199,7 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 80] {
         ("CTS-TIME-3", time_deadline_miss_detection()),
         ("CTS-TIME-4", time_monotonicity_enforcement()),
         ("CTS-TIME-5", time_scheduling_suspend_resume()),
+        ("CTS-EXEC-CONF-1", exec_conformance_core_tests_passed()),
     ]
 }
 
@@ -209,6 +219,61 @@ fn main() {
     if failed != 0 {
         std::process::exit(1);
     }
+}
+
+/// CTS-EXEC-CONF-1 (RFC-0014.1): core execution conformance — every mandatory
+/// execution test from RFC-0007 through RFC-0012 passes.
+fn exec_conformance_core_tests_passed() -> Result<(), &'static str> {
+    // RFC-0007 domain tests (RFC-0014.1)
+    exec_domain_isolation()?;
+    exec_domain_hierarchy_dag()?;
+    exec_domain_lifecycle_and_destroy_rules()?;
+    exec_domain_cycle_detection()?;
+    exec_domain_orphan_children()?;
+    exec_domain_isolation_violation()?;
+    // RFC-0008 dispatch tests (RFC-0014.1)
+    exec_dispatch_capability_verification()?;
+    exec_dispatch_domain_compatibility()?;
+    exec_dispatch_latency_bound()?;
+    exec_dispatch_migration_emits_event()?;
+    exec_dispatch_migration_lock_hierarchy()?;
+    exec_dispatch_atomic_transition()?;
+    // RFC-0009 address-space tests (RFC-0014.1)
+    exec_address_space_isolation()?;
+    exec_address_space_map_requires_capability()?;
+    exec_address_space_rights_enforcement()?;
+    exec_address_space_atomic_mapping_updates()?;
+    exec_address_space_explicit_page_size()?;
+    exec_address_space_asid_lifecycle()?;
+    // RFC-0010 interrupt tests (RFC-0014.1)
+    exec_interrupt_domain_isolation()?;
+    exec_interrupt_bind_gating_and_direct_delivery()?;
+    exec_interrupt_queued_order_preserved()?;
+    exec_interrupt_unhandled_reported_spurious()?;
+    exec_interrupt_cross_domain_requires_capability()?;
+    exec_interrupt_priority_nesting_and_storm()?;
+    // RFC-0011 scheduler tests (RFC-0014.1)
+    sched_edf_deadline_ordering()?;
+    sched_admission_bound_u_equals_one()?;
+    sched_quantum_expiry_preempts_and_requeues()?;
+    sched_deadline_miss_detected()?;
+    sched_block_unblock_transitions()?;
+    sched_exit_frees_admission_capacity()?;
+    // RFC-0012 time tests (RFC-0014.1)
+    time_source_resolution_declaration()?;
+    time_timer_facility_completeness()?;
+    time_deadline_miss_detection()?;
+    time_monotonicity_enforcement()?;
+    time_scheduling_suspend_resume()?;
+    // RFC-0013 mediation tests (RFC-0014.1)
+    mediation_every_access_is_mediated()?;
+    mediation_three_part_check()?;
+    mediation_denied_on_any_check_failure()?;
+    mediation_rights_are_immutable()?;
+    mediation_domain_scope_enforced()?;
+    mediation_fault_isolation()?;
+    mediation_no_check_short_circuiting()?;
+    Ok(())
 }
 
 fn domain(value: u16) -> DomainId {
@@ -1074,6 +1139,86 @@ fn exec_domain_lifecycle_and_destroy_rules() -> Result<(), &'static str> {
 
     if manager.state(domain(1)) != Err(DomainError::UnknownDomain) {
         return Err("destroyed domain is still visible");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DOM-4 (RFC-0007.23): cycle detection — creating a domain that would
+/// introduce a cycle in the parent/child DAG is rejected.
+fn exec_domain_cycle_detection() -> Result<(), &'static str> {
+    let mut manager = DomainManager::new();
+    manager
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "root creation failed")?;
+    manager
+        .create_domain(domain(2), Some(domain(1)), NOW_NS)
+        .map_err(|_| "child creation failed")?;
+    // Making domain 1 a child of domain 2 would create a cycle: 1 -> 2 -> 1.
+    if manager
+        .create_domain(domain(1), Some(domain(2)), NOW_NS)
+        .is_ok()
+    {
+        return Err("cycle-creating domain creation was accepted");
+    }
+    // Duplicate creation is also rejected.
+    if manager.create_domain(domain(1), None, NOW_NS).is_ok() {
+        return Err("duplicate domain creation was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DOM-5 (RFC-0007.7): orphan children — orphaning a parent's children
+/// transfers their parent pointer, allowing the parent to be destroyed.
+fn exec_domain_orphan_children() -> Result<(), &'static str> {
+    let mut manager = DomainManager::new();
+    manager
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "root creation failed")?;
+    manager
+        .activate(domain(1), NOW_NS)
+        .map_err(|_| "root activation failed")?;
+    manager
+        .create_domain(domain(2), Some(domain(1)), NOW_NS)
+        .map_err(|_| "child creation failed")?;
+    manager
+        .activate(domain(2), NOW_NS)
+        .map_err(|_| "child activation failed")?;
+    // Parent cannot be destroyed while it has children.
+    if manager.destroy(domain(1), NOW_NS).is_ok() {
+        return Err("parent with children was destroyed");
+    }
+    // Orphan the child, then the parent can be destroyed.
+    let orphans = manager
+        .orphan_children(domain(1))
+        .map_err(|_| "orphaning failed")?;
+    if orphans != vec![domain(2)] {
+        return Err("orphaned children list mismatch");
+    }
+    manager
+        .destroy(domain(1), NOW_NS)
+        .map_err(|_| "parent destruction after orphan failed")?;
+    if manager.parent_of(domain(2)) != Ok(None) {
+        return Err("orphaned child still references destroyed parent");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-DOM-6 (RFC-0007.1/.8): isolation violation — cross-domain reference
+/// without explicit grant is an isolation violation.
+fn exec_domain_isolation_violation() -> Result<(), &'static str> {
+    let mut manager = DomainManager::new();
+    manager
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain 1 creation failed")?;
+    manager
+        .create_domain(domain(2), None, NOW_NS)
+        .map_err(|_| "domain 2 creation failed")?;
+    if manager.check_isolation(domain(1), domain(2), &[]).is_ok() {
+        return Err("cross-domain reference without grant was permitted");
+    }
+    // Same-domain access is always permitted.
+    if manager.check_isolation(domain(1), domain(1), &[]).is_err() {
+        return Err("same-domain reference was denied");
     }
     Ok(())
 }
@@ -2230,6 +2375,157 @@ fn quantum_expiry_requeues_with_new_deadline() -> Result<(), &'static str> {
     }
     if sched.deadline_misses() != 0 {
         return Err("deadline miss was charged inside an in-flight period");
+    }
+    Ok(())
+}
+
+/// CTS-SCHED-1 (RFC-0011.9): EDF selection picks the thread with the earliest
+/// deadline; tie-break is by thread id.
+fn sched_edf_deadline_ordering() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(1_000);
+    sched
+        .create_thread(ThreadId(3), 20, 2, 10)
+        .map_err(|_| "thread 3 admission failed")?;
+    sched
+        .create_thread(ThreadId(1), 10, 2, 10)
+        .map_err(|_| "thread 1 admission failed")?;
+    sched
+        .create_thread(ThreadId(2), 10, 2, 10)
+        .map_err(|_| "thread 2 admission failed")?;
+    // Threads 1 and 2 share deadline 10; tie-break by tid → 1 before 2.
+    // Thread 3 has deadline 20, selected last.
+    let first = sched
+        .dispatch_next()
+        .map_err(|_| "dispatch failed")?
+        .ok_or("no thread dispatched")?;
+    if first != ThreadId(1) {
+        return Err("earliest-deadline thread was not selected first");
+    }
+    sched.yield_now().map_err(|_| "yield failed")?;
+    sched.requeue_yielded().map_err(|_| "requeue failed")?;
+    let second = sched
+        .dispatch_next()
+        .map_err(|_| "dispatch failed")?
+        .ok_or("no thread dispatched")?;
+    if second != ThreadId(2) {
+        return Err("tie-broken thread was not selected second");
+    }
+    Ok(())
+}
+
+/// CTS-SCHED-2 (RFC-0011.7): admission bound U = 1 — a thread set with exact
+/// utilization 1 is admitted; any additional demand is rejected.
+fn sched_admission_bound_u_equals_one() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(1_000);
+    sched
+        .create_thread(ThreadId(1), 2, 1, 10)
+        .map_err(|_| "first thread admission failed")?;
+    sched
+        .create_thread(ThreadId(2), 3, 1, 10)
+        .map_err(|_| "second thread admission failed")?;
+    sched
+        .create_thread(ThreadId(3), 6, 1, 10)
+        .map_err(|_| "third thread admission failed")?;
+    if sched.utilization() != Ok((1, 1)) {
+        return Err("exact utilization accounting mismatch at U = 1");
+    }
+    if sched.create_thread(ThreadId(4), 1_000_000, 1, 10)
+        != Err(aether_sched_model::SchedError::NotAdmissible)
+    {
+        return Err("over-utilization set was admitted");
+    }
+    Ok(())
+}
+
+/// CTS-SCHED-3 (RFC-0011.11/.12): quantum expiry transitions RUNNING -> PREEMPTED,
+/// re-queues to READY with deadline advanced by one period.
+fn sched_quantum_expiry_preempts_and_requeues() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(5);
+    sched
+        .create_thread(ThreadId(1), 100, 100, 10)
+        .map_err(|_| "thread admission failed")?;
+    if sched.dispatch_next() != Ok(Some(ThreadId(1))) {
+        return Err("admissible thread was not dispatched");
+    }
+    sched.advance(5).map_err(|_| "time advance failed")?;
+    if sched.state(ThreadId(1)) != Some(ThreadState::Ready) {
+        return Err("quantum expiry did not re-queue the running thread");
+    }
+    if sched.deadline(ThreadId(1)) != Some(200) {
+        return Err("quantum expiry did not advance the deadline by one period");
+    }
+    if sched.deadline_misses() != 0 {
+        return Err("deadline miss was charged inside an in-flight period");
+    }
+    Ok(())
+}
+
+/// CTS-SCHED-4 (RFC-0011.6/.7): a deadline miss is detected and counted once per
+/// period when the scheduling clock passes a thread's deadline.
+fn sched_deadline_miss_detected() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(1_000);
+    sched
+        .create_thread(ThreadId(1), 100, 100, 10)
+        .map_err(|_| "thread admission failed")?;
+    sched.dispatch_next().map_err(|_| "dispatch failed")?;
+    sched.block().map_err(|_| "block failed")?;
+    sched.advance(150).map_err(|_| "time advance failed")?;
+    if sched.deadline_misses() != 1 {
+        return Err("deadline miss was not detected");
+    }
+    sched.advance(10).map_err(|_| "time advance failed")?;
+    if sched.deadline_misses() != 1 {
+        return Err("deadline miss was counted more than once per period");
+    }
+    Ok(())
+}
+
+/// CTS-SCHED-5 (RFC-0011.4): block transitions RUNNING -> BLOCKED; unblock
+/// transitions BLOCKED -> READY; a blocked thread is not eligible for dispatch.
+fn sched_block_unblock_transitions() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(1_000);
+    sched
+        .create_thread(ThreadId(1), 100, 50, 10)
+        .map_err(|_| "thread 1 admission failed")?;
+    sched
+        .create_thread(ThreadId(2), 100, 50, 10)
+        .map_err(|_| "thread 2 admission failed")?;
+    if sched.dispatch_next() != Ok(Some(ThreadId(1))) {
+        return Err("thread 1 was not dispatched");
+    }
+    sched.block().map_err(|_| "block failed")?;
+    if sched.dispatch_next() != Ok(Some(ThreadId(2))) {
+        return Err("thread 2 was not dispatched after thread 1 blocked");
+    }
+    sched.block().map_err(|_| "block failed")?;
+    if sched.dispatch_next() != Ok(None) {
+        return Err("dispatch succeeded with no runnable threads");
+    }
+    sched.unblock(ThreadId(1)).map_err(|_| "unblock failed")?;
+    if sched.dispatch_next() != Ok(Some(ThreadId(1))) {
+        return Err("unblocked thread was not dispatched");
+    }
+    Ok(())
+}
+
+/// CTS-SCHED-6 (RFC-0011.7): exiting a thread frees its admission share, allowing
+/// another thread to be admitted.
+fn sched_exit_frees_admission_capacity() -> Result<(), &'static str> {
+    let mut sched = UniprocessorEdf::new(1_000);
+    sched
+        .create_thread(ThreadId(1), 3, 2, 10)
+        .map_err(|_| "thread 1 admission failed")?;
+    // 2/3 + 2/3 > 1: second thread not admissible.
+    if sched.create_thread(ThreadId(2), 3, 2, 10).is_ok() {
+        return Err("over-utilization set was admitted");
+    }
+    sched.exit(ThreadId(1)).map_err(|_| "exit failed")?;
+    // After exit, capacity is freed and thread 2 is admissible.
+    sched
+        .create_thread(ThreadId(2), 3, 2, 10)
+        .map_err(|_| "thread 2 admission after exit failed")?;
+    if sched.utilization() != Ok((2, 3)) {
+        return Err("utilization did not reflect freed admission share");
     }
     Ok(())
 }
