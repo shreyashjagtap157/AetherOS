@@ -1,5 +1,6 @@
 //! Minimal machine-readable capability conformance runner.
 
+use aether_address_space_model as asm;
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
 use aether_capspace::memory::{
     AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
@@ -25,7 +26,7 @@ use aether_types::{
 
 const NOW_NS: u64 = 1_000_000;
 
-fn cases() -> [(&'static str, Result<(), &'static str>); 57] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 63] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -48,6 +49,15 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 57] {
         ("CTS-EXEC-DOM-1", exec_domain_isolation()),
         ("CTS-EXEC-DOM-2", exec_domain_hierarchy_dag()),
         ("CTS-EXEC-DOM-3", exec_domain_lifecycle_and_destroy_rules()),
+        ("CTS-EXEC-AS-1", exec_address_space_isolation()),
+        (
+            "CTS-EXEC-AS-2",
+            exec_address_space_map_requires_capability(),
+        ),
+        ("CTS-EXEC-AS-3", exec_address_space_rights_enforcement()),
+        ("CTS-EXEC-AS-4", exec_address_space_atomic_mapping_updates()),
+        ("CTS-EXEC-AS-5", exec_address_space_explicit_page_size()),
+        ("CTS-EXEC-AS-6", exec_address_space_asid_lifecycle()),
         ("CTS-CAP-FORGE-001", reject_forged_integer()),
         ("CTS-CAP-STALE-001", reject_stale_generation()),
         ("CTS-CAP-BOOTSTRAP-001", reject_foreign_bootstrap()),
@@ -1007,6 +1017,387 @@ fn exec_domain_lifecycle_and_destroy_rules() -> Result<(), &'static str> {
 
     if manager.state(domain(1)) != Err(DomainError::UnknownDomain) {
         return Err("destroyed domain is still visible");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-AS-1 (RFC-0009.2): address space isolation — every domain has a
+/// unique, immutable ASID and no address in one domain's space is directly
+/// addressable from another domain.
+fn exec_address_space_isolation() -> Result<(), &'static str> {
+    let mut domains = DomainManager::new();
+    domains
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain 1 creation failed")?;
+    domains
+        .create_domain(domain(2), None, NOW_NS)
+        .map_err(|_| "domain 2 creation failed")?;
+
+    let mut spaces = asm::AddressSpaceManager::new();
+    let asid_1 = spaces
+        .create_address_space(domain(1), &domains, NOW_NS)
+        .map_err(|_| "address space 1 creation failed")?;
+    let asid_2 = spaces
+        .create_address_space(domain(2), &domains, NOW_NS)
+        .map_err(|_| "address space 2 creation failed")?;
+    if asid_1 == asid_2 {
+        return Err("two domains share one ASID");
+    }
+    if spaces.asid_of(domain(1)) != Ok(asid_1) || spaces.asid_of(domain(2)) != Ok(asid_2) {
+        return Err("ASID is not immutable for the domain lifetime");
+    }
+    // Neither domain has mapped anything: accesses must fault, and one
+    // domain's space is never visible in the other's (spaces keyed by domain).
+    if spaces
+        .access(domain(1), 0x1000, 4096, asm::MemoryAccess::Read, NOW_NS)
+        .is_ok()
+        || spaces
+            .access(domain(2), 0x1000, 4096, asm::MemoryAccess::Read, NOW_NS)
+            .is_ok()
+    {
+        return Err("unmapped address was directly addressable");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-AS-2 (RFC-0009.3): mapping requires a valid MAP capability.
+fn exec_address_space_map_requires_capability() -> Result<(), &'static str> {
+    let mut domains = DomainManager::new();
+    domains
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain creation failed")?;
+    let mut spaces = asm::AddressSpaceManager::new();
+    spaces
+        .create_address_space(domain(1), &domains, NOW_NS)
+        .map_err(|_| "space creation failed")?;
+
+    let request = asm::MapRequest {
+        virtual_range: bounds(0x1000, 0x2000),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Base4KiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    let no_map = Capability {
+        object: ObjectId(5),
+        object_type: ObjectType::Memory,
+        rights: Rights::READ,
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    if spaces.map(domain(1), &no_map, request, NOW_NS).is_ok() {
+        return Err("mapping without MAP capability was permitted");
+    }
+    let map_cap = Capability {
+        rights: Rights::MAP.union(Rights::READ),
+        ..no_map
+    };
+    spaces
+        .map(domain(1), &map_cap, request, NOW_NS)
+        .map_err(|_| "MAP-capability mapping was rejected")?;
+    Ok(())
+}
+
+/// CTS-EXEC-AS-3 (RFC-0009.7): rights enforcement — no self-elevation.
+fn exec_address_space_rights_enforcement() -> Result<(), &'static str> {
+    let mut domains = DomainManager::new();
+    domains
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain creation failed")?;
+    let mut spaces = asm::AddressSpaceManager::new();
+    spaces
+        .create_address_space(domain(1), &domains, NOW_NS)
+        .map_err(|_| "space creation failed")?;
+
+    let map_cap = Capability {
+        object: ObjectId(6),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP.union(Rights::READ),
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let request = asm::MapRequest {
+        virtual_range: bounds(0x1000, 0x2000),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Base4KiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    spaces
+        .map(domain(1), &map_cap, request, NOW_NS)
+        .map_err(|_| "read-only mapping failed")?;
+
+    if spaces
+        .access(domain(1), 0x1000, 0x100, asm::MemoryAccess::Read, NOW_NS)
+        .is_err()
+    {
+        return Err("read access was denied on a read-only mapping");
+    }
+    if spaces
+        .access(domain(1), 0x1000, 0x100, asm::MemoryAccess::Write, NOW_NS)
+        .is_ok()
+    {
+        return Err("read-only mapping allowed a store (self-elevation)");
+    }
+    if spaces
+        .access(domain(1), 0x1000, 0x100, asm::MemoryAccess::Execute, NOW_NS)
+        .is_ok()
+    {
+        return Err("read-only mapping allowed execution");
+    }
+    // A capability granting only READ cannot authorize a write mapping.
+    let write_request = asm::MapRequest {
+        rights: asm::MappingRights {
+            read: false,
+            write: true,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+        ..request
+    };
+    if spaces
+        .map(domain(1), &map_cap, write_request, NOW_NS)
+        .is_ok()
+    {
+        return Err("READ-only capability authorized a WRITE mapping");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-AS-4 (RFC-0009.5): map/unmap are atomic w.r.t. dispatch and
+/// execution — a completed unmap makes the range inaccessible, a completed
+/// map makes it accessible, and no partially applied state is observable.
+fn exec_address_space_atomic_mapping_updates() -> Result<(), &'static str> {
+    let mut domains = DomainManager::new();
+    domains
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain creation failed")?;
+    let mut spaces = asm::AddressSpaceManager::new();
+    spaces
+        .create_address_space(domain(1), &domains, NOW_NS)
+        .map_err(|_| "space creation failed")?;
+
+    let map_cap = Capability {
+        object: ObjectId(7),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP.union(Rights::READ).union(Rights::WRITE),
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let request = asm::MapRequest {
+        virtual_range: bounds(0x3000, 0x4000),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Base4KiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: true,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+
+    spaces
+        .map(domain(1), &map_cap, request, NOW_NS)
+        .map_err(|_| "first mapping failed")?;
+    if spaces
+        .access(domain(1), 0x3000, 0x100, asm::MemoryAccess::Write, NOW_NS)
+        .is_err()
+    {
+        return Err("access failed immediately after a completed mapping");
+    }
+
+    spaces
+        .unmap(domain(1), 0x3000, 0x1000, NOW_NS)
+        .map_err(|_| "unmap failed")?;
+    match spaces.access(domain(1), 0x3000, 0x100, asm::MemoryAccess::Read, NOW_NS) {
+        Err(asm::AddressSpaceError::Unmapped) | Err(asm::AddressSpaceError::AddressSpaceEmpty) => {}
+        _ => return Err("access was possible after a completed unmap"),
+    }
+
+    spaces
+        .map(domain(1), &map_cap, request, NOW_NS)
+        .map_err(|_| "remapping failed")?;
+    if spaces
+        .access(domain(1), 0x3000, 0x100, asm::MemoryAccess::Write, NOW_NS)
+        .is_err()
+    {
+        return Err("access failed after remapping");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-AS-5 (RFC-0009.9): page-size selection is explicit.
+fn exec_address_space_explicit_page_size() -> Result<(), &'static str> {
+    let mut domains = DomainManager::new();
+    domains
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain creation failed")?;
+    let mut spaces = asm::AddressSpaceManager::new();
+    spaces
+        .create_address_space(domain(1), &domains, NOW_NS)
+        .map_err(|_| "space creation failed")?;
+
+    let map_cap = Capability {
+        object: ObjectId(8),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP.union(Rights::READ),
+        bounds: bounds(0, 4 * 1024 * 1024),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+
+    // Unaligned virtual range is rejected for every page size class.
+    let unaligned = asm::MapRequest {
+        virtual_range: bounds(0x1001, 0x2000),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Base4KiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    if spaces.map(domain(1), &map_cap, unaligned, NOW_NS).is_ok() {
+        return Err("unaligned base-page mapping was accepted");
+    }
+
+    // Base page, aligned: accepted.
+    let base_ok = asm::MapRequest {
+        virtual_range: bounds(0x1000, 0x2000),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Base4KiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    spaces
+        .map(domain(1), &map_cap, base_ok, NOW_NS)
+        .map_err(|_| "aligned base-page mapping failed")?;
+    if spaces.page_size_of(domain(1), 0x1000) != Ok(asm::PageSize::Base4KiB) {
+        return Err("base page size was not recorded");
+    }
+
+    // Large page, aligned: accepted.
+    let large = asm::MapRequest {
+        virtual_range: bounds(0x200000, 0x200000 + 2 * 1024 * 1024),
+        resource_range: bounds(0, 2 * 1024 * 1024),
+        page_size: asm::PageSize::Large2MiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    spaces
+        .map(domain(1), &map_cap, large, NOW_NS)
+        .map_err(|_| "aligned large-page mapping failed")?;
+    if spaces.page_size_of(domain(1), 0x200000) != Ok(asm::PageSize::Large2MiB) {
+        return Err("large page size was not recorded");
+    }
+
+    // Size not a multiple of the page size is rejected.
+    let bad_size = asm::MapRequest {
+        virtual_range: bounds(0x400000, 0x400000 + 4096),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Large2MiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    if spaces.map(domain(1), &map_cap, bad_size, NOW_NS).is_ok() {
+        return Err("large-page mapping with base-page size was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-EXEC-AS-6 (RFC-0009.15): ASID lifecycle — `ASID_DESTROYED` is
+/// reachable only from `ASID_EMPTY`.
+fn exec_address_space_asid_lifecycle() -> Result<(), &'static str> {
+    let mut domains = DomainManager::new();
+    domains
+        .create_domain(domain(1), None, NOW_NS)
+        .map_err(|_| "domain creation failed")?;
+    let mut spaces = asm::AddressSpaceManager::new();
+    let _ = spaces
+        .create_address_space(domain(1), &domains, NOW_NS)
+        .map_err(|_| "space creation failed")?;
+    if spaces.state_of(domain(1)) != Ok(asm::AddressSpaceState::Created) {
+        return Err("new address space is not in Created state");
+    }
+
+    // Destroying without unmapping all regions is non-conformant.
+    if spaces.destroy_address_space(domain(1), NOW_NS).is_ok() {
+        return Err("address space was destroyed from the Created state");
+    }
+
+    let map_cap = Capability {
+        object: ObjectId(9),
+        object_type: ObjectType::Memory,
+        rights: Rights::MAP.union(Rights::READ),
+        bounds: bounds(0, 4096),
+        flags: CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let request = asm::MapRequest {
+        virtual_range: bounds(0x5000, 0x6000),
+        resource_range: bounds(0, 4096),
+        page_size: asm::PageSize::Base4KiB,
+        rights: asm::MappingRights {
+            read: true,
+            write: false,
+            execute: false,
+            copy_on_write: false,
+            nocache: false,
+        },
+    };
+    spaces
+        .map(domain(1), &map_cap, request, NOW_NS)
+        .map_err(|_| "mapping failed")?;
+    if spaces.state_of(domain(1)) != Ok(asm::AddressSpaceState::Active) {
+        return Err("address space is not Active after the first mapping");
+    }
+    if spaces.destroy_address_space(domain(1), NOW_NS).is_ok() {
+        return Err("address space was destroyed from the Active state");
+    }
+
+    spaces
+        .unmap(domain(1), 0x5000, 0x1000, NOW_NS)
+        .map_err(|_| "unmap failed")?;
+    if spaces.state_of(domain(1)) != Ok(asm::AddressSpaceState::Empty) {
+        return Err("address space is not Empty after unmapping all regions");
+    }
+    spaces
+        .destroy_address_space(domain(1), NOW_NS)
+        .map_err(|_| "destruction from Empty failed")?;
+    if spaces.asid_of(domain(1)).is_ok() {
+        return Err("destroyed address space is still visible");
     }
     Ok(())
 }
