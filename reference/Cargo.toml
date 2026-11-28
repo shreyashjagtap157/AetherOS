@@ -19,6 +19,7 @@ members = [
     "crates/aether-integrity-model",
     "crates/aether-lifecycle-model",
     "crates/aether-storage-model",
+    "crates/aether-storage-provider",
     "crates/aether-trace-model",
     "crates/aether-transaction-model",
     "crates/aether-replay-model",

@@ -1,0 +1,16 @@
+[package]
+name = "aether-storage-provider"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aether-types = { path = "../aether-types" }
+aether-event-model = { path = "../aether-event-model" }
+aether-transaction-model = { path = "../aether-transaction-model" }
+aether-integrity-model = { path = "../aether-integrity-model" }
+aether-object-identity = { path = "../aether-object-identity" }
+
+[lints]
+workspace = true

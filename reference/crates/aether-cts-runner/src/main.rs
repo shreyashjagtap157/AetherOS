@@ -49,6 +49,9 @@ use aether_sched_model::{ThreadId, ThreadState, TransitionReason, UniprocessorEd
 use aether_state_model::{
     EffectClass, EffectIntent, EffectStatus, Mutation, OperationId, StateEngine, VersionId,
 };
+use aether_storage_provider::{
+    InMemoryProvider, LatencyBounds, ProviderType, StorageProvider, Tier as StorageTier,
+};
 use aether_time_model::{TimeError, TimeEvent, TimeModel, TimeSourceId, TimerMode};
 use aether_trace_model::{ROOT_SPAN_ID, SpanClass, SpanOutcome, TraceEmitter, TraceSamplingPolicy};
 use aether_transaction_model::{TransactionCoordinator, TransactionId};
@@ -59,7 +62,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 140] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 145] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -288,6 +291,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 140] {
             "CTS-STATE-TXN-6",
             cts_txn_crash_recovery_aborts_in_progress(),
         ),
+        ("CTS-STATE-PROV-1", cts_prov_mandatory_operations()),
+        ("CTS-STATE-PROV-2", cts_prov_tier_assignment()),
+        ("CTS-STATE-PROV-3", cts_prov_removability_test()),
+        ("CTS-STATE-PROV-4", cts_prov_two_phase_commit()),
+        ("CTS-STATE-PROV-5", cts_prov_health_events()),
     ]
 }
 
@@ -6010,6 +6018,265 @@ fn cts_txn_crash_recovery_aborts_in_progress() -> Result<(), &'static str> {
     }
     if coord.read_committed(&ObjectId(0x500)) != Some(&b"durable".to_vec()) {
         return Err("committed transaction downgraded by recovery");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-PROV-1 (RFC-0019.2): mandatory operations — put, get, delete,
+/// list, get_metadata all work end to end.
+fn cts_prov_mandatory_operations() -> Result<(), &'static str> {
+    let mut prov = InMemoryProvider::new(
+        "cts-prov-1",
+        ProviderType::Block,
+        1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let id = aether_types::ObjectId(0x4242);
+    let content = b"hello storage";
+
+    prov.put(id, content, StorageTier::Hot)
+        .map_err(|_| "put failed")?;
+    if prov.get(id).as_deref() != Ok(content) {
+        return Err("get did not return put content");
+    }
+    let meta = prov.get_metadata(id).map_err(|_| "get_metadata failed")?;
+    if meta.object_id != id
+        || meta.size_bytes != content.len() as u64
+        || meta.tier != StorageTier::Hot
+    {
+        return Err("get_metadata mismatch");
+    }
+    let listed = prov
+        .list(aether_types::ObjectId(0), 10)
+        .map_err(|_| "list failed")?;
+    if !listed.contains(&id) {
+        return Err("list did not include the object");
+    }
+    prov.delete(id).map_err(|_| "delete failed")?;
+    if prov.get(id).is_ok() {
+        return Err("get after delete should fail");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-PROV-2 (RFC-0019.5): tier assignment per object.
+fn cts_prov_tier_assignment() -> Result<(), &'static str> {
+    let mut prov = InMemoryProvider::new(
+        "cts-prov-2",
+        ProviderType::ByteAddressable,
+        4096,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    for (id, tier) in [
+        (aether_types::ObjectId(1), StorageTier::Hot),
+        (aether_types::ObjectId(2), StorageTier::Warm),
+        (aether_types::ObjectId(3), StorageTier::Cold),
+        (aether_types::ObjectId(4), StorageTier::Archive),
+    ] {
+        prov.put(id, b"data", tier).map_err(|_| "put failed")?;
+        let meta = prov.get_metadata(id).map_err(|_| "get_metadata failed")?;
+        if meta.tier != tier {
+            return Err("tier assignment mismatch");
+        }
+    }
+    Ok(())
+}
+
+/// CTS-STATE-PROV-3 (RFC-0019.7): removability test — removing a provider
+/// from the registry does not break the remaining providers.
+fn cts_prov_removability_test() -> Result<(), &'static str> {
+    let mut registry = aether_storage_provider::StorageRegistry::new();
+    let primary: Box<dyn StorageProvider> = Box::new(InMemoryProvider::new(
+        "primary",
+        ProviderType::Block,
+        1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    ));
+    registry.register(primary).map_err(|_| "register failed")?;
+
+    let mut secondary = InMemoryProvider::new(
+        "secondary",
+        ProviderType::Network,
+        2048,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    secondary
+        .put(
+            aether_types::ObjectId(0x7777),
+            b"secondary data",
+            StorageTier::Warm,
+        )
+        .map_err(|_| "secondary put failed")?;
+    registry
+        .register(Box::new(secondary))
+        .map_err(|_| "register secondary failed")?;
+
+    if registry.provider_count() != 2 {
+        return Err("expected two registered providers");
+    }
+    let removed = registry.remove("primary").map_err(|_| "remove failed")?;
+    if removed.name() != "primary" {
+        return Err("removed wrong provider");
+    }
+    if registry.provider_count() != 1 {
+        return Err("expected one provider after removal");
+    }
+    let remaining = registry.get("secondary").ok_or("secondary missing")?;
+    if remaining.get(aether_types::ObjectId(0x7777)).as_deref() != Ok(b"secondary data") {
+        return Err("secondary provider broken after removal");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-PROV-4 (RFC-0019.9, RFC-0016): two-phase commit participation
+/// — staged mutations are applied on commit and discarded on abort.
+fn cts_prov_two_phase_commit() -> Result<(), &'static str> {
+    let mut prov = InMemoryProvider::new(
+        "cts-prov-4",
+        ProviderType::Block,
+        4096,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    )
+    .with_transactional_participant(true);
+
+    // Commit path: stage and commit a put, then apply staged mutations.
+    let staged_commit = {
+        let txn = prov
+            .txn_participant_mut()
+            .ok_or("no transactional participant")?;
+        let xid = aether_transaction_model::TransactionId::from_bytes([1u8; 16]);
+        txn.begin_transaction(xid, 1_000_000)
+            .map_err(|_| "begin failed")?;
+        if !txn.in_transaction() {
+            return Err("not in transaction after begin");
+        }
+        txn.stage_put(
+            aether_types::ObjectId(0x100),
+            b"txn data".to_vec(),
+            StorageTier::Hot,
+        )
+        .map_err(|_| "stage_put failed")?;
+        txn.commit_transaction(2_000_000)
+            .map_err(|_| "commit failed")?;
+        // commit_transaction does not clear current_xid; mark_committed does
+        // that after staged mutations are applied. Collect staged data now.
+        txn.staged_mutations()
+            .iter()
+            .map(|(id, content)| {
+                let tier = *txn.staged_tiers().get(id).unwrap_or(&StorageTier::Hot);
+                (*id, content.clone(), tier)
+            })
+            .collect::<Vec<_>>()
+    };
+    // txn borrow ended; prov is free to mutate again.
+    for (object_id, content, tier) in staged_commit {
+        if content.is_empty() {
+            prov.delete(object_id).map_err(|_| "delete failed")?;
+        } else {
+            prov.put(object_id, &content, tier)
+                .map_err(|_| "put failed")?;
+        }
+    }
+    {
+        let txn = prov
+            .txn_participant_mut()
+            .ok_or("no transactional participant")?;
+        txn.mark_committed();
+    }
+    if prov
+        .txn_participant_mut()
+        .ok_or("no transactional participant")?
+        .in_transaction()
+    {
+        return Err("still in transaction after commit");
+    }
+    if prov.get(aether_types::ObjectId(0x100)).as_deref() != Ok(b"txn data") {
+        return Err("committed data not visible");
+    }
+
+    // Abort path: staged mutations are discarded.
+    let staged_abort_len = {
+        let txn = prov
+            .txn_participant_mut()
+            .ok_or("no transactional participant")?;
+        let xid2 = aether_transaction_model::TransactionId::from_bytes([2u8; 16]);
+        txn.begin_transaction(xid2, 1_500_000)
+            .map_err(|_| "begin 2 failed")?;
+        txn.stage_put(
+            aether_types::ObjectId(0x200),
+            b"should not apply".to_vec(),
+            StorageTier::Cold,
+        )
+        .map_err(|_| "stage_put 2 failed")?;
+        txn.abort_transaction().map_err(|_| "abort failed")?;
+        if txn.in_transaction() {
+            return Err("still in transaction after abort");
+        }
+        txn.staged_mutations().len()
+    };
+    if staged_abort_len != 0 {
+        return Err("staged mutations not cleared after abort");
+    }
+    if prov.get(aether_types::ObjectId(0x200)).is_ok() {
+        return Err("aborted data should not be visible");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-PROV-5 (RFC-0019.11, RFC-0031.44): health event emission on
+/// low capacity and offline transition.
+fn cts_prov_health_events() -> Result<(), &'static str> {
+    let mut prov = InMemoryProvider::new(
+        "cts-prov-5",
+        ProviderType::Block,
+        100,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    prov.set_offline(true);
+    if prov.health_event_count() == 0 {
+        return Err("no health event emitted on offline");
+    }
+    let event = prov.health_events().last().ok_or("no health event")?;
+    if event.event_class != aether_event_model::EventClass::Storage.id() {
+        return Err("health event not in Storage class");
+    }
+    if prov.get(aether_types::ObjectId(1)).is_ok() {
+        return Err("get succeeded while offline");
+    }
+
+    // Low capacity health event.
+    let mut small = InMemoryProvider::new(
+        "small",
+        ProviderType::Block,
+        100,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    small
+        .put(aether_types::ObjectId(1), &vec![0u8; 50], StorageTier::Hot)
+        .map_err(|_| "put failed")?;
+    small
+        .put(aether_types::ObjectId(2), &vec![0u8; 45], StorageTier::Hot)
+        .map_err(|_| "put failed")?;
+    if small.capacity_remaining_fraction() >= 0.10 {
+        return Err("capacity not below 10%");
+    }
+    let _ = small.get(aether_types::ObjectId(1));
+    if small.health_event_count() == 0 {
+        return Err("no low-capacity health event");
     }
     Ok(())
 }
