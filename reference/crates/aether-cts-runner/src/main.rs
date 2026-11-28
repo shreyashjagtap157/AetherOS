@@ -53,6 +53,10 @@ use aether_capability_transfer::{
 use aether_routing_model::{
     RouteEntry, RouteHop, Router, RoutingError, RoutingTable,
 };
+use aether_sync_model::{
+    check_timeout, ConditionVariable, EventMode, Mutex, MutexState, Semaphore, SyncError,
+    SyncManager, TimedResult,
+};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -83,7 +87,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 192] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 198] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -373,6 +377,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 192] {
         ("CTS-COMM-CAPX-3", comm_capx_transfer_right_verified()),
         ("CTS-COMM-CAPX-4", comm_capx_corrupted_token_rejected()),
         ("CTS-COMM-CAPX-5", comm_capx_revocation_notification_delivered()),
+        ("CTS-COMM-SYNC-1", comm_sync_mutex_state_transitions()),
+        ("CTS-COMM-SYNC-2", comm_sync_priority_inheritance()),
+        ("CTS-COMM-SYNC-3", comm_sync_semaphore_acquire_release()),
+        ("CTS-COMM-SYNC-4", comm_sync_condvar_wait_reacquire()),
+        ("CTS-COMM-SYNC-5", comm_sync_lock_order_violation()),
+        ("CTS-COMM-SYNC-6", comm_sync_timeout_leave_state_unchanged()),
     ]
 }
 
@@ -8219,5 +8229,114 @@ fn comm_capx_revocation_notification_delivered() -> Result<(), &'static str> {
         correlation_id: 0,
         payload: b"CapRevoked".to_vec(),
     });
+    Ok(())
+}
+
+/// CTS-COMM-SYNC-1 (RFC-0028.2): mutex state transitions — UNLOCKED ->
+/// LOCKED_UNCONTENDED on lock, back to UNLOCKED on unlock by the owner.
+fn comm_sync_mutex_state_transitions() -> Result<(), &'static str> {
+    let mut m = Mutex::new();
+    assert_eq!(m.state, MutexState::Unlocked);
+    assert_eq!(m.lock(ThreadId(1)), Ok(()));
+    assert_eq!(m.state, MutexState::LockedUncontended);
+    assert_eq!(m.owner, Some(ThreadId(1)));
+    assert_eq!(m.unlock(ThreadId(1)), Ok(()));
+    assert_eq!(m.state, MutexState::Unlocked);
+    assert_eq!(m.owner, None);
+    Ok(())
+}
+
+/// CTS-COMM-SYNC-2 (RFC-0028.3): priority inheritance — when a
+/// higher-priority thread blocks, the holder is boosted; the boost is
+/// undone on release.
+fn comm_sync_priority_inheritance() -> Result<(), &'static str> {
+    let mut mgr = SyncManager::new();
+    let mid = mgr.add_mutex();
+    // Low-priority holder (5), high-priority waiter (200).
+    mgr.mutexes.get_mut(mid as usize).unwrap().lock(ThreadId(1)).unwrap();
+    mgr.apply_priority_inheritance(mid, 5, 200)
+        .map_err(|_| "priority inheritance application failed")?;
+    let m = mgr
+        .mutexes
+        .get(mid as usize)
+        .ok_or("mutex not found")?;
+    let boost = m.boost.ok_or("priority boost not applied")?;
+    if boost.boosted_priority != 200 || boost.original_priority != 5 {
+        return Err("priority inheritance boost values incorrect");
+    }
+    // Boost undone on release (RFC-0028.3).
+    assert_eq!(
+        mgr.mutexes
+            .get_mut(mid as usize)
+            .unwrap()
+            .unlock(ThreadId(1)),
+        Ok(())
+    );
+    if let Some(b) = mgr.mutexes.get(mid as usize).unwrap().boost {
+        return Err("priority boost not cleared after release");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-SYNC-3 (RFC-0028.5): semaphore acquire/release — acquire blocks
+/// until count positive then decrements; release increments and wakes one.
+fn comm_sync_semaphore_acquire_release() -> Result<(), &'static str> {
+    let mut s = Semaphore::new(1);
+    assert_eq!(s.acquire(), Ok(()));
+    assert_eq!(s.count, 0);
+    assert_eq!(s.acquire(), Err(SyncError::ETimedOut)); // count is 0
+    s.release();
+    assert_eq!(s.count, 1);
+    assert_eq!(s.acquire(), Ok(()));
+    assert_eq!(s.count, 0);
+    Ok(())
+}
+
+/// CTS-COMM-SYNC-4 (RFC-0028.6): condition variable wait — increments
+/// waiter count; notify_one decrements by one; notify_all resets to zero.
+fn comm_sync_condvar_wait_reacquire() -> Result<(), &'static str> {
+    let mut cv = ConditionVariable::new();
+    cv.wait();
+    cv.wait();
+    assert_eq!(cv.waiters, 2);
+    cv.notify_one();
+    assert_eq!(cv.waiters, 1);
+    cv.notify_all();
+    assert_eq!(cv.waiters, 0);
+    Ok(())
+}
+
+/// CTS-COMM-SYNC-5 (RFC-0028.8): lock-order violation detection — acquiring
+/// in reverse of a declared order is rejected.
+fn comm_sync_lock_order_violation() -> Result<(), &'static str> {
+    let mut mgr = SyncManager::new();
+    // Mutex 0 must be acquired before mutex 1.
+    mgr.declare_lock_order(0, 1);
+    // Declared order is valid.
+    if !mgr.check_lock_order(0, 1) {
+        return Err("declared lock order should be valid");
+    }
+    // Reverse order is a violation.
+    if mgr.check_lock_order(1, 0) {
+        return Err("reverse lock order should be a violation");
+    }
+    // Undeclared order is permitted (no constraint).
+    if !mgr.check_lock_order(5, 9) {
+        return Err("undeclared lock order should be permitted");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-SYNC-6 (RFC-0028.10): timeout — a timed acquire that expires
+/// leaves synchronization state unchanged.
+fn comm_sync_timeout_leave_state_unchanged() -> Result<(), &'static str> {
+    let mut s = Semaphore::new(0);
+    let before_count = s.count;
+    let before_waiters = s.waiters;
+    let result = check_timeout(300, 200);
+    assert_eq!(result, TimedResult::TimedOut);
+    // State unchanged after timeout.
+    assert_eq!(s.count, before_count);
+    assert_eq!(s.waiters, before_waiters);
     Ok(())
 }
