@@ -24,6 +24,7 @@ aether-routing-model = { path = "../aether-routing-model" }
 aether-cap-token = { path = "../aether-cap-token" }
 aether-capability-transfer = { path = "../aether-capability-transfer" }
 aether-sync-model = { path = "../aether-sync-model" }
+aether-stream-model = { path = "../aether-stream-model" }
 aether-time-model = { path = "../aether-time-model" }
 aether-address-space-model = { path = "../aether-address-space-model" }
 aether-audit-log = { path = "../aether-audit-log" }

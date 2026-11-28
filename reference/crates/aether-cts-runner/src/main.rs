@@ -57,6 +57,9 @@ use aether_sync_model::{
     check_timeout, ConditionVariable, EventMode, Mutex, MutexState, Semaphore, SyncError,
     SyncManager, TimedResult,
 };
+use aether_stream_model::{
+    is_final_chunk, is_stream_chunk, stream_header, Stream, StreamError, StreamManager, StreamState,
+};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -87,7 +90,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 198] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 203] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -383,6 +386,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 198] {
         ("CTS-COMM-SYNC-4", comm_sync_condvar_wait_reacquire()),
         ("CTS-COMM-SYNC-5", comm_sync_lock_order_violation()),
         ("CTS-COMM-SYNC-6", comm_sync_timeout_leave_state_unchanged()),
+        ("CTS-COMM-STR-1", comm_str_stream_establishment()),
+        ("CTS-COMM-STR-2", comm_str_in_order_delivery()),
+        ("CTS-COMM-STR-3", comm_str_stream_completion()),
+        ("CTS-COMM-STR-4", comm_str_receive_window_flow_control()),
+        ("CTS-COMM-STR-5", comm_str_stream_cancellation()),
     ]
 }
 
@@ -8338,5 +8346,72 @@ fn comm_sync_timeout_leave_state_unchanged() -> Result<(), &'static str> {
     // State unchanged after timeout.
     assert_eq!(s.count, before_count);
     assert_eq!(s.waiters, before_waiters);
+    Ok(())
+}
+
+/// CTS-COMM-STR-1 (RFC-0029.1): stream establishment — a stream is established
+/// by a message with `MSG_STREAM` set and a non-zero `stream_id` in the
+/// trailer; the destination's reception constitutes acceptance.
+fn comm_str_stream_establishment() -> Result<(), &'static str> {
+    let mut mgr = StreamManager::new();
+    // First chunk establishes the stream.
+    mgr.establish(100, 1024, 4096);
+    let s = mgr.get(100).ok_or("stream not established")?;
+    assert_eq!(s.stream_id, 100);
+    assert_eq!(s.state, StreamState::Open);
+    assert_eq!(s.total_size, 1024);
+    assert_eq!(s.receive_window, 4096);
+    Ok(())
+}
+
+/// CTS-COMM-STR-2 (RFC-0029.3): in-order delivery — chunks are reassembled in
+/// the order sent; out-of-order chunks are rejected as StreamOutOfOrder.
+fn comm_str_in_order_delivery() -> Result<(), &'static str> {
+    let mut s = Stream::new(200, 0, u64::MAX);
+    assert_eq!(s.receive_chunk(0, 50), Ok(()));
+    assert_eq!(s.receive_chunk(1, 50), Ok(()));
+    assert_eq!(s.next_expected_index, 2);
+    // Out-of-order chunk is rejected.
+    assert_eq!(s.receive_chunk(3, 50), Err(StreamError::OutOfOrder));
+    // State is unchanged by the rejected chunk.
+    assert_eq!(s.next_expected_index, 2);
+    Ok(())
+}
+
+/// CTS-COMM-STR-3 (RFC-0029.4): stream completion — a message without the
+/// `MSG_STREAM` flag is the final chunk; the stream transitions to Closed.
+fn comm_str_stream_completion() -> Result<(), &'static str> {
+    let mut s = Stream::new(300, 0, u64::MAX);
+    assert_eq!(s.state, StreamState::Open);
+    s.complete();
+    assert_eq!(s.state, StreamState::Closed);
+    assert!(s.is_complete());
+    Ok(())
+}
+
+/// CTS-COMM-STR-4 (RFC-0029.5): receive window flow control — bytes buffered
+/// must not exceed the receive window; exceeding it signals backpressure.
+fn comm_str_receive_window_flow_control() -> Result<(), &'static str> {
+    let mut s = Stream::new(400, 0, 100);
+    assert!(s.within_window());
+    s.bytes_received = 101;
+    assert!(!s.within_window());
+    Ok(())
+}
+
+/// CTS-COMM-STR-5 (RFC-0029.7): stream cancellation — either endpoint may
+/// cancel, discarding all previously received chunks.
+fn comm_str_stream_cancellation() -> Result<(), &'static str> {
+    let mut mgr = StreamManager::new();
+    mgr.establish(500, 0, u64::MAX);
+    {
+        let s = mgr.get_mut(500).ok_or("stream not found")?;
+        s.receive_chunk(0, 10).unwrap();
+        assert_eq!(s.bytes_received, 10);
+    }
+    mgr.cancel(500).map_err(|_| "cancel failed")?;
+    let s = mgr.get(500).ok_or("stream not found")?;
+    assert_eq!(s.state, StreamState::Cancelled);
+    assert_eq!(s.bytes_received, 0);
     Ok(())
 }

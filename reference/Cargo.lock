@@ -87,6 +87,7 @@ dependencies = [
  "aether-state-model",
  "aether-storage-model",
  "aether-storage-provider",
+ "aether-stream-model",
  "aether-sync-model",
  "aether-time-model",
  "aether-trace-model",
@@ -272,6 +273,13 @@ dependencies = [
  "aether-object-identity",
  "aether-transaction-model",
  "aether-types",
+]
+
+[[package]]
+name = "aether-stream-model"
+version = "0.1.0"
+dependencies = [
+ "aether-message-format",
 ]
 
 [[package]]
