@@ -62,6 +62,9 @@ use aether_stream_model::{
     is_final_chunk, is_stream_chunk, stream_header, Stream, StreamError, StreamManager, StreamState,
 };
 use aether_cap_rights_algebra as cra;
+use aether_allocator_hierarchy::{
+    AllocRequest, Allocator, AllocError, NumaPolicy, PageSizeClass, Zone,
+};
 use aether_cap_transfer_protocol as ctp;
 use aether_cap_revocation_protocol as crp;
 use aether_verif_model::{
@@ -99,7 +102,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 236] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 245] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -433,6 +436,15 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 236] {
         ("CTS-CAP-REV-5", cap_rev_notification_recorded()),
         ("CTS-CAP-REV-6", cap_rev_status_query()),
         ("CTS-CAP-REV-7", cap_rev_within_bound()),
+        ("CTX-ALLOC-001", ctx_alloc_no_authority_no_capability()),
+        ("CTX-ALLOC-002", ctx_alloc_derivation_subset_rights()),
+        ("CTX-ALLOC-003", ctx_alloc_numa_node_constraint()),
+        ("CTX-ALLOC-004", ctx_alloc_fragmentation_event_and_lower_order_ok()),
+        ("CTX-ALLOC-005", ctx_alloc_region_ids_unique()),
+        ("CTX-ALLOC-006", ctx_alloc_revocation_cascades_to_derived()),
+        ("CTX-ALLOC-007", ctx_alloc_scheduler_hot_path_no_allocation()),
+        ("CTX-ALLOC-008", ctx_alloc_dma_rejected_without_dma_zone()),
+        ("CTX-ALLOC-009", ctx_alloc_dma_revoke_invalidates_iommu()),
     ]
 }
 
@@ -9462,5 +9474,443 @@ fn cap_rev_within_bound() -> Result<(), &'static str> {
     let bound_ns = 1_000_000_000;
     let proto = crp::RevocationProtocol::new(bound_ns);
     assert_eq!(proto.revocation_bound_ns(), bound_ns);
+    Ok(())
+}
+
+/// CTX-ALLOC-001 (RFC-ALLOC-001 §6): the allocator grants no capability without
+/// an explicit allocation request and a valid allocation-authority capability
+/// (I-2). An authority capability lacking `GRANT` is rejected.
+fn ctx_alloc_no_authority_no_capability() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+
+    // Authority capability without GRANT right -> denied.
+    let bad_cap = aether_types::Capability {
+        object: aether_types::ObjectId(0),
+        object_type: aether_types::ObjectType::Memory,
+        rights: aether_types::Rights::READ,
+        bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let req = AllocRequest {
+        authority_cap: bad_cap,
+        size_bytes: 4096,
+        page_size_class: PageSizeClass::Base4KiB,
+        zone_hint: None,
+        numa_policy: NumaPolicy::Local,
+        numa_node: 0,
+        rights: aether_types::Rights::READ,
+        flags: 0,
+    };
+    if alloc.authority_mut().allocate(&req, 0).is_ok() {
+        return Err("allocation granted without GRANT authority");
+    }
+    Ok(())
+}
+
+/// CTX-ALLOC-002 (RFC-ALLOC-001 §6): a derived allocation capability grants
+/// rights that are a subset of the parent capability rights. Adding rights is
+/// rejected.
+fn ctx_alloc_derivation_subset_rights() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+    let grant = alloc
+        .authority_mut()
+        .allocate(
+            &AllocRequest {
+                authority_cap: aether_types::Capability {
+                    object: aether_types::ObjectId(0),
+                    object_type: aether_types::ObjectType::Memory,
+                    rights: aether_types::Rights::READ
+                        .union(aether_types::Rights::WRITE)
+                        .union(aether_types::Rights::GRANT),
+                    bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+                    flags: aether_types::CapabilityFlags::NONE,
+                    expires_at_ns: 0,
+                },
+                size_bytes: 4096,
+                page_size_class: PageSizeClass::Base4KiB,
+                zone_hint: None,
+                numa_policy: NumaPolicy::Local,
+                numa_node: 0,
+                rights: aether_types::Rights::READ.union(aether_types::Rights::WRITE),
+                flags: 0,
+            },
+            0,
+        )
+        .map_err(|_| "allocation failed")?;
+
+    // Narrowing to read-only is allowed.
+    let narrow = alloc.authority_mut().derive(
+        grant.region.region_id,
+        aether_types::DomainId::new(1).unwrap(),
+        aether_types::Rights::READ,
+        aether_types::Bounds::new(0, 1024).unwrap(),
+        0,
+    );
+    if narrow.is_err() {
+        return Err("narrowing derivation was rejected");
+    }
+
+    // Adding EXECUTE (not present in parent) is rejected.
+    let amplified = alloc.authority_mut().derive(
+        grant.region.region_id,
+        aether_types::DomainId::new(1).unwrap(),
+        aether_types::Rights::READ.union(aether_types::Rights::EXECUTE),
+        aether_types::Bounds::new(0, 1024).unwrap(),
+        0,
+    );
+    if amplified.is_ok() {
+        return Err("derivation added rights not present in parent");
+    }
+    Ok(())
+}
+
+/// CTX-ALLOC-003 (RFC-ALLOC-001 §6): NUMA allocation respects the
+/// capability-specified node constraint; cross-node allocation without an
+/// explicit policy is flagged.
+fn ctx_alloc_numa_node_constraint() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+
+    let req = AllocRequest {
+        authority_cap: aether_types::Capability {
+            object: aether_types::ObjectId(0),
+            object_type: aether_types::ObjectType::Memory,
+            rights: aether_types::Rights::READ
+                .union(aether_types::Rights::WRITE)
+                .union(aether_types::Rights::GRANT),
+            bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+            flags: aether_types::CapabilityFlags::NONE,
+            expires_at_ns: 0,
+        },
+        size_bytes: 4096,
+        page_size_class: PageSizeClass::Base4KiB,
+        zone_hint: Some(Zone::Normal),
+        numa_policy: NumaPolicy::Node(0),
+        numa_node: 0,
+        rights: aether_types::Rights::READ,
+        flags: 0,
+    };
+    let grant = alloc.authority_mut().allocate(&req, 0).map_err(|_| {
+        "NUMA-constrained allocation failed"
+    })?;
+    assert_eq!(grant.region.numa_node, 0);
+
+    // Preference fallback flags a cross-node allocation event when the
+    // preferred node is unavailable.
+    let mut req_pref = req.clone();
+    req_pref.numa_policy = NumaPolicy::Preferred(255); // node does not exist
+    req_pref.numa_node = 255;
+    let _pref_grant = alloc.authority_mut().allocate(&req_pref, 0).map_err(|_| {
+        "preferred-node allocation failed"
+    })?;
+    assert!(alloc
+        .authority()
+        .events()
+        .iter()
+        .any(|e| matches!(e, aether_allocator_hierarchy::AllocEvent::CrossNodeAllocation { .. })));
+    let _ = _pref_grant;
+    Ok(())
+}
+
+/// CTX-ALLOC-004 (RFC-ALLOC-001 §6): fragmentation is tracked per zone; when
+/// the threshold is exceeded a fragmentation event is emitted, and allocations
+/// satisfiable by lower-order blocks are not blocked.
+fn ctx_alloc_fragmentation_event_and_lower_order_ok() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+    alloc.authority_mut().set_fragmentation_threshold(0.0);
+
+    let auth_cap = aether_types::Capability {
+        object: aether_types::ObjectId(0),
+        object_type: aether_types::ObjectType::Memory,
+        rights: aether_types::Rights::READ
+            .union(aether_types::Rights::WRITE)
+            .union(aether_types::Rights::GRANT),
+        bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let make_req = |size: u64| AllocRequest {
+        authority_cap: auth_cap.clone(),
+        size_bytes: size,
+        page_size_class: PageSizeClass::Base4KiB,
+        zone_hint: None,
+        numa_policy: NumaPolicy::Local,
+        numa_node: 0,
+        rights: aether_types::Rights::READ,
+        flags: 0,
+    };
+
+    let _first = alloc.authority_mut().allocate(&make_req(4096), 0).map_err(|_| "allocation failed")?;
+    // Threshold is 0.0, so any allocation should emit a fragmentation event.
+    let has_event = alloc.authority().events().iter().any(|e| matches!(
+        e,
+        aether_allocator_hierarchy::AllocEvent::FragmentationThresholdExceeded { .. }
+    ));
+    if !has_event {
+        return Err("fragmentation event was not emitted above threshold");
+    }
+
+    // A subsequent allocation that can be satisfied by a lower-order block is
+    // not blocked by the fragmentation event.
+    let _second = alloc.authority_mut().allocate(&make_req(4096), 0).map_err(|_| "allocation failed")?;
+    Ok(())
+}
+
+/// CTX-ALLOC-005 (RFC-ALLOC-001 §6): allocated region identity is unique
+/// across all live allocations.
+fn ctx_alloc_region_ids_unique() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 64 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+    let auth_cap = aether_types::Capability {
+        object: aether_types::ObjectId(0),
+        object_type: aether_types::ObjectType::Memory,
+        rights: aether_types::Rights::READ
+            .union(aether_types::Rights::WRITE)
+            .union(aether_types::Rights::GRANT),
+        bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let make_req = |size: u64| AllocRequest {
+        authority_cap: auth_cap.clone(),
+        size_bytes: size,
+        page_size_class: PageSizeClass::Base4KiB,
+        zone_hint: None,
+        numa_policy: NumaPolicy::Local,
+        numa_node: 0,
+        rights: aether_types::Rights::READ,
+        flags: 0,
+    };
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..10 {
+        let grant = alloc.authority_mut().allocate(&make_req(4096), 0).map_err(|_| "allocation failed")?;
+        if !seen.insert(grant.region.region_id) {
+            return Err("region id was reused across allocations");
+        }
+    }
+    Ok(())
+}
+
+/// CTX-ALLOC-006 (RFC-ALLOC-001 §6): revocation of a `CAP_MEMORY` capability
+/// removes the allocation's reachability and revokes all derived
+/// capabilities in its lineage.
+fn ctx_alloc_revocation_cascades_to_derived() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+    let auth_cap = aether_types::Capability {
+        object: aether_types::ObjectId(0),
+        object_type: aether_types::ObjectType::Memory,
+        rights: aether_types::Rights::READ
+            .union(aether_types::Rights::WRITE)
+            .union(aether_types::Rights::GRANT),
+        bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let grant = alloc
+        .authority_mut()
+        .allocate(
+            &AllocRequest {
+                authority_cap: auth_cap.clone(),
+                size_bytes: 4096,
+                page_size_class: PageSizeClass::Base4KiB,
+                zone_hint: None,
+                numa_policy: NumaPolicy::Local,
+                numa_node: 0,
+                rights: aether_types::Rights::READ.union(aether_types::Rights::WRITE),
+                flags: 0,
+            },
+            0,
+        )
+        .map_err(|_| "allocation failed")?;
+    let child = alloc
+        .authority_mut()
+        .derive(
+            grant.region.region_id,
+            aether_types::DomainId::new(1).unwrap(),
+            aether_types::Rights::READ,
+            aether_types::Bounds::new(0, 1024).unwrap(),
+            0,
+        )
+        .map_err(|_| "derivation failed")?;
+
+    assert!(!alloc.authority().is_revoked(child.region.region_id));
+    alloc
+        .authority_mut()
+        .revoke(grant.region.region_id, 0)
+        .map_err(|_| "revoke failed")?;
+    assert!(alloc.authority().is_revoked(grant.region.region_id));
+    assert!(alloc.authority().is_revoked(child.region.region_id));
+    Ok(())
+}
+
+/// CTX-ALLOC-007 (RFC-ALLOC-001 §6): the scheduler hot path completes without
+/// invoking the page allocator, slab allocator, or any capability-gated
+/// allocation; pre-allocated structures are used exclusively.
+fn ctx_alloc_scheduler_hot_path_no_allocation() -> Result<(), &'static str> {
+    let mut pool = aether_allocator_hierarchy::SchedulerPreallocatedPool::default();
+    pool.populate(8, 2);
+    let count_before = pool.allocation_count();
+    for _ in 0..10_000 {
+        if let Some(tcb) = pool.schedule_next() {
+            assert!(pool.dispatch(tcb));
+        }
+    }
+    assert_eq!(pool.allocation_count(), count_before);
+    Ok(())
+}
+
+/// CTX-ALLOC-008 (RFC-ALLOC-001 §6): `CAP_DMA_MEMORY` access is rejected
+/// without a valid DMA capability; DMA access to a non-DMA zone is rejected.
+fn ctx_alloc_dma_rejected_without_dma_zone() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Normal,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+    let auth_cap = aether_types::Capability {
+        object: aether_types::ObjectId(0),
+        object_type: aether_types::ObjectType::Memory,
+        rights: aether_types::Rights::READ
+            .union(aether_types::Rights::WRITE)
+            .union(aether_types::Rights::GRANT),
+        bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let req = AllocRequest {
+        authority_cap: auth_cap,
+        size_bytes: 4096,
+        page_size_class: PageSizeClass::Base4KiB,
+        zone_hint: Some(Zone::Normal),
+        numa_policy: NumaPolicy::Local,
+        numa_node: 0,
+        rights: aether_types::Rights::READ,
+        flags: 0x1, // DMA_CAPABLE flag set but zone is not DMA-capable
+    };
+    match alloc.authority_mut().allocate_dma(&req, 42, 0) {
+        Err(AllocError::NotDmaZone) => Ok(()),
+        _other => Err("expected NotDmaZone"),
+    }
+}
+
+/// CTX-ALLOC-009 (RFC-ALLOC-001 §6): revocation of a `CAP_DMA_MEMORY` token
+/// causes the capability-mediator to invalidate the IOMMU translation entry
+/// within the declared revocation latency bound.
+fn ctx_alloc_dma_revoke_invalidates_iommu() -> Result<(), &'static str> {
+    let mut alloc = Allocator::new();
+    alloc.authority_mut().install_boot_allocator(0x1000, 4096);
+    alloc.authority_mut().decommission_boot_allocator(0).map_err(|_| "boot allocator setup failed")?;
+    alloc.authority_mut().add_physical_region(
+        aether_allocator_hierarchy::PhysRegionDescriptor {
+            base_paddr: 0,
+            size_bytes: 16 * 1024 * 1024,
+            zone: Zone::Dma,
+            numa_node: 0,
+        },
+    ).map_err(|_| "physical region registration failed")?;
+    let auth_cap = aether_types::Capability {
+        object: aether_types::ObjectId(0),
+        object_type: aether_types::ObjectType::Memory,
+        rights: aether_types::Rights::READ
+            .union(aether_types::Rights::WRITE)
+            .union(aether_types::Rights::GRANT),
+        bounds: aether_types::Bounds::new(0, 1 << 30).unwrap(),
+        flags: aether_types::CapabilityFlags::NONE,
+        expires_at_ns: 0,
+    };
+    let grant = alloc
+        .authority_mut()
+        .allocate_dma(
+            &AllocRequest {
+                authority_cap: auth_cap,
+                size_bytes: 4096,
+                page_size_class: PageSizeClass::Base4KiB,
+                zone_hint: Some(Zone::Dma),
+                numa_policy: NumaPolicy::Local,
+                numa_node: 0,
+                rights: aether_types::Rights::READ,
+                flags: 0,
+            },
+            42,
+            0,
+        )
+        .map_err(|_| "dma allocation failed")?;
+    assert!(alloc.authority().iommu_valid(grant.region.region_id));
+
+    alloc
+        .authority_mut()
+        .revoke_dma(grant.region.region_id, 0)
+        .map_err(|_| "dma revoke failed")?;
+    assert!(!alloc.authority().iommu_valid(grant.region.region_id));
+    assert!(alloc
+        .authority()
+        .events()
+        .iter()
+        .any(|e| matches!(e, aether_allocator_hierarchy::AllocEvent::DmaRevoked { .. })));
     Ok(())
 }

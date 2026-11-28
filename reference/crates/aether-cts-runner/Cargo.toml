@@ -25,6 +25,7 @@ aether-cap-token = { path = "../aether-cap-token" }
 aether-cap-transfer-protocol = { path = "../aether-cap-transfer-protocol" }
 aether-cap-revocation-protocol = { path = "../aether-cap-revocation-protocol" }
 aether-cap-rights-algebra = { path = "../aether-cap-rights-algebra" }
+aether-allocator-hierarchy = { path = "../aether-allocator-hierarchy" }
 aether-capability-transfer = { path = "../aether-capability-transfer" }
 aether-sync-model = { path = "../aether-sync-model" }
 aether-stream-model = { path = "../aether-stream-model" }

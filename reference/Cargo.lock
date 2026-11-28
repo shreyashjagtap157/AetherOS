@@ -11,6 +11,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-allocator-hierarchy"
+version = "0.1.0"
+dependencies = [
+ "aether-cap-token",
+ "aether-types",
+]
+
+[[package]]
 name = "aether-audit-log"
 version = "0.1.0"
 dependencies = [
@@ -77,6 +85,7 @@ name = "aether-cts-runner"
 version = "0.1.0"
 dependencies = [
  "aether-address-space-model",
+ "aether-allocator-hierarchy",
  "aether-audit-log",
  "aether-cap-model",
  "aether-cap-revocation-protocol",

@@ -27,6 +27,7 @@ members = [
     "crates/aether-cap-revocation-protocol",
     "crates/aether-cap-rights-algebra",
     "crates/aether-capability-transfer",
+    "crates/aether-allocator-hierarchy",
     "crates/aether-sync-model",
     "crates/aether-stream-model",
     "crates/aether-verif-model",
