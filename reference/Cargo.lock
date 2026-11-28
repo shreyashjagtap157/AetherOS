@@ -28,6 +28,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-cap-token"
+version = "0.1.0"
+
+[[package]]
+name = "aether-capability-transfer"
+version = "0.1.0"
+dependencies = [
+ "aether-cap-token",
+ "aether-endpoint-model",
+ "aether-message-format",
+]
+
+[[package]]
 name = "aether-capspace"
 version = "0.1.0"
 dependencies = [
@@ -48,6 +61,8 @@ dependencies = [
  "aether-address-space-model",
  "aether-audit-log",
  "aether-cap-model",
+ "aether-cap-token",
+ "aether-capability-transfer",
  "aether-capspace",
  "aether-comp-model",
  "aether-diagnostic-query",

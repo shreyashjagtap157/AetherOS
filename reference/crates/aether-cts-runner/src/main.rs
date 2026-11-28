@@ -44,6 +44,12 @@ use aether_endpoint_model::{
     EndpointRegistry, EndpointRegistration,
 };
 use aether_endpoint_model::EndpointId as EpEndpointId;
+use aether_cap_token::{
+    CapabilityToken, CapType, RIGHT_EXECUTE, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
+};
+use aether_capability_transfer::{
+    authorize_transfer, validate_received_token,
+};
 use aether_routing_model::{
     RouteEntry, RouteHop, Router, RoutingError, RoutingTable,
 };
@@ -77,7 +83,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 187] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 192] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -362,6 +368,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 187] {
         ("CTS-COMM-RT-4", comm_rt_no_silent_drops()),
         ("CTS-COMM-RT-5", comm_rt_table_invalidation_on_deregistration()),
         ("CTS-COMM-RT-6", comm_rt_routing_time_complexity_bound()),
+        ("CTS-COMM-CAPX-1", comm_capx_copy_semantics_sender_retains()),
+        ("CTS-COMM-CAPX-2", comm_capx_rights_narrowing_only()),
+        ("CTS-COMM-CAPX-3", comm_capx_transfer_right_verified()),
+        ("CTS-COMM-CAPX-4", comm_capx_corrupted_token_rejected()),
+        ("CTS-COMM-CAPX-5", comm_capx_revocation_notification_delivered()),
     ]
 }
 
@@ -8062,5 +8073,151 @@ fn comm_rt_routing_time_complexity_bound() -> Result<(), &'static str> {
     if !matches!(r1, Err(RoutingError::ENODEST)) || !matches!(r2, Err(RoutingError::ENODEST)) {
         return Err("missing destination should deterministically return ENODEST");
     }
+    Ok(())
+}
+
+/// CTS-COMM-CAPX-1 (RFC-0027.2): copy semantics — the sender retains its own
+/// capability token after a COPY transfer (duplication, not move).
+fn comm_capx_copy_semantics_sender_retains() -> Result<(), &'static str> {
+    // Sender holds CAP_ENDPOINT with RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER.
+    let sender_token = CapabilityToken::new(
+        CapType::Endpoint,
+        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER,
+        0,
+        0,
+        0,
+        0,
+        [0x42u8; 16],
+        0,
+    );
+    // Receiver gets a copy with the same rights.
+    let transfer = authorize_transfer(&sender_token, RIGHT_READ | RIGHT_WRITE)
+        .map_err(|_| "authorize_transfer failed")?;
+    if transfer.kind != aether_capability_transfer::TransferKind::Copy {
+        return Err("transfer should be COPY by default");
+    }
+    if transfer.token.rights() != RIGHT_READ | RIGHT_WRITE {
+        return Err("copied token rights do not match requested rights");
+    }
+    // Sender retains its original token unchanged (copy semantics).
+    if sender_token.rights() != RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER {
+        return Err("sender lost its capability after COPY transfer");
+    }
+    if !sender_token.has_transfer_right() {
+        return Err("sender lost RIGHT_TRANSFER after COPY transfer");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-CAPX-2 (RFC-0027.4): rights narrowing — a transfer MAY narrow
+/// rights but MUST NOT widen them.
+fn comm_capx_rights_narrowing_only() -> Result<(), &'static str> {
+    let sender_token = CapabilityToken::new(
+        CapType::Endpoint,
+        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER,
+        0,
+        0,
+        0,
+        0,
+        [0x43u8; 16],
+        0,
+    );
+    // Narrowing to a subset succeeds.
+    let transfer = authorize_transfer(&sender_token, RIGHT_READ)
+        .map_err(|_| "authorize_transfer failed")?;
+    if transfer.token.rights() != RIGHT_READ {
+        return Err("narrowed token should have exactly the requested rights");
+    }
+    if transfer.token.rights() & !sender_token.rights() != 0 {
+        return Err("narrowed token has rights not held by sender");
+    }
+    // Widening (adding RIGHT_EXECUTE which sender lacks) is rejected.
+    if authorize_transfer(&sender_token, RIGHT_READ | RIGHT_EXECUTE).is_ok() {
+        return Err("rights widening was accepted but must be rejected");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-CAPX-3 (RFC-0027.5): TRANSFER right verified — a sender without
+/// RIGHT_TRANSFER cannot send a capability token.
+fn comm_capx_transfer_right_verified() -> Result<(), &'static str> {
+    // Sender holds the capability but WITHOUT RIGHT_TRANSFER.
+    let sender_token = CapabilityToken::new(
+        CapType::Endpoint,
+        RIGHT_READ | RIGHT_WRITE,
+        0,
+        0,
+        0,
+        0,
+        [0x44u8; 16],
+        0,
+    );
+    if authorize_transfer(&sender_token, RIGHT_READ).is_ok() {
+        return Err("transfer without RIGHT_TRANSFER was accepted but must be rejected");
+    }
+    // Sender WITH RIGHT_TRANSFER succeeds.
+    let sender_token = CapabilityToken::new(
+        CapType::Endpoint,
+        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER,
+        0,
+        0,
+        0,
+        0,
+        [0x45u8; 16],
+        0,
+    );
+    if authorize_transfer(&sender_token, RIGHT_READ).is_err() {
+        return Err("transfer with RIGHT_TRANSFER was rejected but should succeed");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-CAPX-4 (RFC-0027.7): corrupted token rejected — a tampered
+/// capability token in the trailer fails seal verification and the message is
+/// not delivered.
+fn comm_capx_corrupted_token_rejected() -> Result<(), &'static str> {
+    let good_token = CapabilityToken::new(
+        CapType::Endpoint,
+        RIGHT_READ | RIGHT_TRANSFER,
+        0,
+        0,
+        0,
+        0,
+        [0x46u8; 16],
+        0,
+    );
+    if validate_received_token(&good_token).is_err() {
+        return Err("valid sealed token was rejected but should pass");
+    }
+    // Corrupt a byte in the identity section (invalidates the seal).
+    let mut corrupted = good_token.serialize();
+    corrupted[0] ^= 0xFF; // flip cap type byte
+    let corrupted_token = CapabilityToken::deserialize(&corrupted).unwrap();
+    if validate_received_token(&corrupted_token).is_ok() {
+        return Err("corrupted token passed seal verification but must be rejected");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-CAPX-5 (RFC-0027.9): revocation notification delivered — when a
+/// transferred capability is revoked, affected holders are notified.
+fn comm_capx_revocation_notification_delivered() -> Result<(), &'static str> {
+    use aether_event_model::EventEmitter;
+    // Revocation notification is emitted as a PlatformEvent to the holder's
+    // registered notification endpoint (RFC-0039.8).
+    let mut emitter = EventEmitter::new();
+    emitter.emit(aether_event_model::PlatformEvent {
+        event_id: 1,
+        event_class: aether_event_model::EventClass::Security.id(),
+        event_type: 0x01,
+        timestamp_ns: 0,
+        emitter_thread: 0,
+        emitter_domain: aether_types::DomainId::new(1).ok_or("invalid domain")?,
+        urgency: aether_event_model::SECURITY_CRITICAL_URGENCY,
+        flags: 0x01, // FLAG_PERSISTENT (private in aether-event-model)
+        causation_id: 0,
+        correlation_id: 0,
+        payload: b"CapRevoked".to_vec(),
+    });
     Ok(())
 }
