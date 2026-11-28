@@ -21,6 +21,7 @@ members = [
     "crates/aether-kv-projection",
     "crates/aether-message-format",
     "crates/aether-endpoint-model",
+    "crates/aether-routing-model",
     "crates/aether-obj-projection",
     "crates/aether-posix-projection",
     "crates/aether-storage-model",

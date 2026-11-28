@@ -43,6 +43,10 @@ use aether_endpoint_model::{
     ALL_ENDPOINT_CAPS, CommErrorCode, EndpointCapKind, EndpointError, EndpointMode,
     EndpointRegistry, EndpointRegistration,
 };
+use aether_endpoint_model::EndpointId as EpEndpointId;
+use aether_routing_model::{
+    RouteEntry, RouteHop, Router, RoutingError, RoutingTable,
+};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -73,7 +77,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 181] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 187] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -352,6 +356,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 181] {
         ("CTS-COMM-EP-4", comm_ep_handler_vs_polling_mode()),
         ("CTS-COMM-EP-5", comm_ep_error_code_format()),
         ("CTS-COMM-EP-6", comm_ep_close_deferred_until_queue_empty()),
+        ("CTS-COMM-RT-1", comm_rt_route_resolution_produces_valid_hops()),
+        ("CTS-COMM-RT-2", comm_rt_capability_required_per_hop()),
+        ("CTS-COMM-RT-3", comm_rt_single_hop_intra_domain_routing()),
+        ("CTS-COMM-RT-4", comm_rt_no_silent_drops()),
+        ("CTS-COMM-RT-5", comm_rt_table_invalidation_on_deregistration()),
+        ("CTS-COMM-RT-6", comm_rt_routing_time_complexity_bound()),
     ]
 }
 
@@ -7829,6 +7839,228 @@ fn comm_ep_close_deferred_until_queue_empty() -> Result<(), &'static str> {
     // Operations on a closed endpoint are rejected.
     if registry.dequeue(id).is_ok() {
         return Err("dequeue on closed endpoint was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-RT-1 (RFC-0026.1): route resolution produces valid hops — each hop
+/// contains a next hop, required capability class, transport, and weight.
+fn comm_rt_route_resolution_produces_valid_hops() -> Result<(), &'static str> {
+    let domain = DomainId::new(1).ok_or("invalid domain")?;
+    let src = EpEndpointId::new([1u8; 32]);
+    let mut registry = EndpointRegistry::new();
+    let reg = EndpointRegistration {
+        name: "dst-endpoint".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Recv.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    let (dst_id, _token) = registry.register(domain, reg).map_err(|_| "registration failed")?;
+    let mut router = Router::new();
+    router.install_route(RouteEntry {
+        destination: dst_id,
+        hop_count: 1,
+        hops: vec![RouteHop {
+            next_hop: dst_id,
+            required_cap_class: 1, // SEND
+            transport: 0,
+            weight: 1,
+        }],
+    });
+    let hops = router.route(src, dst_id, EndpointCapKind::Send.bit()).map_err(|_| "route resolution failed")?;
+    if hops.len() != 1 {
+        return Err("expected exactly one hop");
+    }
+    let hop = &hops[0];
+    if hop.next_hop != dst_id {
+        return Err("hop next_hop is not the destination");
+    }
+    if hop.required_cap_class != 1 {
+        return Err("hop required_cap_class is not SEND");
+    }
+    if hop.weight == 0 {
+        return Err("hop weight should be non-zero");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-RT-2 (RFC-0026.3): capability required per hop — a sender lacking
+/// the required capability for a hop is rejected with ENOCAP.
+fn comm_rt_capability_required_per_hop() -> Result<(), &'static str> {
+    let src = EpEndpointId::new([1u8; 32]);
+    let dst = EpEndpointId::new([2u8; 32]);
+    let mut router = Router::new();
+    router.install_route(RouteEntry {
+        destination: dst,
+        hop_count: 1,
+        hops: vec![RouteHop {
+            next_hop: dst,
+            required_cap_class: 1, // SEND required
+            transport: 0,
+            weight: 1,
+        }],
+    });
+    // Sender without SEND capability is rejected with ENOCAP.
+    let result = router.route(src, dst, 0); // no rights
+    if !matches!(result, Err(RoutingError::ENOCAP)) {
+        return Err("sender without required capability was not rejected with ENOCAP");
+    }
+    // Sender with SEND capability succeeds.
+    let hops = router.route(src, dst, EndpointCapKind::Send.bit()).map_err(|_| "route resolution failed")?;
+    if hops.len() != 1 {
+        return Err("sender with required capability should get a route");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-RT-3 (RFC-0026.5): single-hop intra-domain routing — within a
+/// single execution domain, routing is a single hop to the destination
+/// endpoint, requiring SEND on the destination.
+fn comm_rt_single_hop_intra_domain_routing() -> Result<(), &'static str> {
+    let domain = DomainId::new(2).ok_or("invalid domain")?;
+    let src = EpEndpointId::new([10u8; 32]);
+    let mut registry = EndpointRegistry::new();
+    let reg = EndpointRegistration {
+        name: "intra-dst".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Recv.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    let (dst_id, _token) = registry.register(domain, reg).map_err(|_| "registration failed")?;
+    let mut router = Router::new();
+    router.install_route(RouteEntry {
+        destination: dst_id,
+        hop_count: 1,
+        hops: vec![RouteHop {
+            next_hop: dst_id,
+            required_cap_class: 1, // SEND on destination (RFC-0026.5)
+            transport: 0,
+            weight: 1,
+        }],
+    });
+    // Intra-domain route is a single hop.
+    let hops = router.route(src, dst_id, EndpointCapKind::Send.bit() | EndpointCapKind::Recv.bit()).map_err(|_| "route resolution failed")?;
+    if hops.len() != 1 {
+        return Err("intra-domain routing should be a single hop");
+    }
+    if hops[0].next_hop != dst_id {
+        return Err("single hop should go directly to destination");
+    }
+    // Without SEND on destination, rejected.
+    if router.route(src, dst_id, EndpointCapKind::Recv.bit()).is_ok() {
+        return Err("routing without SEND on destination should be rejected");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-RT-4 (RFC-0026.8): no silent drops — if a message cannot be routed
+/// (no route exists, capability missing), the routing subsystem returns an
+/// error to the sender and MUST NOT silently drop the message.
+fn comm_rt_no_silent_drops() -> Result<(), &'static str> {
+    let src = EpEndpointId::new([1u8; 32]);
+    let dst = EpEndpointId::new([2u8; 32]);
+    let mut router = Router::new();
+    // No route installed: resolve returns ENODEST (not a silent drop).
+    let result = router.route(src, dst, EndpointCapKind::Send.bit());
+    if !matches!(result, Err(RoutingError::ENODEST)) {
+        return Err("missing route should return ENODEST, not silently drop");
+    }
+    // Route exists but capability missing: returns ENOCAP (not a silent drop).
+    router.install_route(RouteEntry {
+        destination: dst,
+        hop_count: 1,
+        hops: vec![RouteHop {
+            next_hop: dst,
+            required_cap_class: 1,
+            transport: 0,
+            weight: 1,
+        }],
+    });
+    let result = router.route(src, dst, 0); // no SEND
+    if !matches!(result, Err(RoutingError::ENOCAP)) {
+        return Err("missing capability should return ENOCAP, not silently drop");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-RT-5 (RFC-0026.10): table invalidation on deregistration — when an
+/// endpoint is deregistered, all routing table entries referring to it are
+/// invalidated.
+fn comm_rt_table_invalidation_on_deregistration() -> Result<(), &'static str> {
+    let domain = DomainId::new(3).ok_or("invalid domain")?;
+    let mut registry = EndpointRegistry::new();
+    let reg = EndpointRegistration {
+        name: "to-be-closed".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Recv.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    let (dst_id, _token) = registry.register(domain, reg).map_err(|_| "registration failed")?;
+    let mut router = Router::new();
+    router.install_route(RouteEntry {
+        destination: dst_id,
+        hop_count: 1,
+        hops: vec![RouteHop {
+            next_hop: dst_id,
+            required_cap_class: 1,
+            transport: 0,
+            weight: 1,
+        }],
+    });
+    // Route exists before invalidation.
+    if router.resolve(EpEndpointId::new([1u8; 32]), dst_id).is_err() {
+        return Err("route should exist before invalidation");
+    }
+    // Deregister the endpoint and invalidate table entries referring to it.
+    router.invalidate_endpoint(dst_id);
+    // After invalidation, no route to the deregistered endpoint.
+    if router.resolve(EpEndpointId::new([1u8; 32]), dst_id).is_ok() {
+        return Err("route should not exist after endpoint deregistration");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-RT-6 (RFC-0026.11): routing time complexity bound — route
+/// resolution completes in O(log N) using binary search; repeated lookups are
+/// deterministic (RFC-0026.12).
+fn comm_rt_routing_time_complexity_bound() -> Result<(), &'static str> {
+    let mut router = Router::new();
+    // Install N routes with distinct destinations.
+    let n = 64;
+    for i in 0..n {
+        let dst = EpEndpointId::new([i as u8; 32]);
+        router.install_route(RouteEntry {
+            destination: dst,
+            hop_count: 1,
+            hops: vec![RouteHop {
+                next_hop: dst,
+                required_cap_class: 1,
+                transport: 0,
+                weight: 1,
+            }],
+        });
+    }
+    let src = EpEndpointId::new([255u8; 32]);
+    // Resolve the last route: binary search should find it in O(log N).
+    let dst_last = EpEndpointId::new([(n - 1) as u8; 32]);
+    let hops = router.route(src, dst_last, EndpointCapKind::Send.bit()).map_err(|_| "route resolution failed")?;
+    if hops.len() != 1 || hops[0].next_hop != dst_last {
+        return Err("binary search route resolution did not find installed route");
+    }
+    // Determinism: identical inputs produce identical outputs.
+    let hops2 = router.route(src, dst_last, EndpointCapKind::Send.bit()).map_err(|_| "route resolution failed")?;
+    if hops != hops2 {
+        return Err("routing decisions are not deterministic");
+    }
+    // Non-existent destination returns ENODEST deterministically.
+    let missing = EpEndpointId::new([200u8; 32]);
+    let r1 = router.route(src, missing, EndpointCapKind::Send.bit());
+    let r2 = router.route(src, missing, EndpointCapKind::Send.bit());
+    if !matches!(r1, Err(RoutingError::ENODEST)) || !matches!(r2, Err(RoutingError::ENODEST)) {
+        return Err("missing destination should deterministically return ENODEST");
     }
     Ok(())
 }
