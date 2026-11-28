@@ -36,6 +36,13 @@ name = "aether-cap-token"
 version = "0.1.0"
 
 [[package]]
+name = "aether-cap-transfer-protocol"
+version = "0.1.0"
+dependencies = [
+ "aether-cap-token",
+]
+
+[[package]]
 name = "aether-capability-transfer"
 version = "0.1.0"
 dependencies = [
@@ -67,6 +74,7 @@ dependencies = [
  "aether-cap-model",
  "aether-cap-rights-algebra",
  "aether-cap-token",
+ "aether-cap-transfer-protocol",
  "aether-capability-transfer",
  "aether-capspace",
  "aether-comp-model",

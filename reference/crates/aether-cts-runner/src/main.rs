@@ -45,7 +45,8 @@ use aether_endpoint_model::{
 };
 use aether_endpoint_model::EndpointId as EpEndpointId;
 use aether_cap_token::{
-    CapabilityToken, CapType, RIGHT_EXECUTE, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE, verify_seal,
+    CAPF_BOUND, CAPF_REVOCABLE, CapabilityToken, CapType, RIGHT_EXECUTE, RIGHT_READ,
+    RIGHT_TRANSFER, RIGHT_WRITE, verify_seal,
 };
 use aether_capability_transfer::{
     authorize_transfer, validate_received_token,
@@ -61,6 +62,7 @@ use aether_stream_model::{
     is_final_chunk, is_stream_chunk, stream_header, Stream, StreamError, StreamManager, StreamState,
 };
 use aether_cap_rights_algebra as cra;
+use aether_cap_transfer_protocol as ctp;
 use aether_verif_model::{
     ConventionalTestEvidence, EconomicCost, FormalSpec, InvariantTierClaim, ModelCheckReport,
     ProofArtifact, ProofFragilityClass, Prover, PropertyTestEvidence, SpecLanguage,
@@ -96,7 +98,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 223] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 230] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -417,6 +419,13 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 223] {
         ("CTS-CAPR-3", caprights_transfer_policy()),
         ("CTS-CAPR-4", caprights_revoke_stale()),
         ("CTS-CAPR-5", caprights_import_export()),
+        ("CTS-CAP-XFER-1", cap_xfer_three_transfer_types()),
+        ("CTS-CAP-XFER-2", cap_xfer_rights_narrowing()),
+        ("CTS-CAP-XFER-3", cap_xfer_rights_derived_incremented()),
+        ("CTS-CAP-XFER-4", cap_xfer_domain_scope()),
+        ("CTS-CAP-XFER-5", cap_xfer_revocation_in_flight_copy()),
+        ("CTS-CAP-XFER-6", cap_xfer_revocation_after_move()),
+        ("CTS-CAP-XFER-7", cap_xfer_sender_retains_on_failure()),
     ]
 }
 
@@ -9023,4 +9032,296 @@ fn caprights_import_export() -> Result<(), &'static str> {
         return Err("authorized export should produce bytes");
     }
     Ok(())
+}
+
+/// CTS-CAP-XFER-1 (RFC-0038.1): all three transfer types (COPY, MOVE,
+/// DERIVE_COPY) are supported.
+fn cap_xfer_three_transfer_types() -> Result<(), &'static str> {
+    // COPY: sender retains, receiver gets same rights.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, 0);
+    let copy_out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Copy,
+        None,
+        2,
+        false,
+        1_000,
+    )
+    .map_err(|_| "copy transfer should succeed")?;
+    assert!(copy_out.installed_token.is_some());
+    assert!(!copy_out.sender_invalidated);
+    assert!(!proto.is_invalidated(handle));
+
+    // MOVE: sender invalidated.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, 0);
+    let move_out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Move,
+        None,
+        3,
+        false,
+        1_000,
+    )
+    .map_err(|_| "move transfer should succeed")?;
+    assert!(move_out.sender_invalidated);
+    assert!(proto.is_invalidated(handle));
+
+    // DERIVE_COPY: sender retains, narrowed rights derived.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, 0);
+    let derive_out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::DeriveCopy,
+        Some(RIGHT_READ),
+        4,
+        false,
+        1_000,
+    )
+    .map_err(|_| "derive_copy transfer should succeed")?;
+    assert!(!derive_out.sender_invalidated);
+    assert!(!proto.is_invalidated(handle));
+    let installed = derive_out.installed_token.unwrap();
+    assert_eq!(installed.rights(), RIGHT_READ);
+    Ok(())
+}
+
+/// CTS-CAP-XFER-2 (RFC-0038.3): DERIVE_COPY requires a proper rights subset;
+/// widening and equal rights are rejected.
+fn cap_xfer_rights_narrowing() -> Result<(), &'static str> {
+    // Widening rejected.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, 0);
+    let err = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::DeriveCopy,
+        Some(RIGHT_READ | RIGHT_WRITE),
+        4,
+        false,
+        1_000,
+    );
+    assert_eq!(err, Err(ctp::TransferError::RightsNotSubset));
+
+    // Equal rights rejected (must be a proper subset, not equal).
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, 0);
+    let err = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::DeriveCopy,
+        Some(RIGHT_READ | RIGHT_TRANSFER),
+        4,
+        false,
+        1_000,
+    );
+    assert_eq!(err, Err(ctp::TransferError::RightsNotProperSubset));
+
+    // Proper subset accepted.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, 0);
+    let out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::DeriveCopy,
+        Some(RIGHT_READ),
+        4,
+        false,
+        1_000,
+    )
+    .map_err(|_| "proper subset derive_copy should succeed")?;
+    assert_eq!(out.installed_token.unwrap().rights(), RIGHT_READ);
+    Ok(())
+}
+
+/// CTS-CAP-XFER-3 (RFC-0038.4): `rights_derived` counter is original + 1 on
+/// derivation, and increments on each derivation in a chain.
+fn cap_xfer_rights_derived_incremented() -> Result<(), &'static str> {
+    // Chain: READ|WRITE|EXECUTE|TRANSFER → READ|WRITE|TRANSFER (derived=1)
+    // → READ|TRANSFER (derived=2).
+    let (mut proto, handle) = make_proto(
+        RIGHT_READ | RIGHT_WRITE | RIGHT_EXECUTE | RIGHT_TRANSFER,
+        0,
+    );
+    let out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::DeriveCopy,
+        Some(RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER),
+        4,
+        false,
+        1_000,
+    )
+    .map_err(|_| "first derive_copy should succeed")?;
+    assert_eq!(out.installed_token.unwrap().rights_derived(), 1);
+
+    // Derive again from the multi-right token.
+    let installed = out.installed_token.unwrap();
+    let (mut proto2, handle2) = proto_with_installed(installed);
+    // READ|TRANSFER is a proper subset of READ|WRITE|TRANSFER.
+    let out2 = ctp::transfer(
+        &mut proto2,
+        handle2,
+        ctp::TransferType::DeriveCopy,
+        Some(RIGHT_READ | RIGHT_TRANSFER),
+        5,
+        false,
+        1_000,
+    )
+    .map_err(|_| "second derive_copy should succeed")?;
+    assert_eq!(out2.installed_token.unwrap().rights_derived(), 2);
+    Ok(())
+}
+
+/// CTS-CAP-XFER-4 (RFC-0038.5): domain scope — `target_domain_index` set to
+/// receiver's domain; `CAPF_BOUND` set unless cross-domain permitted.
+fn cap_xfer_domain_scope() -> Result<(), &'static str> {
+    // Bound by default.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, 0);
+    let out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Copy,
+        None,
+        9,
+        false,
+        1_000,
+    )
+    .map_err(|_| "copy transfer should succeed")?;
+    let installed = out.installed_token.unwrap();
+    assert_eq!(installed.target_domain_index(), 9);
+    assert!(installed.flags() & CAPF_BOUND != 0);
+
+    // Cross-domain permitted clears CAPF_BOUND.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, 0);
+    let out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Copy,
+        None,
+        9,
+        true,
+        1_000,
+    )
+    .map_err(|_| "cross-domain copy should succeed")?;
+    let installed = out.installed_token.unwrap();
+    assert_eq!(installed.target_domain_index(), 9);
+    assert!(installed.flags() & CAPF_BOUND == 0);
+    Ok(())
+}
+
+/// CTS-CAP-XFER-5 (RFC-0038.6): revocation in-flight takes precedence — a
+/// revoked token cannot be transferred during COPY.
+fn cap_xfer_revocation_in_flight_copy() -> Result<(), &'static str> {
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, CAPF_REVOCABLE);
+    ctp::revoke_token(&mut proto, handle).map_err(|_| "revoke should succeed")?;
+    let err = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Copy,
+        None,
+        2,
+        false,
+        1_000,
+    );
+    assert_eq!(err, Err(ctp::TransferError::Revoked));
+    // Sender's original is unaffected (revocation recorded, no transfer).
+    assert!(!proto.is_invalidated(handle));
+    Ok(())
+}
+
+/// CTS-CAP-XFER-6 (RFC-0038.7): revocation propagates after MOVE — a token
+/// transferred by MOVE can itself be revoked, so it can no longer be
+/// transferred further (revocation takes effect on the moved token).
+fn cap_xfer_revocation_after_move() -> Result<(), &'static str> {
+    // Move the token to a receiver.
+    let (mut proto, handle) = make_proto(RIGHT_READ | RIGHT_TRANSFER, 0);
+    let out = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Move,
+        None,
+        2,
+        false,
+        1_000,
+    )
+    .map_err(|_| "move transfer should succeed")?;
+    assert!(out.sender_invalidated);
+    let installed = out.installed_token.unwrap();
+
+    // Receiver holds the moved token; revoke it.
+    let (mut proto2, handle2) = proto_with_installed(installed);
+    ctp::revoke_token(&mut proto2, handle2).map_err(|_| "revoke moved token should succeed")?;
+
+    // After revocation, the moved token can no longer be transferred.
+    let err = ctp::transfer(
+        &mut proto2,
+        handle2,
+        ctp::TransferType::Copy,
+        None,
+        3,
+        false,
+        1_000,
+    );
+    assert_eq!(err, Err(ctp::TransferError::Revoked));
+    Ok(())
+}
+
+/// CTS-CAP-XFER-7 (RFC-0038.8): on transfer failure the sender's original
+/// capability is unaffected; the sender may retry idempotently.
+fn cap_xfer_sender_retains_on_failure() -> Result<(), &'static str> {
+    // Sender lacks RIGHT_TRANSFER -> failure, original unaffected.
+    let (mut proto, handle) = make_proto(RIGHT_READ, 0);
+    let err = ctp::transfer(
+        &mut proto,
+        handle,
+        ctp::TransferType::Copy,
+        None,
+        2,
+        false,
+        1_000,
+    );
+    assert_eq!(err, Err(ctp::TransferError::NoTransferRight));
+    assert!(!proto.is_invalidated(handle));
+    assert!(proto.held_token(handle).is_some());
+
+    // Retry after adding RIGHT_TRANSFER succeeds (idempotent retry).
+    let token = proto.held_token(handle).unwrap();
+    let retry_token = CapabilityToken::new(
+        token.cap_type(),
+        token.rights() | RIGHT_TRANSFER,
+        token.flags(),
+        token.rights_derived(),
+        token.creation_timestamp_ns(),
+        token.expires_at_ns(),
+        token.target_object(),
+        0,
+    );
+    let (mut proto2, handle2) = proto_with_installed(retry_token);
+    let out = ctp::transfer(
+        &mut proto2,
+        handle2,
+        ctp::TransferType::Copy,
+        None,
+        2,
+        false,
+        1_000,
+    )
+    .map_err(|_| "retry copy transfer should succeed")?;
+    assert!(out.installed_token.is_some());
+    Ok(())
+}
+
+/// Builds a protocol holding a token with the given rights/flags (derived 0,
+/// never expires, target object zeroed, domain 0).
+fn make_proto(rights: u8, flags: u8) -> (ctp::TransferProtocol, ctp::TokenHandle) {
+    let mut proto = ctp::TransferProtocol::default();
+    let token = CapabilityToken::new(CapType::Object, rights, flags, 0, 1_000, 0, [0u8; 16], 0);
+    let handle = proto.hold_token(token);
+    (proto, handle)
+}
+
+/// Builds a protocol holding an already-installed token.
+fn proto_with_installed(token: CapabilityToken) -> (ctp::TransferProtocol, ctp::TokenHandle) {
+    let mut proto = ctp::TransferProtocol::default();
+    let handle = proto.hold_token(token);
+    (proto, handle)
 }
