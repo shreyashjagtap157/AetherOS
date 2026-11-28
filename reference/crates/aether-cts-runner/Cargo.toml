@@ -23,6 +23,7 @@ aether-diagnostic-query = { path = "../aether-diagnostic-query" }
 aether-state-model = { path = "../aether-state-model" }
 aether-sched-model = { path = "../aether-sched-model" }
 aether-dispatch-model = { path = "../aether-dispatch-model" }
+aether-posix-projection = { path = "../aether-posix-projection" }
 aether-storage-model = { path = "../aether-storage-model" }
 aether-storage-provider = { path = "../aether-storage-provider" }
 aether-trace-model = { path = "../aether-trace-model" }

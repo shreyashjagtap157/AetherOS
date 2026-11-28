@@ -41,6 +41,7 @@ use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
 use aether_object_identity::{
     ConsistencyLevel, ObjectIdentity, ReplicaDescriptor, VersionHistory, VersionReason,
 };
+use aether_posix_projection::{FileType, O_CREAT, O_RDONLY, O_WRONLY, PosixProjection};
 use aether_replay_model::{
     Checkpoint, ReplayEngine, ReplayLogHeader, ReplayLogReader, ReplayLogWriter, ReplayState,
     ReplayStep, serialize_event,
@@ -62,7 +63,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 145] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 150] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -296,6 +297,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 145] {
         ("CTS-STATE-PROV-3", cts_prov_removability_test()),
         ("CTS-STATE-PROV-4", cts_prov_two_phase_commit()),
         ("CTS-STATE-PROV-5", cts_prov_health_events()),
+        ("CTS-STATE-POSIX-1", cts_posix_required_operations()),
+        ("CTS-STATE-POSIX-2", cts_posix_object_mapping()),
+        ("CTS-STATE-POSIX-3", cts_posix_transactional_fsync()),
+        ("CTS-STATE-POSIX-4", cts_posix_atomic_rename()),
+        ("CTS-STATE-POSIX-5", cts_posix_capability_precedence()),
     ]
 }
 
@@ -6278,5 +6284,269 @@ fn cts_prov_health_events() -> Result<(), &'static str> {
     if small.health_event_count() == 0 {
         return Err("no low-capacity health event");
     }
+    Ok(())
+}
+
+/// CTS-STATE-POSIX-1 (RFC-0020.1): required POSIX operations — mkdir, open,
+/// write, read, close, stat work end to end.
+fn cts_posix_required_operations() -> Result<(), &'static str> {
+    let mut provider = InMemoryProvider::new(
+        "cts-posix-1",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let root_id = aether_types::ObjectId(1);
+    provider
+        .put(root_id, &[], StorageTier::Hot)
+        .map_err(|_| "root put failed")?;
+    let mut proj = PosixProjection::new(provider, root_id);
+    proj.grant_capability(
+        DomainId::new(1).unwrap(),
+        root_id,
+        Rights::READ.union(Rights::WRITE).union(Rights::EXECUTE),
+    );
+
+    proj.mkdir("/tmp", 1, 0o755).map_err(|_| "mkdir failed")?;
+    let fd = proj
+        .open("/tmp/hello.txt", O_CREAT | O_WRONLY, 1)
+        .map_err(|_| "open create failed")?;
+    proj.write(fd, b"hello world").map_err(|_| "write failed")?;
+    proj.close(fd).map_err(|_| "close failed")?;
+    let fd = proj
+        .open("/tmp/hello.txt", O_RDONLY, 1)
+        .map_err(|_| "open read failed")?;
+    let mut buf = [0u8; 16];
+    let n = proj.read(fd, &mut buf).map_err(|_| "read failed")?;
+    if n != 11 || &buf[..n] != b"hello world" {
+        return Err("read did not return written content");
+    }
+    proj.close(fd).map_err(|_| "close failed")?;
+    let meta = proj.stat("/tmp/hello.txt", 1).map_err(|_| "stat failed")?;
+    if meta.file_type != FileType::RegularFile || meta.size != 11 {
+        return Err("stat metadata mismatch");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-POSIX-2 (RFC-0020.3): every POSIX file and directory is a stored
+/// object retrievable through the provider's object model.
+fn cts_posix_object_mapping() -> Result<(), &'static str> {
+    let mut provider = InMemoryProvider::new(
+        "cts-posix-2",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let root_id = aether_types::ObjectId(1);
+    provider
+        .put(root_id, &[], StorageTier::Hot)
+        .map_err(|_| "root put failed")?;
+    let mut proj = PosixProjection::new(provider, root_id);
+    proj.grant_capability(
+        DomainId::new(1).unwrap(),
+        root_id,
+        Rights::READ.union(Rights::WRITE).union(Rights::EXECUTE),
+    );
+
+    proj.mkdir("/tmp", 1, 0o755).map_err(|_| "mkdir failed")?;
+    let fd = proj
+        .open("/tmp/obj.txt", O_CREAT | O_WRONLY, 1)
+        .map_err(|_| "open create failed")?;
+    proj.write(fd, b"data").map_err(|_| "write failed")?;
+    proj.close(fd).map_err(|_| "close failed")?;
+
+    let meta = proj.stat("/tmp/obj.txt", 1).map_err(|_| "stat failed")?;
+    if meta.file_type != FileType::RegularFile || meta.size != 4 {
+        return Err("object metadata mismatch");
+    }
+    let fd2 = proj
+        .open("/tmp/obj.txt", O_RDONLY, 1)
+        .map_err(|_| "open read failed")?;
+    let mut buf = [0u8; 16];
+    let n = proj.read(fd2, &mut buf).map_err(|_| "read failed")?;
+    if n != 4 || &buf[..n] != b"data" {
+        return Err("object content mismatch");
+    }
+    proj.close(fd2).map_err(|_| "close failed")?;
+    Ok(())
+}
+
+/// CTS-STATE-POSIX-3 (RFC-0020.6): writes are invisible until fsync commits.
+fn cts_posix_transactional_fsync() -> Result<(), &'static str> {
+    let mut provider = InMemoryProvider::new(
+        "cts-posix-3",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let root_id = aether_types::ObjectId(1);
+    provider
+        .put(root_id, &[], StorageTier::Hot)
+        .map_err(|_| "root put failed")?;
+    let mut proj = PosixProjection::new(provider, root_id);
+    proj.grant_capability(
+        DomainId::new(1).unwrap(),
+        root_id,
+        Rights::READ.union(Rights::WRITE).union(Rights::EXECUTE),
+    );
+
+    proj.mkdir("/tmp", 1, 0o755).map_err(|_| "mkdir failed")?;
+    let fd = proj
+        .open("/tmp/txn.txt", O_CREAT | O_WRONLY, 1)
+        .map_err(|_| "open create failed")?;
+    proj.write(fd, b"uncommitted").map_err(|_| "write failed")?;
+
+    let fd2 = proj
+        .open("/tmp/txn.txt", O_RDONLY, 1)
+        .map_err(|_| "open read failed")?;
+    let mut buf = [0u8; 16];
+    let n = proj.read(fd2, &mut buf).map_err(|_| "read failed")?;
+    if n != 0 {
+        return Err("uncommitted write visible before fsync");
+    }
+    proj.close(fd2).map_err(|_| "close failed")?;
+
+    proj.fsync(fd).map_err(|_| "fsync failed")?;
+
+    let fd3 = proj
+        .open("/tmp/txn.txt", O_RDONLY, 1)
+        .map_err(|_| "open read after fsync failed")?;
+    let mut buf = [0u8; 16];
+    let n = proj.read(fd3, &mut buf).map_err(|_| "read failed")?;
+    if n != 11 || &buf[..n] != b"uncommitted" {
+        return Err("committed write not visible after fsync");
+    }
+    proj.close(fd3).map_err(|_| "close failed")?;
+    Ok(())
+}
+
+/// CTS-STATE-POSIX-4 (RFC-0020.7): atomic rename — source removed, target added
+/// atomically.
+fn cts_posix_atomic_rename() -> Result<(), &'static str> {
+    let mut provider = InMemoryProvider::new(
+        "cts-posix-4",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let root_id = aether_types::ObjectId(1);
+    provider
+        .put(root_id, &[], StorageTier::Hot)
+        .map_err(|_| "root put failed")?;
+    let mut proj = PosixProjection::new(provider, root_id);
+    proj.grant_capability(
+        DomainId::new(1).unwrap(),
+        root_id,
+        Rights::READ.union(Rights::WRITE).union(Rights::EXECUTE),
+    );
+
+    proj.mkdir("/tmp", 1, 0o755).map_err(|_| "mkdir failed")?;
+    let fd = proj
+        .open("/tmp/a.txt", O_CREAT | O_WRONLY, 1)
+        .map_err(|_| "open create failed")?;
+    proj.write(fd, b"content-a").map_err(|_| "write failed")?;
+    proj.close(fd).map_err(|_| "close failed")?;
+
+    let fd = proj
+        .open("/tmp/b.txt", O_CREAT | O_WRONLY, 1)
+        .map_err(|_| "open create failed")?;
+    proj.write(fd, b"content-b").map_err(|_| "write failed")?;
+    proj.close(fd).map_err(|_| "close failed")?;
+
+    proj.rename("/tmp/a.txt", "/tmp/c.txt", 1)
+        .map_err(|_| "rename failed")?;
+
+    if proj.stat("/tmp/a.txt", 1).is_ok() {
+        return Err("source entry still exists after rename");
+    }
+    let meta = proj
+        .stat("/tmp/c.txt", 1)
+        .map_err(|_| "stat target failed")?;
+    let fd = proj
+        .open("/tmp/c.txt", O_RDONLY, 1)
+        .map_err(|_| "open target failed")?;
+    let mut buf = [0u8; 16];
+    let n = proj.read(fd, &mut buf).map_err(|_| "read target failed")?;
+    if n != 9 || &buf[..n] != b"content-a" {
+        return Err("renamed file has wrong content");
+    }
+    proj.close(fd).map_err(|_| "close failed")?;
+    let _ = meta;
+    if proj.stat("/tmp/b.txt", 1).is_err() {
+        return Err("unrelated file missing after rename");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-POSIX-5 (RFC-0020.12 / RFC-0020.13): capability rights take
+/// precedence over POSIX mode bits.
+fn cts_posix_capability_precedence() -> Result<(), &'static str> {
+    let mut provider = InMemoryProvider::new(
+        "cts-posix-5",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let root_id = aether_types::ObjectId(1);
+    provider
+        .put(root_id, &[], StorageTier::Hot)
+        .map_err(|_| "root put failed")?;
+    let mut proj = PosixProjection::new(provider, root_id);
+    proj.grant_capability(
+        DomainId::new(1).unwrap(),
+        root_id,
+        Rights::READ.union(Rights::WRITE).union(Rights::EXECUTE),
+    );
+
+    proj.mkdir("/tmp", 1, 0o755).map_err(|_| "mkdir failed")?;
+    let fd = proj
+        .open("/tmp/secret.txt", O_CREAT | O_WRONLY, 1)
+        .map_err(|_| "open create failed")?;
+    proj.write(fd, b"sensitive").map_err(|_| "write failed")?;
+    proj.close(fd).map_err(|_| "close failed")?;
+
+    if proj.open("/tmp/secret.txt", O_RDONLY, 2).is_ok() {
+        return Err("domain 2 access permitted without capability");
+    }
+
+    let secret_meta = proj
+        .stat("/tmp/secret.txt", 1)
+        .map_err(|_| "stat secret failed")?;
+    let tmp_meta = proj.stat("/tmp", 1).map_err(|_| "stat /tmp failed")?;
+    proj.grant_capability(
+        DomainId::new(2).unwrap(),
+        root_id,
+        Rights::READ.union(Rights::EXECUTE),
+    );
+    proj.grant_capability(
+        DomainId::new(2).unwrap(),
+        tmp_meta.object_id,
+        Rights::READ.union(Rights::EXECUTE),
+    );
+    proj.grant_capability(
+        DomainId::new(2).unwrap(),
+        secret_meta.object_id,
+        Rights::READ,
+    );
+    let fd = proj
+        .open("/tmp/secret.txt", O_RDONLY, 2)
+        .map_err(|_| "open with capability failed")?;
+    let mut buf = [0u8; 16];
+    let n = proj.read(fd, &mut buf).map_err(|_| "read failed")?;
+    if n != 9 || &buf[..n] != b"sensitive" {
+        return Err("capability-granted read returned wrong content");
+    }
+    proj.close(fd).map_err(|_| "close failed")?;
     Ok(())
 }

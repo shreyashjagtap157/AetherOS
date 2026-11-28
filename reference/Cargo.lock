@@ -59,6 +59,7 @@ dependencies = [
  "aether-lifecycle-model",
  "aether-mediation-model",
  "aether-object-identity",
+ "aether-posix-projection",
  "aether-replay-model",
  "aether-runtime-model",
  "aether-sched-model",
@@ -145,6 +146,17 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "blake3",
+]
+
+[[package]]
+name = "aether-posix-projection"
+version = "0.1.0"
+dependencies = [
+ "aether-event-model",
+ "aether-object-identity",
+ "aether-storage-provider",
+ "aether-transaction-model",
+ "aether-types",
 ]
 
 [[package]]
