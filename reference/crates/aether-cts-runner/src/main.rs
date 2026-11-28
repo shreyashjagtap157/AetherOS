@@ -60,6 +60,11 @@ use aether_sync_model::{
 use aether_stream_model::{
     is_final_chunk, is_stream_chunk, stream_header, Stream, StreamError, StreamManager, StreamState,
 };
+use aether_verif_model::{
+    ConventionalTestEvidence, EconomicCost, FormalSpec, InvariantTierClaim, ModelCheckReport,
+    ProofArtifact, ProofFragilityClass, Prover, PropertyTestEvidence, SpecLanguage,
+    VerificationDeclaration, VerificationRegistry, VerificationTier,
+};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -90,7 +95,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 213] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 218] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -401,6 +406,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 213] {
         ("CTS-OBS-CONF-3", obs_conf_safety_critical_profile()),
         ("CTS-OBS-CONF-4", obs_conf_cloud_profile()),
         ("CTS-OBS-CONF-5", obs_conf_reporting_format()),
+        ("CTS-VERIF-1", verif_tier_a_proof_artifacts()),
+        ("CTS-VERIF-2", verif_proof_reproducible()),
+        ("CTS-VERIF-3", verif_fragility_consistency()),
+        ("CTS-VERIF-4", verif_release_reevaluation()),
+        ("CTS-VERIF-5", verif_economic_cost_declared()),
     ]
 }
 
@@ -8659,5 +8669,194 @@ fn obs_conf_reporting_format() -> Result<(), &'static str> {
     obs_audit_retention_period()?;
     // Predefined query definitions are observable (RFC-0036.5).
     obs_diag_predefined_queries()?;
+    Ok(())
+}
+
+/// CTS-VERIF-1 (RFC-0040.1): Tier A — formal spec in version control and in the
+/// implementation artifact, machine-checked proof artifact, and proof-fragility
+/// class are all required.
+fn verif_tier_a_proof_artifacts() -> Result<(), &'static str> {
+    let mut decl = VerificationDeclaration::new("kernel", VerificationTier::A);
+    decl.spec = Some(FormalSpec {
+        language: SpecLanguage::Why3,
+        in_version_control: true,
+        in_implementation_artifact: true,
+    });
+    decl.proof = Some(ProofArtifact {
+        prover: Prover::Verus,
+        prover_version: "1.0".to_string(),
+        reproducible: true,
+    });
+    decl.fragility_class = Some(ProofFragilityClass::PF1);
+    decl.re_evaluated = true;
+    decl.economic_cost = Some(EconomicCost {
+        initial_proof_investment_py: 2.0,
+        per_release_reproof_cost_py: 0.5,
+        fragility_class: ProofFragilityClass::PF1,
+        estimated_ten_year_cost_py: 7.0,
+    });
+    if !decl.is_valid() {
+        return Err("tier A declaration with complete proof artifacts should validate");
+    }
+    // Missing proof artifact must invalidate (RFC-0040.1).
+    let mut bad = VerificationDeclaration::new("kernel", VerificationTier::A);
+    bad.spec = Some(FormalSpec {
+        language: SpecLanguage::Why3,
+        in_version_control: true,
+        in_implementation_artifact: true,
+    });
+    bad.fragility_class = Some(ProofFragilityClass::PF1);
+    bad.re_evaluated = true;
+    bad.economic_cost = Some(EconomicCost {
+        initial_proof_investment_py: 1.0,
+        per_release_reproof_cost_py: 0.1,
+        fragility_class: ProofFragilityClass::PF1,
+        estimated_ten_year_cost_py: 2.0,
+    });
+    if bad.is_valid() {
+        return Err("tier A declaration without proof should not validate");
+    }
+    Ok(())
+}
+
+/// CTS-VERIF-2 (RFC-0040.3): machine-checked proofs must be independently
+/// reproducible for Tier A.
+fn verif_proof_reproducible() -> Result<(), &'static str> {
+    let mut decl = VerificationDeclaration::new("kernel", VerificationTier::A);
+    decl.spec = Some(FormalSpec {
+        language: SpecLanguage::Why3,
+        in_version_control: true,
+        in_implementation_artifact: true,
+    });
+    decl.proof = Some(ProofArtifact {
+        prover: Prover::Coq,
+        prover_version: "1.0".to_string(),
+        reproducible: false,
+    });
+    decl.fragility_class = Some(ProofFragilityClass::PF1);
+    decl.re_evaluated = true;
+    decl.economic_cost = Some(EconomicCost {
+        initial_proof_investment_py: 1.0,
+        per_release_reproof_cost_py: 0.1,
+        fragility_class: ProofFragilityClass::PF1,
+        estimated_ten_year_cost_py: 2.0,
+    });
+    if decl.is_valid() {
+        return Err("non-reproducible proof should invalidate tier A");
+    }
+    decl.proof = Some(ProofArtifact {
+        prover: Prover::Coq,
+        prover_version: "1.0".to_string(),
+        reproducible: true,
+    });
+    if !decl.is_valid() {
+        return Err("reproducible proof should validate tier A");
+    }
+    Ok(())
+}
+
+/// CTS-VERIF-3 (RFC-0040.4): proof-fragility class is required for Tier A and
+/// all classes (PF1/PF2/PF3) are accepted.
+fn verif_fragility_consistency() -> Result<(), &'static str> {
+    for class in [ProofFragilityClass::PF1, ProofFragilityClass::PF2, ProofFragilityClass::PF3] {
+        let mut decl = VerificationDeclaration::new("sched", VerificationTier::A);
+        decl.spec = Some(FormalSpec {
+            language: SpecLanguage::Why3,
+            in_version_control: true,
+            in_implementation_artifact: true,
+        });
+        decl.proof = Some(ProofArtifact {
+            prover: Prover::IsabelleHol,
+            prover_version: "1.0".to_string(),
+            reproducible: true,
+        });
+        decl.fragility_class = Some(class);
+        decl.re_evaluated = true;
+        decl.economic_cost = Some(EconomicCost {
+            initial_proof_investment_py: 1.5,
+            per_release_reproof_cost_py: 0.2,
+            fragility_class: class,
+            estimated_ten_year_cost_py: 4.0,
+        });
+        if !decl.is_valid() {
+            return Err("tier A should validate for every fragility class");
+        }
+    }
+    Ok(())
+}
+
+/// CTS-VERIF-4 (RFC-0040.11): Tier A and Tier B components must be
+/// re-evaluated at each platform release.
+fn verif_release_reevaluation() -> Result<(), &'static str> {
+    // Tier A without re-evaluation is invalid.
+    let mut a = VerificationDeclaration::new("kernel", VerificationTier::A);
+    a.spec = Some(FormalSpec {
+        language: SpecLanguage::Why3,
+        in_version_control: true,
+        in_implementation_artifact: true,
+    });
+    a.proof = Some(ProofArtifact {
+        prover: Prover::Verus,
+        prover_version: "1.0".to_string(),
+        reproducible: true,
+    });
+    a.fragility_class = Some(ProofFragilityClass::PF1);
+    a.economic_cost = Some(EconomicCost {
+        initial_proof_investment_py: 1.0,
+        per_release_reproof_cost_py: 0.1,
+        fragility_class: ProofFragilityClass::PF1,
+        estimated_ten_year_cost_py: 2.0,
+    });
+    if a.is_valid() {
+        return Err("tier A without re-evaluation should not validate");
+    }
+    a.re_evaluated = true;
+    if !a.is_valid() {
+        return Err("tier A with re-evaluation should validate");
+    }
+    // Tier B without re-evaluation is invalid.
+    let mut b = VerificationDeclaration::new("sched", VerificationTier::B);
+    b.model_report = Some(ModelCheckReport {
+        language: aether_verif_model::ModelCheckLanguage::TlaPlus,
+        logic: aether_verif_model::PropertyLogic::Ltl,
+        all_properties_satisfied: true,
+    });
+    if b.is_valid() {
+        return Err("tier B without re-evaluation should not validate");
+    }
+    b.re_evaluated = true;
+    if !b.is_valid() {
+        return Err("tier B with re-evaluation should validate");
+    }
+    Ok(())
+}
+
+/// CTS-VERIF-5 (RFC-0040.13): Tier A requires an economic cost declaration.
+fn verif_economic_cost_declared() -> Result<(), &'static str> {
+    let mut decl = VerificationDeclaration::new("driver", VerificationTier::A);
+    decl.spec = Some(FormalSpec {
+        language: SpecLanguage::Acsl,
+        in_version_control: true,
+        in_implementation_artifact: true,
+    });
+    decl.proof = Some(ProofArtifact {
+        prover: Prover::Why3,
+        prover_version: "1.0".to_string(),
+        reproducible: true,
+    });
+    decl.fragility_class = Some(ProofFragilityClass::PF1);
+    decl.re_evaluated = true;
+    if decl.is_valid() {
+        return Err("tier A without economic cost should not validate");
+    }
+    decl.economic_cost = Some(EconomicCost {
+        initial_proof_investment_py: 0.5,
+        per_release_reproof_cost_py: 0.05,
+        fragility_class: ProofFragilityClass::PF1,
+        estimated_ten_year_cost_py: 1.0,
+    });
+    if !decl.is_valid() {
+        return Err("tier A with economic cost should validate");
+    }
     Ok(())
 }

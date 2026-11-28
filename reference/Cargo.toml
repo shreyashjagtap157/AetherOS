@@ -26,6 +26,7 @@ members = [
     "crates/aether-capability-transfer",
     "crates/aether-sync-model",
     "crates/aether-stream-model",
+    "crates/aether-verif-model",
     "crates/aether-obj-projection",
     "crates/aether-posix-projection",
     "crates/aether-storage-model",
