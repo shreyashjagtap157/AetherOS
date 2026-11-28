@@ -67,6 +67,7 @@ dependencies = [
  "aether-storage-model",
  "aether-time-model",
  "aether-trace-model",
+ "aether-transaction-model",
  "aether-types",
  "aether-update-model",
 ]
@@ -195,6 +196,17 @@ name = "aether-trace-model"
 version = "0.1.0"
 dependencies = [
  "aether-event-model",
+ "aether-types",
+]
+
+[[package]]
+name = "aether-transaction-model"
+version = "0.1.0"
+dependencies = [
+ "aether-event-model",
+ "aether-integrity-model",
+ "aether-lifecycle-model",
+ "aether-object-identity",
  "aether-types",
 ]
 

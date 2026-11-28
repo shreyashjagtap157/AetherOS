@@ -51,6 +51,7 @@ use aether_state_model::{
 };
 use aether_time_model::{TimeError, TimeEvent, TimeModel, TimeSourceId, TimerMode};
 use aether_trace_model::{ROOT_SPAN_ID, SpanClass, SpanOutcome, TraceEmitter, TraceSamplingPolicy};
+use aether_transaction_model::{TransactionCoordinator, TransactionId};
 use aether_types::{
     Bounds, CapError, Capability, CapabilityFlags, DomainId, Handle, ObjectId, ObjectType, Rights,
 };
@@ -58,7 +59,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 134] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 140] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -275,6 +276,18 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 134] {
         ("CTS-OBS-DIAG-4", obs_diag_predefined_queries()),
         ("CTS-OBS-DIAG-5", obs_diag_query_logged()),
         ("CTS-OBS-DIAG-6", obs_diag_authorization_enforced()),
+        ("CTS-STATE-TXN-1", cts_txn_two_phase_commit_all_prepared()),
+        ("CTS-STATE-TXN-2", cts_txn_prepare_failure_aborts_all()),
+        ("CTS-STATE-TXN-3", cts_txn_client_abort()),
+        ("CTS-STATE-TXN-4", cts_txn_write_write_conflict_detected()),
+        (
+            "CTS-STATE-TXN-5",
+            cts_txn_snapshot_isolation_reads_committed(),
+        ),
+        (
+            "CTS-STATE-TXN-6",
+            cts_txn_crash_recovery_aborts_in_progress(),
+        ),
     ]
 }
 
@@ -5827,6 +5840,176 @@ fn obs_diag_authorization_enforced() -> Result<(), &'static str> {
     // Non-sensitive events need no right.
     if authorize_query(EventClass::State.id(), false, &[]).is_err() {
         return Err("non-sensitive events wrongly require right");
+    }
+    Ok(())
+}
+
+fn make_txn_xid(bytes: [u8; 16]) -> TransactionId {
+    TransactionId::from_bytes(bytes)
+}
+
+/// CTS-STATE-TXN-1 (RFC-0016.4): two-phase commit — all participants PREPARED,
+/// then COMMIT, transaction reaches COMMITTED and mutations become visible.
+fn cts_txn_two_phase_commit_all_prepared() -> Result<(), &'static str> {
+    let mut coord = TransactionCoordinator::new();
+    let xid = make_txn_xid([1u8; 16]);
+    coord.begin(xid, 1_000_000, 2, None).unwrap();
+    coord.register_participant(&xid, true).unwrap();
+    coord.register_participant(&xid, true).unwrap();
+    coord
+        .add_mutation(&xid, ObjectId(0x100), b"committed-data".to_vec())
+        .unwrap();
+    coord.commit(&xid, 2_000_000).map_err(|_| "commit failed")?;
+    let txn = coord.get_transaction(&xid).ok_or("transaction missing")?;
+    if !txn.is_committed() {
+        return Err("transaction did not reach COMMITTED");
+    }
+    if coord.read_committed(&ObjectId(0x100)) != Some(&b"committed-data".to_vec()) {
+        return Err("committed mutation not visible");
+    }
+    for p in txn.participants.values() {
+        if !p.durable || !p.acked {
+            return Err("participant not durable/acked");
+        }
+    }
+    Ok(())
+}
+
+/// CTS-STATE-TXN-2 (RFC-0016.5): prepare failure — any participant that cannot
+/// prepare aborts the entire transaction; no mutation is applied.
+fn cts_txn_prepare_failure_aborts_all() -> Result<(), &'static str> {
+    let mut coord = TransactionCoordinator::new();
+    let xid = make_txn_xid([2u8; 16]);
+    coord.begin(xid, 1_000_000, 2, None).unwrap();
+    coord.register_participant(&xid, true).unwrap();
+    coord.register_participant(&xid, false).unwrap(); // cannot prepare
+    coord
+        .add_mutation(&xid, ObjectId(0x200), b"should-not-apply".to_vec())
+        .unwrap();
+    if coord.commit(&xid, 2_000_000).is_ok() {
+        return Err("commit succeeded despite prepare failure");
+    }
+    let txn = coord.get_transaction(&xid).ok_or("transaction missing")?;
+    if !txn.is_aborted() {
+        return Err("transaction not aborted after prepare failure");
+    }
+    if coord.read_committed(&ObjectId(0x200)).is_some() {
+        return Err("mutation applied after abort");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-TXN-3 (RFC-0016.1): client abort — aborting an OPEN transaction
+/// moves it to ABORTED.
+fn cts_txn_client_abort() -> Result<(), &'static str> {
+    let mut coord = TransactionCoordinator::new();
+    let xid = make_txn_xid([3u8; 16]);
+    coord.begin(xid, 1_000_000, 1, None).unwrap();
+    coord.register_participant(&xid, true).unwrap();
+    coord.abort(&xid).map_err(|_| "abort failed")?;
+    let txn = coord.get_transaction(&xid).ok_or("transaction missing")?;
+    if !txn.is_aborted() {
+        return Err("transaction not aborted");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-TXN-4 (RFC-0016.9): write-write conflict — a second transaction
+/// writing an object already written by a committed transaction is rejected.
+fn cts_txn_write_write_conflict_detected() -> Result<(), &'static str> {
+    let mut coord = TransactionCoordinator::new();
+    let xid1 = make_txn_xid([4u8; 16]);
+    coord.begin(xid1, 1_000_000, 1, None).unwrap();
+    coord.register_participant(&xid1, true).unwrap();
+    coord
+        .add_mutation(&xid1, ObjectId(0x300), b"v1".to_vec())
+        .unwrap();
+    coord
+        .commit(&xid1, 2_000_000)
+        .map_err(|_| "first commit failed")?;
+
+    let xid2 = make_txn_xid([5u8; 16]);
+    coord.begin(xid2, 2_500_000, 1, None).unwrap();
+    coord.register_participant(&xid2, true).unwrap();
+    coord
+        .add_mutation(&xid2, ObjectId(0x300), b"v2".to_vec())
+        .unwrap();
+    if coord.commit(&xid2, 3_000_000).is_ok() {
+        return Err("conflicting commit was accepted");
+    }
+    let txn2 = coord.get_transaction(&xid2).ok_or("transaction missing")?;
+    if !txn2.is_aborted() {
+        return Err("conflicted transaction not aborted");
+    }
+    if coord.read_committed(&ObjectId(0x300)) != Some(&b"v1".to_vec()) {
+        return Err("first writer's value not visible");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-TXN-5 (RFC-0016.8): snapshot isolation — a transaction reads the
+/// committed snapshot as of its start; concurrent uncommitted writes are not
+/// visible.
+fn cts_txn_snapshot_isolation_reads_committed() -> Result<(), &'static str> {
+    let mut coord = TransactionCoordinator::new();
+    let xid1 = make_txn_xid([6u8; 16]);
+    coord.begin(xid1, 1_000_000, 1, None).unwrap();
+    coord.register_participant(&xid1, true).unwrap();
+    coord
+        .add_mutation(&xid1, ObjectId(0x400), b"old".to_vec())
+        .unwrap();
+    coord
+        .commit(&xid1, 2_000_000)
+        .map_err(|_| "seed commit failed")?;
+
+    let xid2 = make_txn_xid([7u8; 16]);
+    coord.begin(xid2, 2_500_000, 1, None).unwrap();
+    coord.register_participant(&xid2, true).unwrap();
+    coord
+        .add_mutation(&xid2, ObjectId(0x400), b"uncommitted".to_vec())
+        .unwrap();
+
+    if coord.read_committed(&ObjectId(0x400)) != Some(&b"old".to_vec()) {
+        return Err("snapshot read observed uncommitted write");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-TXN-6 (RFC-0016.13): crash recovery — in-progress transactions
+/// that were not COMMITTED at crash time are recovered as ABORTED; committed
+/// transactions are not downgraded.
+fn cts_txn_crash_recovery_aborts_in_progress() -> Result<(), &'static str> {
+    let mut coord = TransactionCoordinator::new();
+
+    // Committed transaction survives recovery.
+    let xid1 = make_txn_xid([8u8; 16]);
+    coord.begin(xid1, 1_000_000, 1, None).unwrap();
+    coord.register_participant(&xid1, true).unwrap();
+    coord
+        .add_mutation(&xid1, ObjectId(0x500), b"durable".to_vec())
+        .unwrap();
+    coord
+        .commit(&xid1, 2_000_000)
+        .map_err(|_| "commit failed")?;
+
+    // In-progress transaction is aborted by recovery.
+    let xid2 = make_txn_xid([9u8; 16]);
+    coord.begin(xid2, 2_500_000, 1, None).unwrap();
+    coord.register_participant(&xid2, true).unwrap();
+    coord
+        .add_mutation(&xid2, ObjectId(0x500), b"uncommitted".to_vec())
+        .unwrap();
+
+    let recovered = coord.recover_after_crash();
+    if recovered != vec![xid2] {
+        return Err("recovery did not target the in-progress transaction");
+    }
+    let txn2 = coord.get_transaction(&xid2).ok_or("transaction missing")?;
+    if !txn2.is_aborted() {
+        return Err("in-progress transaction not aborted by recovery");
+    }
+    if coord.read_committed(&ObjectId(0x500)) != Some(&b"durable".to_vec()) {
+        return Err("committed transaction downgraded by recovery");
     }
     Ok(())
 }
