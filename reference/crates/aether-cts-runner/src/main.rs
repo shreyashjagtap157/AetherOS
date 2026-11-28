@@ -35,6 +35,10 @@ use aether_interrupt_model::{
     DeliveryMode, DeliveryOutcome, InterruptEvent, InterruptRouter, IrqVector, RoutingEntry,
 };
 use aether_kv_projection::{KvError, KvProjection};
+use aether_message_format::{
+    EndpointId, HEADER_LEN, MAGIC, MAX_MESSAGE_SIZE, MSG_CAP_TRANSFER, MSG_ERROR, MSG_FAST,
+    MSG_NO_REPLY, MSG_STREAM, VERSION, Message, MessageError, MessageHeader,
+};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -65,7 +69,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 170] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 175] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -333,6 +337,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 170] {
             state_conf_safety_critical_profile_passed(),
         ),
         ("CTS-STATE-CONF-5", state_conf_reporting_format()),
+        ("CTS-COMM-MSG-1", comm_msg_header_format()),
+        ("CTS-COMM-MSG-2", comm_msg_flags_parsing()),
+        ("CTS-COMM-MSG-3", comm_msg_trailer_capability_tokens()),
+        ("CTS-COMM-MSG-4", comm_msg_max_size_enforcement()),
+        ("CTS-COMM-MSG-5", comm_msg_reply_correlation()),
     ]
 }
 
@@ -7342,6 +7351,240 @@ fn state_conf_reporting_format() -> Result<(), &'static str> {
     }
     if report.lifecycle_policy.is_empty() {
         return Err("lifecycle policy parameters not declared");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-MSG-1 (RFC-0024.1): header format — magic, version, header_len,
+/// and all fields round-trip through serialization with network byte order.
+fn comm_msg_header_format() -> Result<(), &'static str> {
+    let src = EndpointId::new([1u8; 16]);
+    let dst = EndpointId::new([2u8; 16]);
+    let header = MessageHeader::new(
+        42,
+        src,
+        dst,
+        100,
+        50,
+        MSG_STREAM,
+        128,
+        3,
+    );
+    // Canonical fixed fields (RFC-0024.1).
+    if header.magic != MAGIC {
+        return Err("magic not set to COMP signature");
+    }
+    if header.version != VERSION {
+        return Err("version not 1");
+    }
+    if header.header_len as usize != HEADER_LEN as usize {
+        return Err("header_len not equal to fixed header size");
+    }
+    // Round-trip serialization preserves every field in network byte order.
+    let bytes = header.serialize();
+    if bytes.len() != 61 {
+        return Err("serialized header is not 61 bytes");
+    }
+    let parsed = MessageHeader::deserialize(&bytes).map_err(|_| "deserialize failed")?;
+    if parsed.message_id != 42
+        || parsed.src_endpoint != src
+        || parsed.dst_endpoint != dst
+        || parsed.payload_len != 100
+        || parsed.trailer_len != 50
+        || parsed.flags != MSG_STREAM
+        || parsed.urgency != 128
+        || parsed.capability_count != 3
+        || parsed.reserved != 0
+    {
+        return Err("header field mismatch after round-trip");
+    }
+    // Invalid magic is rejected.
+    let mut bad = header.serialize();
+    bad[0] ^= 0xFF;
+    if MessageHeader::deserialize(&bad).is_ok() {
+        return Err("invalid magic was accepted");
+    }
+    // Invalid version is rejected.
+    let mut bad = header.serialize();
+    bad[4] = 0xFF;
+    if MessageHeader::deserialize(&bad).is_ok() {
+        return Err("invalid version was accepted");
+    }
+    // Truncated buffer is rejected.
+    if MessageHeader::deserialize(&bytes[..10]).is_ok() {
+        return Err("truncated header was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-MSG-2 (RFC-0024.2): flags parsing — each flag bit is recognized
+/// independently and combinations compose correctly.
+fn comm_msg_flags_parsing() -> Result<(), &'static str> {
+    let src = EndpointId::none();
+    let dst = EndpointId::none();
+    let msg = Message::new(
+        MessageHeader::new(1, src, dst, 0, 0, MSG_FAST, 0, 0),
+        Vec::new(),
+        Vec::new(),
+    ).map_err(|_| "message creation failed")?;
+    if msg.is_no_reply() || msg.is_stream() || msg.has_capability_transfer() || msg.is_error() {
+        return Err("MSG_FAST should not set other flags");
+    }
+    if msg.header.flags & MSG_FAST != MSG_FAST {
+        return Err("MSG_FAST bit not set");
+    }
+    let combined = Message::new(
+        MessageHeader::new(
+            2,
+            src,
+            dst,
+            0,
+            0,
+            MSG_FAST | MSG_CAP_TRANSFER | MSG_STREAM | MSG_NO_REPLY,
+            0,
+            0,
+        ),
+        Vec::new(),
+        Vec::new(),
+    ).map_err(|_| "message creation failed")?;
+    if !combined.is_no_reply()
+        || !combined.is_stream()
+        || !combined.has_capability_transfer()
+        || combined.is_error()
+    {
+        return Err("combined flags not parsed correctly");
+    }
+    let error_msg = Message::new(
+        MessageHeader::new(3, src, dst, 0, 0, MSG_ERROR, 0, 0),
+        Vec::new(),
+        Vec::new(),
+    ).map_err(|_| "message creation failed")?;
+    if !error_msg.is_error() {
+        return Err("MSG_ERROR bit not set");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-MSG-3 (RFC-0024.4): trailer capability tokens — capability_count
+/// matches the number of tokens declared, and serialization preserves the
+/// trailer bytes exactly.
+fn comm_msg_trailer_capability_tokens() -> Result<(), &'static str> {
+    let src = EndpointId::new([1u8; 16]);
+    let dst = EndpointId::new([2u8; 16]);
+    // Serialized capability tokens per RFC-0037 (opaque bytes here).
+    let tokens = vec![
+        vec![0xCA, 0xFE, 0xBA, 0xBE],
+        vec![0xDE, 0xAD, 0xBE, 0xEF],
+    ];
+    let trailer: Vec<u8> = tokens.iter().flat_map(|t| t.iter().copied()).collect();
+    let msg = Message::new(
+        MessageHeader::new(1, src, dst, 0, trailer.len() as u32, MSG_CAP_TRANSFER, 0, 2),
+        Vec::new(),
+        trailer.clone(),
+    ).map_err(|_| "message creation failed")?;
+    if msg.header.capability_count != 2 {
+        return Err("capability_count does not match token count");
+    }
+    let round = Message::deserialize(&msg.serialize()).map_err(|_| "deserialize failed")?;
+    if round.trailer != trailer {
+        return Err("trailer bytes not preserved on round-trip");
+    }
+    if round.header.capability_count != 2 {
+        return Err("capability_count not preserved on round-trip");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-MSG-4 (RFC-0024.6): max size enforcement — payload + trailer
+/// exceeding MAX_MESSAGE_SIZE is rejected with PayloadTooLarge.
+fn comm_msg_max_size_enforcement() -> Result<(), &'static str> {
+    let src = EndpointId::none();
+    let dst = EndpointId::none();
+    // Just under the limit is accepted.
+    let ok = Message::new(
+        MessageHeader::new(1, src, dst, MAX_MESSAGE_SIZE as u32 - 1, 0, 0, 0, 0),
+        vec![0u8; MAX_MESSAGE_SIZE - 1],
+        Vec::new(),
+    );
+    if ok.is_err() {
+        return Err("message just under max size was rejected");
+    }
+    // Over the limit is rejected.
+    let too_big = Message::new(
+        MessageHeader::new(2, src, dst, MAX_MESSAGE_SIZE as u32 + 1, 0, 0, 0, 0),
+        vec![0u8; MAX_MESSAGE_SIZE + 1],
+        Vec::new(),
+    );
+    if matches!(too_big, Err(MessageError::PayloadTooLarge)) {
+        // expected
+    } else {
+        return Err("oversized message was accepted");
+    }
+    // Trailer counts toward the limit too.
+    let over_with_trailer = Message::new(
+        MessageHeader::new(3, src, dst, 1, 1, 0, 0, 0),
+        vec![0u8; MAX_MESSAGE_SIZE],
+        vec![0u8; 1],
+    );
+    if !matches!(
+        over_with_trailer,
+        Err(MessageError::PayloadTooLarge)
+    ) {
+        return Err("oversized payload+trailer was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-MSG-5 (RFC-0024.9): reply correlation — a reply has the same
+/// message_id as the request with src_endpoint and dst_endpoint swapped.
+fn comm_msg_reply_correlation() -> Result<(), &'static str> {
+    let src = EndpointId::new([7u8; 16]);
+    let dst = EndpointId::new([8u8; 16]);
+    let request = Message::new(
+        MessageHeader::new(99, src, dst, 4, 0, 0, 10, 0),
+        b"ping".to_vec(),
+        Vec::new(),
+    ).map_err(|_| "message creation failed")?;
+    let reply = Message::reply_for(
+        request.header.message_id,
+        request.header.src_endpoint,
+        request.header.dst_endpoint,
+        b"pong".to_vec(),
+    ).map_err(|_| "reply creation failed")?;
+    if reply.header.message_id != request.header.message_id {
+        return Err("reply does not echo request message_id");
+    }
+    if reply.header.src_endpoint != request.header.dst_endpoint {
+        return Err("reply src_endpoint not swapped");
+    }
+    if reply.header.dst_endpoint != request.header.src_endpoint {
+        return Err("reply dst_endpoint not swapped");
+    }
+    if reply.payload != b"pong" {
+        return Err("reply payload mismatch");
+    }
+    if reply.is_error() {
+        return Err("reply incorrectly flagged as error");
+    }
+    // Error response correlation (RFC-0024.7).
+    let err = Message::error_response(
+        request.header.message_id,
+        request.header.src_endpoint,
+        request.header.dst_endpoint,
+        0x5FA00001,
+    );
+    if !err.is_error() {
+        return Err("error response not flagged MSG_ERROR");
+    }
+    if err.header.message_id != request.header.message_id {
+        return Err("error response does not echo request message_id");
+    }
+    if err.payload.len() < 4 {
+        return Err("error response payload missing error code");
+    }
+    let code = u32::from_be_bytes([err.payload[0], err.payload[1], err.payload[2], err.payload[3]]);
+    if code != 0x5FA00001 {
+        return Err("error response error code mismatch");
     }
     Ok(())
 }

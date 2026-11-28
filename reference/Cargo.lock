@@ -59,6 +59,7 @@ dependencies = [
  "aether-kv-projection",
  "aether-lifecycle-model",
  "aether-mediation-model",
+ "aether-message-format",
  "aether-obj-projection",
  "aether-object-identity",
  "aether-posix-projection",
@@ -148,6 +149,13 @@ dependencies = [
 
 [[package]]
 name = "aether-mediation-model"
+version = "0.1.0"
+dependencies = [
+ "aether-types",
+]
+
+[[package]]
+name = "aether-message-format"
 version = "0.1.0"
 dependencies = [
  "aether-types",
