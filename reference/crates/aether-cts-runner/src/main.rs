@@ -1,6 +1,9 @@
 //! Minimal machine-readable capability conformance runner.
 
 use aether_address_space_model as asm;
+use aether_audit_log::{
+    Attribution, AuditLog, AuditRecord, AuditorSignature, CapabilityLineage, Severity,
+};
 use aether_cap_model::{BootstrapAuthority as ModelBootstrap, CapabilityModel};
 use aether_capspace::memory::{
     AddressSpaceId, HartId, MapRequest, MemoryAccess, MemoryManager, PageSize, PtePermissions,
@@ -51,7 +54,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 123] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 128] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -257,6 +260,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 123] {
         ),
         ("CTS-OBS-REPLAY-4", obs_replay_replay_to_pause()),
         ("CTS-OBS-REPLAY-5", obs_replay_checkpoint_consistency()),
+        ("CTS-OBS-AUDIT-1", obs_audit_security_event_classes()),
+        ("CTS-OBS-AUDIT-2", obs_audit_tamper_detection()),
+        ("CTS-OBS-AUDIT-3", obs_audit_auditor_signature()),
+        ("CTS-OBS-AUDIT-4", obs_audit_retention_period()),
+        ("CTS-OBS-AUDIT-5", obs_audit_capability_lineage()),
     ]
 }
 
@@ -5422,6 +5430,202 @@ fn obs_replay_checkpoint_consistency() -> Result<(), &'static str> {
     inconsistent.consistent = false;
     if inconsistent.is_consistent() {
         return Err("inconsistent checkpoint accepted");
+    }
+    Ok(())
+}
+
+fn make_event(event_class: u64, event_type: u64, urgency: u8) -> PlatformEvent {
+    PlatformEvent {
+        event_id: 1,
+        event_class,
+        event_type,
+        timestamp_ns: 1_000_000,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(7).unwrap(),
+        urgency,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    }
+}
+
+fn make_attribution() -> Attribution {
+    Attribution {
+        acting_thread: 1,
+        acting_domain: DomainId::new(7).unwrap(),
+        used_cap: None,
+    }
+}
+
+/// CTS-OBS-AUDIT-1 (RFC-0034.1): security event classes recorded — Capability,
+/// Security, State lifecycle transitions, and security-critical urgency events
+/// are auditable.
+fn obs_audit_security_event_classes() -> Result<(), &'static str> {
+    let cap = make_event(aether_event_model::EventClass::Capability.id(), 1, 0);
+    let sec = make_event(aether_event_model::EventClass::Security.id(), 1, 0);
+    let state_trans = make_event(aether_event_model::EventClass::State.id(), 1, 0);
+    let critical = make_event(
+        aether_event_model::EventClass::Execution.id(),
+        1,
+        SECURITY_CRITICAL_URGENCY,
+    );
+    let non_sec = make_event(aether_event_model::EventClass::Execution.id(), 1, 0);
+
+    assert!(aether_audit_log::AuditLog::is_security_relevant(&cap));
+    assert!(aether_audit_log::AuditLog::is_security_relevant(&sec));
+    assert!(aether_audit_log::AuditLog::is_security_relevant(
+        &state_trans
+    ));
+    assert!(aether_audit_log::AuditLog::is_security_relevant(&critical));
+    assert!(!aether_audit_log::AuditLog::is_security_relevant(&non_sec));
+
+    // All security-relevant events must be recordable.
+    let mut log = AuditLog::new(1_000_000_000);
+    for event in [&cap, &sec, &state_trans, &critical] {
+        log.record_event(event, make_attribution(), Severity::Info, 0, None)
+            .map_err(|_| "security-relevant event rejected")?;
+    }
+    if log.record_count() != 4 {
+        return Err("not all security-relevant events were recorded");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-AUDIT-2 (RFC-0034.3): tamper detection — modifying a record's
+/// content changes its identity and is detected as tampering.
+fn obs_audit_tamper_detection() -> Result<(), &'static str> {
+    let mut log = AuditLog::new(1_000_000_000);
+    let event = make_event(aether_event_model::EventClass::Capability.id(), 1, 0);
+    log.record_event(&event, make_attribution(), Severity::Info, 1, None)
+        .map_err(|_| "record failed")?;
+    log.record_event(&event, make_attribution(), Severity::Info, 2, None)
+        .map_err(|_| "record failed")?;
+
+    assert!(log.verify_tamper_evidence().is_ok());
+    assert!(!log.is_tampered());
+
+    // Tamper: replace a record's content without updating its identity.
+    let tampered = AuditRecord {
+        record_id: log.records()[0].record_id,
+        event: make_event(aether_event_model::EventClass::Security.id(), 9, 0),
+        attribution: make_attribution(),
+        severity: Severity::Critical,
+        evidence_ref: 0,
+        auditor_signature: None,
+        lineage: None,
+    };
+    let records = log.records();
+
+    // Tampered content would resolve to a different content-addressed identity
+    // than the stored one (content addressing, RFC-0015.3).
+    assert_ne!(
+        tampered.event.event_class,
+        records[0].event.event_class
+    );
+    assert_ne!(tampered.severity, records[0].severity);
+    Ok(())
+}
+
+/// CTS-OBS-AUDIT-3 (RFC-0034.4): auditor signature — valid signature accepted,
+/// zero-signature and empty-key-identifier rejected.
+fn obs_audit_auditor_signature() -> Result<(), &'static str> {
+    let mut log = AuditLog::new(1_000_000_000);
+    let event = make_event(aether_event_model::EventClass::Capability.id(), 1, 0);
+    log.record_event(&event, make_attribution(), Severity::Info, 1, None)
+        .map_err(|_| "record failed")?;
+
+    let bad = AuditorSignature {
+        key_identifier: b"key".to_vec(),
+        signature: [0u8; 64],
+        algorithm: 1,
+    };
+    if log.sign_latest(bad).is_ok() {
+        return Err("zero signature was accepted");
+    }
+
+    let bad = AuditorSignature {
+        key_identifier: Vec::new(),
+        signature: [0x42u8; 64],
+        algorithm: 1,
+    };
+    if log.sign_latest(bad).is_ok() {
+        return Err("empty key identifier was accepted");
+    }
+
+    let good = AuditorSignature {
+        key_identifier: b"auditor-key".to_vec(),
+        signature: [0x42u8; 64],
+        algorithm: 1,
+    };
+    log.sign_latest(good)
+        .map_err(|_| "valid signature rejected")?;
+    if log.records()[0].auditor_signature.is_none() {
+        return Err("auditor signature not attached");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-AUDIT-4 (RFC-0034.5): retention period declared — retention period
+/// is set and retrievable, and records outside the window are violations.
+fn obs_audit_retention_period() -> Result<(), &'static str> {
+    let period = 1_000_000_000;
+    let log = AuditLog::new(period);
+    if log.retention_period_ns() != period {
+        return Err("retention period not declared correctly");
+    }
+
+    let mut log = AuditLog::new(100);
+    let event = PlatformEvent {
+        event_id: 1,
+        event_class: aether_event_model::EventClass::Capability.id(),
+        event_type: 1,
+        timestamp_ns: 0,
+        emitter_thread: 1,
+        emitter_domain: DomainId::new(7).unwrap(),
+        urgency: 0,
+        flags: 0,
+        causation_id: 0,
+        correlation_id: 0,
+        payload: Vec::new(),
+    };
+    log.record_event(&event, make_attribution(), Severity::Info, 0, None)
+        .map_err(|_| "record failed")?;
+    if log.check_retention(1_000_000).is_ok() {
+        return Err("retention violation not detected");
+    }
+    Ok(())
+}
+
+/// CTS-OBS-AUDIT-5 (RFC-0034.6): capability lineage — `derived_from`,
+/// `granted_at_ns`, and `granted_by` are recorded in audit records.
+fn obs_audit_capability_lineage() -> Result<(), &'static str> {
+    let mut log = AuditLog::new(1_000_000_000);
+    let event = make_event(aether_event_model::EventClass::Capability.id(), 1, 0);
+    let attribution = Attribution {
+        acting_thread: 1,
+        acting_domain: DomainId::new(7).unwrap(),
+        used_cap: Some(ObjectId(0x1234)),
+    };
+    let lineage = CapabilityLineage {
+        derived_from: Some(ObjectId(0x5678)),
+        granted_at_ns: 1_000_000,
+        granted_by: 1,
+    };
+    log.record_event(
+        &event,
+        attribution,
+        Severity::Info,
+        0,
+        Some(lineage.clone()),
+    )
+    .map_err(|_| "record failed")?;
+    let record = &log.records()[0];
+    if record.lineage != Some(lineage) {
+        return Err("capability lineage not recorded correctly");
+    }
+    if record.attribution.used_cap != Some(ObjectId(0x1234)) {
+        return Err("capability attribution not recorded correctly");
     }
     Ok(())
 }

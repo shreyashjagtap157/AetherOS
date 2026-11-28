@@ -11,6 +11,7 @@ members = [
     "crates/aether-exec-domain-model",
     "crates/aether-event-model",
     "crates/aether-address-space-model",
+    "crates/aether-audit-log",
     "crates/aether-interrupt-model",
     "crates/aether-mediation-model",
     "crates/aether-object-identity",
