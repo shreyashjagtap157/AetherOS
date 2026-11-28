@@ -242,6 +242,7 @@ pub struct AllocRequest {
 }
 
 /// Result of a successful allocation.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AllocationGrant {
     /// Capability token authorising access to the allocated region.
     pub capability: Capability,
@@ -250,6 +251,7 @@ pub struct AllocationGrant {
 }
 
 /// Result of a successful DMA allocation.
+#[derive(Clone, Debug, PartialEq)]
 pub struct DmaAllocationGrant {
     /// Capability token authorising device DMA access to the region.
     pub capability: Capability,
@@ -1552,6 +1554,8 @@ mod tests {
     fn allocation_grants_capability_with_subset_rights() {
         let mut a = Allocator::new();
         a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
+        a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
         a.authority_mut()
@@ -1574,6 +1578,8 @@ mod tests {
     #[test]
     fn derivation_cannot_add_rights() {
         let mut a = Allocator::new();
+        a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
         a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
@@ -1613,6 +1619,8 @@ mod tests {
     fn revocation_cascades_to_derived_capabilities() {
         let mut a = Allocator::new();
         a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
+        a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
         a.authority_mut()
@@ -1646,6 +1654,8 @@ mod tests {
     fn dma_allocation_rejected_from_non_dma_zone() {
         let mut a = Allocator::new();
         a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
+        a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
         a.authority_mut()
@@ -1666,6 +1676,8 @@ mod tests {
     #[test]
     fn dma_revoke_invalidates_iommu() {
         let mut a = Allocator::new();
+        a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
         a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
@@ -1713,6 +1725,8 @@ mod tests {
     fn fragmentation_event_emitted_above_threshold() {
         let mut a = Allocator::new();
         a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
+        a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
         a.authority_mut()
@@ -1736,6 +1750,8 @@ mod tests {
     #[test]
     fn region_ids_unique_across_allocations() {
         let mut a = Allocator::new();
+        a.authority_mut()
+            .install_boot_allocator(0x1000, 4096);
         a.authority_mut()
             .decommission_boot_allocator(NOW_NS)
             .unwrap();
