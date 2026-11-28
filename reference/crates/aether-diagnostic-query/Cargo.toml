@@ -1,0 +1,15 @@
+[package]
+name = "aether-diagnostic-query"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aether-event-model = { path = "../aether-event-model" }
+aether-types = { path = "../aether-types" }
+aether-trace-model = { path = "../aether-trace-model" }
+aether-replay-model = { path = "../aether-replay-model" }
+
+[lints]
+workspace = true

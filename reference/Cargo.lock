@@ -50,6 +50,7 @@ dependencies = [
  "aether-cap-model",
  "aether-capspace",
  "aether-comp-model",
+ "aether-diagnostic-query",
  "aether-dispatch-model",
  "aether-event-model",
  "aether-exec-domain-model",
@@ -68,6 +69,16 @@ dependencies = [
  "aether-trace-model",
  "aether-types",
  "aether-update-model",
+]
+
+[[package]]
+name = "aether-diagnostic-query"
+version = "0.1.0"
+dependencies = [
+ "aether-event-model",
+ "aether-replay-model",
+ "aether-trace-model",
+ "aether-types",
 ]
 
 [[package]]
