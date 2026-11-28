@@ -28,6 +28,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-cap-revocation-protocol"
+version = "0.1.0"
+dependencies = [
+ "aether-cap-token",
+]
+
+[[package]]
 name = "aether-cap-rights-algebra"
 version = "0.1.0"
 
@@ -72,6 +79,7 @@ dependencies = [
  "aether-address-space-model",
  "aether-audit-log",
  "aether-cap-model",
+ "aether-cap-revocation-protocol",
  "aether-cap-rights-algebra",
  "aether-cap-token",
  "aether-cap-transfer-protocol",

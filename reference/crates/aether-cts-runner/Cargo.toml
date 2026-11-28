@@ -23,6 +23,7 @@ aether-endpoint-model = { path = "../aether-endpoint-model" }
 aether-routing-model = { path = "../aether-routing-model" }
 aether-cap-token = { path = "../aether-cap-token" }
 aether-cap-transfer-protocol = { path = "../aether-cap-transfer-protocol" }
+aether-cap-revocation-protocol = { path = "../aether-cap-revocation-protocol" }
 aether-cap-rights-algebra = { path = "../aether-cap-rights-algebra" }
 aether-capability-transfer = { path = "../aether-capability-transfer" }
 aether-sync-model = { path = "../aether-sync-model" }

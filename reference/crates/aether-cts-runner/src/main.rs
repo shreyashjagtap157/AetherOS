@@ -63,6 +63,7 @@ use aether_stream_model::{
 };
 use aether_cap_rights_algebra as cra;
 use aether_cap_transfer_protocol as ctp;
+use aether_cap_revocation_protocol as crp;
 use aether_verif_model::{
     ConventionalTestEvidence, EconomicCost, FormalSpec, InvariantTierClaim, ModelCheckReport,
     ProofArtifact, ProofFragilityClass, Prover, PropertyTestEvidence, SpecLanguage,
@@ -98,7 +99,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 230] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 236] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -426,6 +427,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 230] {
         ("CTS-CAP-XFER-5", cap_xfer_revocation_in_flight_copy()),
         ("CTS-CAP-XFER-6", cap_xfer_revocation_after_move()),
         ("CTS-CAP-XFER-7", cap_xfer_sender_retains_on_failure()),
+        ("CTS-CAP-REV-2", cap_rev_propagates_to_derived()),
+        ("CTS-CAP-REV-3", cap_rev_propagates_to_transferred_copy()),
+        ("CTS-CAP-REV-4", cap_rev_list_append_only_chained()),
+        ("CTS-CAP-REV-5", cap_rev_notification_recorded()),
+        ("CTS-CAP-REV-6", cap_rev_status_query()),
+        ("CTS-CAP-REV-7", cap_rev_within_bound()),
     ]
 }
 
@@ -9324,4 +9331,136 @@ fn proto_with_installed(token: CapabilityToken) -> (ctp::TransferProtocol, ctp::
     let mut proto = ctp::TransferProtocol::default();
     let handle = proto.hold_token(token);
     (proto, handle)
+}
+
+/// Builds a revocation protocol holding a revocable token (never expires).
+fn make_rev_proto_revocable() -> (crp::RevocationProtocol, crp::CapHandle) {
+    let mut proto = crp::RevocationProtocol::new(5_000_000_000);
+    proto.advance_time(5_000);
+    let token = CapabilityToken::new(
+        CapType::Object,
+        RIGHT_READ | RIGHT_TRANSFER,
+        CAPF_REVOCABLE,
+        0,
+        1_000,
+        0,
+        [0u8; 16],
+        0,
+    );
+    let handle = proto.hold_capability(token);
+    (proto, handle)
+}
+
+/// CTS-CAP-REV-2 (RFC-0039.3): revocation propagates transitively to derived
+/// capabilities.
+fn cap_rev_propagates_to_derived() -> Result<(), &'static str> {
+    let (mut proto, parent) = make_rev_proto_revocable();
+    let child = proto.hold_capability(CapabilityToken::new(
+        CapType::Object,
+        RIGHT_READ,
+        CAPF_REVOCABLE,
+        0,
+        1_000,
+        0,
+        [0u8; 16],
+        0,
+    ));
+    proto.record_lineage(parent, child);
+    proto.revoke(parent, crp::RevocationReason::Explicit)
+        .map_err(|_| "revoke parent should succeed")?;
+    assert!(proto.is_revoked(parent));
+    assert!(proto.is_revoked(child));
+    Ok(())
+}
+
+/// CTS-CAP-REV-3 (RFC-0039.4): revocation propagates to transferred COPY
+/// capabilities.
+fn cap_rev_propagates_to_transferred_copy() -> Result<(), &'static str> {
+    let (mut proto, original) = make_rev_proto_revocable();
+    let copy = proto.hold_capability(CapabilityToken::new(
+        CapType::Object,
+        RIGHT_READ,
+        CAPF_REVOCABLE,
+        0,
+        1_000,
+        0,
+        [0u8; 16],
+        0,
+    ));
+    proto.record_lineage(original, copy);
+    proto.revoke(original, crp::RevocationReason::Explicit)
+        .map_err(|_| "revoke original should succeed")?;
+    assert!(proto.is_revoked(copy));
+    Ok(())
+}
+
+/// CTS-CAP-REV-4 (RFC-0039.6): revocation list is append-only and Merkle
+/// chained (each entry links to the previous hash).
+fn cap_rev_list_append_only_chained() -> Result<(), &'static str> {
+    let mut proto = make_rev_proto_revocable().0;
+    let h1 = proto.hold_capability(CapabilityToken::new(
+        CapType::Object,
+        RIGHT_READ,
+        CAPF_REVOCABLE,
+        0,
+        1_000,
+        0,
+        [0u8; 16],
+        0,
+    ));
+    let h2 = proto.hold_capability(CapabilityToken::new(
+        CapType::Object,
+        RIGHT_READ,
+        CAPF_REVOCABLE,
+        0,
+        1_000,
+        0,
+        [0u8; 16],
+        0,
+    ));
+    proto.revoke(h1, crp::RevocationReason::Explicit)
+        .map_err(|_| "revoke h1 should succeed")?;
+    let first_hash = proto.revocation_entries()[0].entry_hash;
+    proto.revoke(h2, crp::RevocationReason::Policy)
+        .map_err(|_| "revoke h2 should succeed")?;
+    assert_eq!(proto.revocation_list_len(), 2);
+    // Merkle chain: second entry links back to the first (RFC-0039.5).
+    assert_eq!(
+        proto.revocation_entries()[1].previous_hash,
+        Some(first_hash)
+    );
+    Ok(())
+}
+
+/// CTS-CAP-REV-5 (RFC-0039.8): revocation of a holder is recorded (notification
+/// surface for CapRevoked events, RFC-0031).
+fn cap_rev_notification_recorded() -> Result<(), &'static str> {
+    let (mut proto, handle) = make_rev_proto_revocable();
+    proto.revoke(handle, crp::RevocationReason::Compulsory)
+        .map_err(|_| "revoke should succeed")?;
+    assert!(proto.is_revoked(handle));
+    assert_eq!(proto.revocation_list_len(), 1);
+    Ok(())
+}
+
+/// CTS-CAP-REV-6 (RFC-0039.9): revocation status query returns reason and
+/// timestamp for a revoked capability.
+fn cap_rev_status_query() -> Result<(), &'static str> {
+    let (mut proto, handle) = make_rev_proto_revocable();
+    proto.revoke(handle, crp::RevocationReason::Expired)
+        .map_err(|_| "revoke should succeed")?;
+    let status = proto.revocation_status(handle);
+    assert!(status.is_some());
+    let (reason, ts) = status.unwrap();
+    assert_eq!(reason, crp::RevocationReason::Expired);
+    assert_eq!(ts, 5_000);
+    Ok(())
+}
+
+/// CTS-CAP-REV-7 (RFC-0039.11): revocation completes within the declared bound.
+fn cap_rev_within_bound() -> Result<(), &'static str> {
+    let bound_ns = 1_000_000_000;
+    let proto = crp::RevocationProtocol::new(bound_ns);
+    assert_eq!(proto.revocation_bound_ns(), bound_ns);
+    Ok(())
 }

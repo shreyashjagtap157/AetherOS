@@ -24,6 +24,7 @@ members = [
     "crates/aether-routing-model",
     "crates/aether-cap-token",
     "crates/aether-cap-transfer-protocol",
+    "crates/aether-cap-revocation-protocol",
     "crates/aether-cap-rights-algebra",
     "crates/aether-capability-transfer",
     "crates/aether-sync-model",
