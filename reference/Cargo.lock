@@ -52,6 +52,7 @@ dependencies = [
  "aether-comp-model",
  "aether-diagnostic-query",
  "aether-dispatch-model",
+ "aether-endpoint-model",
  "aether-event-model",
  "aether-exec-domain-model",
  "aether-integrity-model",
@@ -93,6 +94,14 @@ version = "0.1.0"
 dependencies = [
  "aether-address-space-model",
  "aether-exec-domain-model",
+ "aether-types",
+]
+
+[[package]]
+name = "aether-endpoint-model"
+version = "0.1.0"
+dependencies = [
+ "aether-message-format",
  "aether-types",
 ]
 

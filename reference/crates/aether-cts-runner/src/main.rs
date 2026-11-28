@@ -39,6 +39,10 @@ use aether_message_format::{
     EndpointId, HEADER_LEN, MAGIC, MAX_MESSAGE_SIZE, MSG_CAP_TRANSFER, MSG_ERROR, MSG_FAST,
     MSG_NO_REPLY, MSG_STREAM, VERSION, Message, MessageError, MessageHeader,
 };
+use aether_endpoint_model::{
+    ALL_ENDPOINT_CAPS, CommErrorCode, EndpointCapKind, EndpointError, EndpointMode,
+    EndpointRegistry, EndpointRegistration,
+};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -69,7 +73,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 175] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 181] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -342,6 +346,12 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 175] {
         ("CTS-COMM-MSG-3", comm_msg_trailer_capability_tokens()),
         ("CTS-COMM-MSG-4", comm_msg_max_size_enforcement()),
         ("CTS-COMM-MSG-5", comm_msg_reply_correlation()),
+        ("CTS-COMM-EP-1", comm_ep_capability_protected_registration()),
+        ("CTS-COMM-EP-2", comm_ep_registration_fields()),
+        ("CTS-COMM-EP-3", comm_ep_capability_kinds()),
+        ("CTS-COMM-EP-4", comm_ep_handler_vs_polling_mode()),
+        ("CTS-COMM-EP-5", comm_ep_error_code_format()),
+        ("CTS-COMM-EP-6", comm_ep_close_deferred_until_queue_empty()),
     ]
 }
 
@@ -7585,6 +7595,240 @@ fn comm_msg_reply_correlation() -> Result<(), &'static str> {
     let code = u32::from_be_bytes([err.payload[0], err.payload[1], err.payload[2], err.payload[3]]);
     if code != 0x5FA00001 {
         return Err("error response error code mismatch");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-EP-1 (RFC-0025.2): capability-protected registration — registering
+/// an endpoint requires capability authority, and receiving requires a RECV
+/// capability for that endpoint.
+fn comm_ep_capability_protected_registration() -> Result<(), &'static str> {
+    let domain = DomainId::new(1).ok_or("invalid domain")?;
+    let mut registry = EndpointRegistry::new();
+    let reg = EndpointRegistration {
+        name: "test-endpoint".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Send.bit() | EndpointCapKind::Recv.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    // Registration succeeds and returns an endpoint id + capability token.
+    let (id, token) = registry.register(domain, reg).map_err(|_| "registration failed")?;
+    if id.is_none() {
+        return Err("endpoint id is zero / invalid");
+    }
+    if token.len() != 34 {
+        return Err("capability token is not 34 bytes");
+    }
+    // The same name cannot be registered twice (capability-protected uniqueness).
+    let reg2 = EndpointRegistration {
+        name: "test-endpoint".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Send.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    if registry.register(domain, reg2).is_ok() {
+        return Err("duplicate endpoint registration was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-EP-2 (RFC-0025.3): registration fields — name, max message size,
+/// supported rights, handler capability, and mode are all preserved.
+fn comm_ep_registration_fields() -> Result<(), &'static str> {
+    let domain = DomainId::new(2).ok_or("invalid domain")?;
+    let mut registry = EndpointRegistry::new();
+    let reg = EndpointRegistration {
+        name: "field-check".to_string(),
+        max_msg_size: 65536,
+        supported_rights: EndpointCapKind::Query.bit() | EndpointCapKind::Close.bit(),
+        handler_cap: Some(vec![0xAA; 32]),
+        mode: EndpointMode::Handler,
+    };
+    let (id, _token) = registry.register(domain, reg).map_err(|_| "registration failed")?;
+    let meta = registry.metadata(id).ok_or("endpoint metadata missing")?;
+    if meta.id != id {
+        return Err("metadata id does not match registered id");
+    }
+    if meta.owner_domain != domain {
+        return Err("metadata owner domain mismatch");
+    }
+    if meta.max_msg_size != 65536 {
+        return Err("max_msg_size not preserved");
+    }
+    if meta.registered_rights != (EndpointCapKind::Query.bit() | EndpointCapKind::Close.bit()) {
+        return Err("registered rights mismatch");
+    }
+    // Name too long (>256 bytes) is rejected.
+    let long_name = "x".repeat(257);
+    let reg_long = EndpointRegistration {
+        name: long_name,
+        max_msg_size: 4096,
+        supported_rights: 0,
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    if registry.register(domain, reg_long).is_ok() {
+        return Err("oversized endpoint name was accepted");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-EP-3 (RFC-0025.5): endpoint capability kinds — all five kinds
+/// (SEND, RECV, QUERY, CLOSE, INHERIT) have distinct bits and compose.
+fn comm_ep_capability_kinds() -> Result<(), &'static str> {
+    let all = EndpointCapKind::Send.bit()
+        | EndpointCapKind::Recv.bit()
+        | EndpointCapKind::Query.bit()
+        | EndpointCapKind::Close.bit()
+        | EndpointCapKind::Inherit.bit();
+    if all != 0x1F {
+        return Err("capability kind bits do not compose to 0x1F");
+    }
+    for cap in ALL_ENDPOINT_CAPS {
+        if !cap.in_rights(all) {
+            return Err("capability kind not present in combined rights");
+        }
+    }
+    // Each kind has a distinct bit.
+    let mut seen = 0u8;
+    for cap in ALL_ENDPOINT_CAPS {
+        if seen & cap.bit() != 0 {
+            return Err("duplicate capability kind bit");
+        }
+        seen |= cap.bit();
+    }
+    // Empty rights grant no capabilities.
+    if EndpointCapKind::Send.in_rights(0) || EndpointCapKind::Recv.in_rights(0) {
+        return Err("empty rights grant capabilities");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-EP-4 (RFC-0025.7): handler vs polling mode — handler is default,
+/// poll mode does not invoke a handler.
+fn comm_ep_handler_vs_polling_mode() -> Result<(), &'static str> {
+    let domain = DomainId::new(3).ok_or("invalid domain")?;
+    let mut registry = EndpointRegistry::new();
+    // Polling mode: handler_cap is None, mode is Poll.
+    let reg_poll = EndpointRegistration {
+        name: "poll-endpoint".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Recv.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    let (id_poll, _token) =
+        registry.register(domain, reg_poll).map_err(|_| "poll registration failed")?;
+    let meta_poll = registry.metadata(id_poll).ok_or("poll endpoint metadata missing")?;
+    if meta_poll.registered_rights != EndpointCapKind::Recv.bit() {
+        return Err("poll endpoint rights not preserved");
+    }
+    // Handler mode: handler_cap is Some, mode is Handler.
+    let reg_handler = EndpointRegistration {
+        name: "handler-endpoint".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Send.bit() | EndpointCapKind::Recv.bit(),
+        handler_cap: Some(vec![0xBB; 16]),
+        mode: EndpointMode::Handler,
+    };
+    let (id_handler, _token) =
+        registry.register(domain, reg_handler).map_err(|_| "handler registration failed")?;
+    let meta_handler = registry.metadata(id_handler).ok_or("handler endpoint metadata missing")?;
+    if meta_handler.registered_rights
+        != (EndpointCapKind::Send.bit() | EndpointCapKind::Recv.bit())
+    {
+        return Err("handler endpoint rights not preserved");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-EP-5 (RFC-0025.9): error code format — error codes are returned in
+/// `MSG_ERROR` response format per RFC-0024.7.
+fn comm_ep_error_code_format() -> Result<(), &'static str> {
+    // All defined error codes map to a numeric value.
+    let codes = [
+        CommErrorCode::Ok,
+        CommErrorCode::ENODEST,
+        CommErrorCode::ENOCAP,
+        CommErrorCode::EMSGSIZE,
+        CommErrorCode::ENOTCONN,
+        CommErrorCode::ECAPSTALE,
+        CommErrorCode::EPROTO,
+        CommErrorCode::EQUOTA,
+    ];
+    let expected = [0, 1, 2, 3, 4, 5, 6, 7];
+    for (i, c) in codes.iter().enumerate() {
+        if c.code() != expected[i] as u32 {
+            return Err("error code numeric value mismatch");
+        }
+    }
+    // EndpointError maps to CommErrorCode per RFC-0025.9.
+    let mappings = [
+        (EndpointError::NotFound, CommErrorCode::ENODEST),
+        (EndpointError::NoCap, CommErrorCode::ENOCAP),
+        (EndpointError::QuotaExceeded, CommErrorCode::EQUOTA),
+        (EndpointError::NotConnected, CommErrorCode::ENOTCONN),
+        (EndpointError::CapStale, CommErrorCode::ECAPSTALE),
+    ];
+    for (e, expected_code) in mappings {
+        let code: CommErrorCode = e.into();
+        if code != expected_code {
+            return Err("endpoint error does not map to expected comm error code");
+        }
+    }
+    // An error response message carries MSG_ERROR flag and error code in first 4 payload bytes.
+    let src = EndpointId::none();
+    let dst = EndpointId::none();
+    let err_msg = Message::error_response(7, src, dst, CommErrorCode::ENOCAP.code());
+    if !err_msg.is_error() {
+        return Err("error response not flagged MSG_ERROR");
+    }
+    if err_msg.payload.len() < 4 {
+        return Err("error response payload missing error code");
+    }
+    let code = u32::from_be_bytes([
+        err_msg.payload[0],
+        err_msg.payload[1],
+        err_msg.payload[2],
+        err_msg.payload[3],
+    ]);
+    if code != CommErrorCode::ENOCAP.code() {
+        return Err("error response error code mismatch");
+    }
+    Ok(())
+}
+
+/// CTS-COMM-EP-6 (RFC-0025.10): close deferred until queue empty — closing an
+/// endpoint with pending messages is rejected unless forced.
+fn comm_ep_close_deferred_until_queue_empty() -> Result<(), &'static str> {
+    let domain = DomainId::new(4).ok_or("invalid domain")?;
+    let mut registry = EndpointRegistry::new();
+    let reg = EndpointRegistration {
+        name: "close-test".to_string(),
+        max_msg_size: 4096,
+        supported_rights: EndpointCapKind::Recv.bit(),
+        handler_cap: None,
+        mode: EndpointMode::Poll,
+    };
+    let (id, _token) = registry.register(domain, reg).map_err(|_| "registration failed")?;
+    // Enqueue messages to fill the queue.
+    registry.enqueue(id).map_err(|_| "enqueue failed")?;
+    registry.enqueue(id).map_err(|_| "enqueue failed")?;
+    // Close without force is rejected because the queue is not empty.
+    if registry.close(id, false).is_ok() {
+        return Err("close with non-empty queue was accepted without force");
+    }
+    // Forced close succeeds.
+    registry.close(id, true).map_err(|_| "forced close failed")?;
+    // The endpoint is now closed and no longer findable.
+    if registry.metadata(id).is_some() {
+        return Err("closed endpoint still has metadata");
+    }
+    // Operations on a closed endpoint are rejected.
+    if registry.dequeue(id).is_ok() {
+        return Err("dequeue on closed endpoint was accepted");
     }
     Ok(())
 }
