@@ -22,6 +22,7 @@ aether-message-format = { path = "../aether-message-format" }
 aether-endpoint-model = { path = "../aether-endpoint-model" }
 aether-routing-model = { path = "../aether-routing-model" }
 aether-cap-token = { path = "../aether-cap-token" }
+aether-cap-rights-algebra = { path = "../aether-cap-rights-algebra" }
 aether-capability-transfer = { path = "../aether-capability-transfer" }
 aether-sync-model = { path = "../aether-sync-model" }
 aether-stream-model = { path = "../aether-stream-model" }

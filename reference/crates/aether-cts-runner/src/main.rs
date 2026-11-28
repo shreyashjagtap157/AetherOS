@@ -60,6 +60,7 @@ use aether_sync_model::{
 use aether_stream_model::{
     is_final_chunk, is_stream_chunk, stream_header, Stream, StreamError, StreamManager, StreamState,
 };
+use aether_cap_rights_algebra as cra;
 use aether_verif_model::{
     ConventionalTestEvidence, EconomicCost, FormalSpec, InvariantTierClaim, ModelCheckReport,
     ProofArtifact, ProofFragilityClass, Prover, PropertyTestEvidence, SpecLanguage,
@@ -95,7 +96,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 218] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 223] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -411,6 +412,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 218] {
         ("CTS-VERIF-3", verif_fragility_consistency()),
         ("CTS-VERIF-4", verif_release_reevaluation()),
         ("CTS-VERIF-5", verif_economic_cost_declared()),
+        ("CTS-CAPR-1", caprights_derive_narrows()),
+        ("CTS-CAPR-2", caprights_rejects_amplification()),
+        ("CTS-CAPR-3", caprights_transfer_policy()),
+        ("CTS-CAPR-4", caprights_revoke_stale()),
+        ("CTS-CAPR-5", caprights_import_export()),
     ]
 }
 
@@ -8857,6 +8863,164 @@ fn verif_economic_cost_declared() -> Result<(), &'static str> {
     });
     if !decl.is_valid() {
         return Err("tier A with economic cost should validate");
+    }
+    Ok(())
+}
+
+/// CTS-CAPR-1 (RFC-0043.1): derivation narrows rights, bounds, lifetime, and
+/// delegation depth; object/type remain compatible; provenance chains to parent.
+fn caprights_derive_narrows() -> Result<(), &'static str> {
+    let parent = cra::Capability::root(
+        cra::DomainId(1),
+        cra::ObjectId(42),
+        cra::TypeId(1),
+        cra::Rights::Admin,
+        cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+        1,
+        cra::Lifetime { expires_at_ns: 10_000 },
+        5,
+    );
+    let derived = cra::derive(
+        &parent,
+        cra::CapabilityId(1),
+        cra::CapabilityId(7),
+        cra::DeriveParams {
+            rights: cra::Rights::Read,
+            bounds: cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+            lifetime: cra::Lifetime { expires_at_ns: 5_000 },
+            delegation_depth: 4,
+        },
+    )
+    .map_err(|_| "derive should succeed")?;
+    if derived.rights != cra::Rights::Read {
+        return Err("derived rights should be Read");
+    }
+    if derived.delegation_depth != 4 {
+        return Err("delegation depth should decrease to 4");
+    }
+    if derived.provenance.parent.is_none() {
+        return Err("provenance should chain to parent");
+    }
+    Ok(())
+}
+
+/// CTS-CAPR-2 (RFC-0043.1): derivation rejects rights amplification.
+fn caprights_rejects_amplification() -> Result<(), &'static str> {
+    let read_parent = cra::Capability {
+        rights: cra::Rights::Read,
+        ..cra::Capability::root(
+            cra::DomainId(1),
+            cra::ObjectId(42),
+            cra::TypeId(1),
+            cra::Rights::Admin,
+            cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+            1,
+            cra::Lifetime { expires_at_ns: 10_000 },
+            5,
+        )
+    };
+    let err = cra::derive(
+        &read_parent,
+        cra::CapabilityId(1),
+        cra::CapabilityId(7),
+        cra::DeriveParams {
+            rights: cra::Rights::Write,
+            bounds: cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+            lifetime: cra::Lifetime { expires_at_ns: 5_000 },
+            delegation_depth: 4,
+        },
+    );
+    if err != Err(cra::AlgebraError::RightsAmplification) {
+        return Err("derive should reject rights amplification");
+    }
+    Ok(())
+}
+
+/// CTS-CAPR-3 (RFC-0043.3): transfer requires explicit grant policy; copying
+/// bytes is not transfer.
+fn caprights_transfer_policy() -> Result<(), &'static str> {
+    let cap = cra::Capability::root(
+        cra::DomainId(1),
+        cra::ObjectId(42),
+        cra::TypeId(1),
+        cra::Rights::Admin,
+        cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+        1,
+        cra::Lifetime { expires_at_ns: 10_000 },
+        5,
+    );
+    if cra::transfer(&cap, cra::DomainId(2), false).is_ok() {
+        return Err("transfer without grant policy should fail");
+    }
+    let transferred = cra::transfer(&cap, cra::DomainId(2), true)
+        .map_err(|_| "operation failed")?;
+    if transferred.subject_domain != cra::DomainId(2) {
+        return Err("transfer should change subject domain");
+    }
+    if transferred.object != cap.object {
+        return Err("transfer should preserve object binding");
+    }
+    Ok(())
+}
+
+/// CTS-CAPR-4 (RFC-0043.4): revocation advances epoch and stale handles fail.
+fn caprights_revoke_stale() -> Result<(), &'static str> {
+    let cap = cra::Capability::root(
+        cra::DomainId(1),
+        cra::ObjectId(42),
+        cra::TypeId(1),
+        cra::Rights::Admin,
+        cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+        1,
+        cra::Lifetime { expires_at_ns: 10_000 },
+        5,
+    );
+    let (revoked, record) = cra::revoke(&cap, 9);
+    if revoked.epoch != 9 {
+        return Err("revoked capability should carry new epoch");
+    }
+    if record.revoked_at_epoch != 9 {
+        return Err("revocation record should carry new epoch");
+    }
+    if cra::is_fresh(&cap, 9) {
+        return Err("pre-revocation handle should be stale at new epoch");
+    }
+    if !cra::is_fresh(&revoked, 9) {
+        return Err("revoked handle should be fresh at new epoch");
+    }
+    Ok(())
+}
+
+/// CTS-CAPR-5 (RFC-0043.6, RFC-0043.7): import verifies before allocating a
+/// handle; export requires explicit authorization.
+fn caprights_import_export() -> Result<(), &'static str> {
+    if cra::import(&[], cra::DomainId(1), 1).is_ok() {
+        return Err("import of empty record should fail");
+    }
+    let imported = cra::import(b"v1", cra::DomainId(2), 7)
+        .map_err(|_| "operation failed")?;
+    if imported.handle.domain != cra::DomainId(2) {
+        return Err("imported handle should bind to destination domain");
+    }
+    if imported.capability.epoch != 7 {
+        return Err("imported capability should record current epoch");
+    }
+    let cap = cra::Capability::root(
+        cra::DomainId(1),
+        cra::ObjectId(42),
+        cra::TypeId(1),
+        cra::Rights::Admin,
+        cra::Bounds { scope: "fs:/home/user".to_string(), _sealed: () },
+        1,
+        cra::Lifetime { expires_at_ns: 10_000 },
+        5,
+    );
+    if cra::export(&cap, false).is_ok() {
+        return Err("export without authorization should fail");
+    }
+    let bytes = cra::export(&cap, true).map_err(|_| "operation failed")?;
+    if bytes.is_empty() {
+        return Err("authorized export should produce bytes");
     }
     Ok(())
 }

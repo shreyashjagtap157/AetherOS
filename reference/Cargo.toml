@@ -23,6 +23,7 @@ members = [
     "crates/aether-endpoint-model",
     "crates/aether-routing-model",
     "crates/aether-cap-token",
+    "crates/aether-cap-rights-algebra",
     "crates/aether-capability-transfer",
     "crates/aether-sync-model",
     "crates/aether-stream-model",
