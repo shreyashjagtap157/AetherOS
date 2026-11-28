@@ -34,6 +34,7 @@ use aether_integrity_model::{
 use aether_interrupt_model::{
     DeliveryMode, DeliveryOutcome, InterruptEvent, InterruptRouter, IrqVector, RoutingEntry,
 };
+use aether_kv_projection::{KvError, KvProjection};
 use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
@@ -64,7 +65,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 155] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 160] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -308,6 +309,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 155] {
         ("CTS-STATE-OBJPROJ-3", cts_objproj_atomic_update()),
         ("CTS-STATE-OBJPROJ-4", cts_objproj_batch_all_or_nothing()),
         ("CTS-STATE-OBJPROJ-5", cts_objproj_immutable_rejected()),
+        ("CTS-STATE-KV-1", cts_kv_full_api()),
+        ("CTS-STATE-KV-2", cts_kv_transactional_grouping()),
+        ("CTS-STATE-KV-3", cts_kv_two_phase_commit_abort()),
+        ("CTS-STATE-KV-4", cts_kv_atomic_cas()),
+        ("CTS-STATE-KV-5", cts_kv_cas_conflict()),
     ]
 }
 
@@ -6787,4 +6793,196 @@ fn make_cts_provider() -> Result<aether_storage_provider::InMemoryProvider, &'st
         0.999,
         0x01,
     ))
+}
+
+/// CTS-STATE-KV-1 (RFC-0022.1): full KV API — put, get, delete, exists, list
+/// work end to end.
+fn cts_kv_full_api() -> Result<(), &'static str> {
+    let mut proj = KvProjection::new(make_cts_provider()?);
+
+    // Initially empty.
+    if proj.kv_exists(b"foo") {
+        return Err("key exists before put");
+    }
+    if proj.kv_list(b"", 10).len() != 0 {
+        return Err("empty projection not empty");
+    }
+
+    // Put.
+    proj.kv_put(b"foo", b"value-one")
+        .map_err(|_| "put failed")?;
+    if !proj.kv_exists(b"foo") {
+        return Err("key should exist after put");
+    }
+    if proj.kv_get(b"foo").map_err(|_| "get failed")? != b"value-one" {
+        return Err("get returned wrong value");
+    }
+
+    // Put another key.
+    proj.kv_put(b"bar", b"value-two")
+        .map_err(|_| "put failed")?;
+
+    // List in lexicographic order.
+    let listed = proj.kv_list(b"", 10);
+    if listed != vec![b"bar".to_vec(), b"foo".to_vec()] {
+        return Err("list order mismatch");
+    }
+
+    // Prefix list.
+    let prefixed = proj.kv_list(b"f", 10);
+    if prefixed != vec![b"foo".to_vec()] {
+        return Err("prefix list mismatch");
+    }
+
+    // Update.
+    proj.kv_put(b"foo", b"value-one-updated")
+        .map_err(|_| "put failed")?;
+    if proj.kv_get(b"foo").map_err(|_| "get failed")? != b"value-one-updated" {
+        return Err("update did not change value");
+    }
+
+    // Delete.
+    proj.kv_delete(b"bar").map_err(|_| "delete failed")?;
+    if proj.kv_exists(b"bar") {
+        return Err("deleted key still exists");
+    }
+    if proj.kv_list(b"", 10) != vec![b"foo".to_vec()] {
+        return Err("list after delete mismatch");
+    }
+    if proj.kv_delete(b"bar") != Err(KvError::NotFound) {
+        return Err("delete of missing key should fail");
+    }
+    if proj.kv_get(b"bar") != Err(KvError::NotFound) {
+        return Err("get of missing key should fail");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-KV-2 (RFC-0022.5): transactional grouping — multiple puts and
+/// deletes in one txn commit atomically.
+fn cts_kv_transactional_grouping() -> Result<(), &'static str> {
+    let mut proj = KvProjection::new(make_cts_provider()?);
+    proj.kv_put(b"a", b"one").map_err(|_| "put failed")?;
+    proj.kv_put(b"b", b"two").map_err(|_| "put failed")?;
+
+    let txn = proj.kv_txn_open().map_err(|_| "txn open failed")?;
+    proj.kv_txn_put(txn, b"a", b"one-changed")
+        .map_err(|_| "txn put failed")?;
+    proj.kv_txn_put(txn, b"c", b"three")
+        .map_err(|_| "txn put failed")?;
+    proj.kv_txn_delete(txn, b"b")
+        .map_err(|_| "txn delete failed")?;
+
+    // Uncommitted: reads still see pre-txn state.
+    if proj.kv_get(b"a").map_err(|_| "get failed")? != b"one" {
+        return Err("uncommitted put visible");
+    }
+    if proj.kv_exists(b"c") {
+        return Err("uncommitted key visible");
+    }
+    if proj.kv_get(b"b").map_err(|_| "get failed")? != b"two" {
+        return Err("uncommitted delete visible");
+    }
+
+    proj.kv_txn_commit(txn).map_err(|_| "txn commit failed")?;
+
+    // Committed: all changes visible atomically.
+    if proj.kv_get(b"a").map_err(|_| "get failed")? != b"one-changed" {
+        return Err("committed put not visible");
+    }
+    if proj.kv_get(b"c").map_err(|_| "get failed")? != b"three" {
+        return Err("committed key not visible");
+    }
+    if proj.kv_exists(b"b") {
+        return Err("committed delete not applied");
+    }
+    if proj.kv_list(b"", 10) != vec![b"a".to_vec(), b"c".to_vec()] {
+        return Err("list after commit mismatch");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-KV-3 (RFC-0022.6): two-phase commit — abort discards all staged
+/// writes; none are applied.
+fn cts_kv_two_phase_commit_abort() -> Result<(), &'static str> {
+    let mut proj = KvProjection::new(make_cts_provider()?);
+    proj.kv_put(b"a", b"one").map_err(|_| "put failed")?;
+
+    let txn = proj.kv_txn_open().map_err(|_| "txn open failed")?;
+    proj.kv_txn_put(txn, b"a", b"should-not-apply")
+        .map_err(|_| "txn put failed")?;
+    proj.kv_txn_put(txn, b"b", b"also-not")
+        .map_err(|_| "txn put failed")?;
+    proj.kv_txn_abort(txn).map_err(|_| "txn abort failed")?;
+
+    // State unchanged after abort.
+    if proj.kv_get(b"a").map_err(|_| "get failed")? != b"one" {
+        return Err("aborted put changed state");
+    }
+    if proj.kv_exists(b"b") {
+        return Err("aborted key visible");
+    }
+    if proj.kv_list(b"", 10) != vec![b"a".to_vec()] {
+        return Err("list after abort mismatch");
+    }
+
+    // The aborted handle can no longer be used.
+    if proj.kv_txn_commit(txn) != Err(KvError::UnknownTransaction) {
+        return Err("committing aborted txn should fail");
+    }
+    if proj.kv_txn_delete(txn, b"a") != Err(KvError::UnknownTransaction) {
+        return Err("deleting on aborted txn should fail");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-KV-4 (RFC-0022.7): atomic CAS — replaces value only if the
+/// current value matches the expected identity.
+fn cts_kv_atomic_cas() -> Result<(), &'static str> {
+    let mut proj = KvProjection::new(make_cts_provider()?);
+    proj.kv_put(b"k", b"value-one").map_err(|_| "put failed")?;
+    proj.kv_put(b"k", b"value-two").map_err(|_| "put failed")?;
+    let current = proj
+        .index
+        .get(b"k".as_slice())
+        .copied()
+        .ok_or("current missing")?;
+
+    // CAS with matching expected value succeeds.
+    assert!(proj.kv_cas(b"k", current, b"value-three").unwrap());
+    if proj.kv_get(b"k").map_err(|_| "get failed")? != b"value-three" {
+        return Err("CAS did not replace value");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-KV-5 (RFC-0022.8): CAS conflict — returns false without modifying
+/// state when the expected value does not match.
+fn cts_kv_cas_conflict() -> Result<(), &'static str> {
+    let mut proj = KvProjection::new(make_cts_provider()?);
+    proj.kv_put(b"k", b"original").map_err(|_| "put failed")?;
+    let current = proj
+        .index
+        .get(b"k".as_slice())
+        .copied()
+        .ok_or("current missing")?;
+
+    // CAS with a non-matching expected value fails without changing state.
+    let wrong = ObjectId(999);
+    assert_ne!(wrong, current);
+    if proj.kv_cas(b"k", wrong, b"replacement").unwrap() {
+        return Err("CAS should report conflict");
+    }
+    if proj.kv_get(b"k").map_err(|_| "get failed")? != b"original" {
+        return Err("conflicting CAS changed state");
+    }
+    if proj.index.get(b"k".as_slice()).copied() != Some(current) {
+        return Err("conflicting CAS changed index");
+    }
+
+    // CAS on a missing key returns NotFound.
+    if proj.kv_cas(b"missing", current, b"x") != Err(KvError::NotFound) {
+        return Err("CAS on missing key should fail");
+    }
+    Ok(())
 }

@@ -16,6 +16,7 @@ aether-interrupt-model = { path = "../aether-interrupt-model" }
 aether-obj-projection = { path = "../aether-obj-projection" }
 aether-object-identity = { path = "../aether-object-identity" }
 aether-integrity-model = { path = "../aether-integrity-model" }
+aether-kv-projection = { path = "../aether-kv-projection" }
 aether-lifecycle-model = { path = "../aether-lifecycle-model" }
 aether-time-model = { path = "../aether-time-model" }
 aether-address-space-model = { path = "../aether-address-space-model" }

@@ -18,6 +18,7 @@ members = [
     "crates/aether-object-identity",
     "crates/aether-integrity-model",
     "crates/aether-lifecycle-model",
+    "crates/aether-kv-projection",
     "crates/aether-obj-projection",
     "crates/aether-posix-projection",
     "crates/aether-storage-model",
