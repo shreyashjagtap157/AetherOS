@@ -1,0 +1,15 @@
+[package]
+name = "aether-driver-framework"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aether-types = { path = "../aether-types" }
+aether-cap-token = { path = "../aether-cap-token" }
+aether-event-model = { path = "../aether-event-model" }
+aether-allocator-hierarchy = { path = "../aether-allocator-hierarchy" }
+
+[lints]
+workspace = true

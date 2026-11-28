@@ -97,6 +97,7 @@ dependencies = [
  "aether-comp-model",
  "aether-diagnostic-query",
  "aether-dispatch-model",
+ "aether-driver-framework",
  "aether-endpoint-model",
  "aether-event-model",
  "aether-exec-domain-model",
@@ -143,6 +144,16 @@ version = "0.1.0"
 dependencies = [
  "aether-address-space-model",
  "aether-exec-domain-model",
+ "aether-types",
+]
+
+[[package]]
+name = "aether-driver-framework"
+version = "0.1.0"
+dependencies = [
+ "aether-allocator-hierarchy",
+ "aether-cap-token",
+ "aether-event-model",
  "aether-types",
 ]
 

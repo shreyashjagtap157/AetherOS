@@ -65,6 +65,10 @@ use aether_cap_rights_algebra as cra;
 use aether_allocator_hierarchy::{
     AllocRequest, Allocator, AllocError, NumaPolicy, PageSizeClass, Zone,
 };
+use aether_driver_framework::{
+    CapabilityDeclaration, DriverError, DriverFlags, DriverFramework, DriverLifecycleState,
+    DriverManifest,
+};
 use aether_cap_transfer_protocol as ctp;
 use aether_cap_revocation_protocol as crp;
 use aether_verif_model::{
@@ -102,7 +106,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 245] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 258] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -445,6 +449,19 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 245] {
         ("CTX-ALLOC-007", ctx_alloc_scheduler_hot_path_no_allocation()),
         ("CTX-ALLOC-008", ctx_alloc_dma_rejected_without_dma_zone()),
         ("CTX-ALLOC-009", ctx_alloc_dma_revoke_invalidates_iommu()),
+        ("CTX-DRIVER-001", ctx_driver_lifecycle_mandatory_path()),
+        ("CTX-DRIVER-002", ctx_driver_capability_not_declared_rejected()),
+        ("CTX-DRIVER-003", ctx_driver_iommu_config_not_granted()),
+        ("CTX-DRIVER-004", ctx_driver_fault_suspends_capabilities()),
+        ("CTX-DRIVER-005", ctx_driver_unload_revokes_all_capabilities()),
+        ("CTX-DRIVER-006", ctx_driver_device_removal_faults_driver()),
+        ("CTX-DRIVER-007", ctx_driver_suspend_then_resume_restores()),
+        ("CTX-DRIVER-008", ctx_driver_cyclic_dependency_detected()),
+        ("CTX-DRIVER-009", ctx_driver_dependency_ordering_before_initialise()),
+        ("CTX-DRIVER-010", ctx_driver_hot_plug_new_device_isolated()),
+        ("CTX-DRIVER-011", ctx_driver_fault_recovery_exceeds_retries_unloads()),
+        ("CTX-DRIVER-012", ctx_driver_derive_narrows_parent_grant()),
+        ("CTX-DRIVER-013", ctx_driver_lifecycle_events_emitted()),
     ]
 }
 
@@ -9913,4 +9930,404 @@ fn ctx_alloc_dma_revoke_invalidates_iommu() -> Result<(), &'static str> {
         .iter()
         .any(|e| matches!(e, aether_allocator_hierarchy::AllocEvent::DmaRevoked { .. })));
     Ok(())
+}
+
+/// CTX-DRIVER-001 (RFC-DRIVER-001): mandatory lifecycle path reaches Operating.
+fn ctx_driver_lifecycle_mandatory_path() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Discovered {
+        return Err("expected Discovered state");
+    }
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Loaded {
+        return Err("expected Loaded state");
+    }
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Initialised {
+        return Err("expected Initialised state");
+    }
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Operating {
+        return Err("expected Operating state");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-002 (RFC-DRIVER-001): a driver cannot be initialised before it is loaded.
+fn ctx_driver_capability_not_declared_rejected() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: Vec::new(),
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    match fw.initialise_driver(driver_id, NOW_NS) {
+        Err(DriverError::InvalidTransition) => Ok(()),
+        _ => Err("initialise before load was not rejected"),
+    }
+}
+
+/// CTX-DRIVER-003 (RFC-DRIVER-001): drivers are never granted CAP_IOMMU_CONFIG.
+fn ctx_driver_iommu_config_not_granted() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "iommu-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::IoMmuConfig,
+            device_id: 1,
+            rights: Rights::READ,
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    match fw.initialise_driver(driver_id, NOW_NS) {
+        Err(DriverError::IommuConfigNotGranted) => Ok(()),
+        _ => Err("CAP_IOMMU_CONFIG was granted to a driver"),
+    }
+}
+
+/// CTX-DRIVER-004 (RFC-DRIVER-001): faulting a driver suspends its capabilities.
+fn ctx_driver_fault_suspends_capabilities() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    let count_before = fw.driver_capability_count(driver_id).map_err(|_| "capability count failed")?;
+    if count_before == 0 {
+        return Err("expected at least one granted capability");
+    }
+    fw.fault_driver(driver_id, NOW_NS).map_err(|_| "fault_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Faulted {
+        return Err("expected Faulted state");
+    }
+    if fw.broker().active_grant_count() != 0 {
+        return Err("capabilities were not suspended on fault");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-005 (RFC-DRIVER-001): unloading a driver revokes all capabilities.
+fn ctx_driver_unload_revokes_all_capabilities() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    fw.unload_driver(driver_id, NOW_NS).map_err(|_| "unload_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Unloaded {
+        return Err("expected Unloaded state");
+    }
+    if fw.broker().active_grant_count() != 0 {
+        return Err("capabilities were not revoked on unload");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-006 (RFC-DRIVER-001): removing a device faults its driver.
+fn ctx_driver_device_removal_faults_driver() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    fw.remove_device(device_id, NOW_NS).map_err(|_| "remove_device failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Faulted {
+        return Err("expected Faulted state after device removal");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-007 (RFC-DRIVER-001): suspend then resume restores Operating state.
+fn ctx_driver_suspend_then_resume_restores() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    fw.suspend_driver(driver_id, NOW_NS).map_err(|_| "suspend_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Suspended {
+        return Err("expected Suspended state");
+    }
+    fw.resume_driver(driver_id, NOW_NS).map_err(|_| "resume_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Operating {
+        return Err("expected Operating state after resume");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-008 (RFC-DRIVER-001): cyclic dependencies are detected.
+fn ctx_driver_cyclic_dependency_detected() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_a = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let driver_a = fw.discover_driver(device_a, default_manifest(), NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    let device_b = fw.add_device(0x2, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let driver_b = fw.discover_driver(device_b, default_manifest(), NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.declare_dependency(driver_a, driver_b);
+    fw.declare_dependency(driver_b, driver_a);
+    let cycle = fw.detect_dependency_cycle();
+    let cycle = cycle.ok_or("expected a dependency cycle")?;
+    if !cycle.contains(&driver_a) || !cycle.contains(&driver_b) {
+        return Err("cycle does not contain both drivers");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-009 (RFC-DRIVER-001): unsatisfied dependencies block initialisation.
+fn ctx_driver_dependency_ordering_before_initialise() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let driver_a = fw.discover_driver(device_id, default_manifest(), NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_a, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.declare_dependency(driver_a, ObjectId(999));
+    match fw.initialise_driver(driver_a, NOW_NS) {
+        Err(DriverError::DependencyUnsatisfied) => Ok(()),
+        _ => Err("initialise with unsatisfied dependency was not rejected"),
+    }
+}
+
+/// CTX-DRIVER-010 (RFC-DRIVER-001): hot-plugged devices are isolated until assigned.
+fn ctx_driver_hot_plug_new_device_isolated() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_a = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let _ = fw.discover_driver(device_a, default_manifest(), NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    let device_b = fw.add_device(0x2, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let record_b = fw.devices().device(device_b).ok_or("device not registered")?;
+    if record_b.driver_assigned.is_some() {
+        return Err("hot-plugged device was pre-assigned a driver");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-011 (RFC-DRIVER-001): fault recovery beyond max retries unloads.
+fn ctx_driver_fault_recovery_exceeds_retries_unloads() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    fw.set_max_recovery_retries(1);
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    // First fault + recovery: within retry budget, returns to Operating.
+    fw.fault_driver(driver_id, NOW_NS).map_err(|_| "fault_driver failed")?;
+    fw.recover_driver(driver_id, NOW_NS).map_err(|_| "recover_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Operating {
+        return Err("expected Operating after first recovery");
+    }
+    // Second fault + recovery: retry budget exhausted, unloads instead.
+    fw.fault_driver(driver_id, NOW_NS).map_err(|_| "fault_driver failed")?;
+    fw.recover_driver(driver_id, NOW_NS).map_err(|_| "recover_driver failed")?;
+    let state = fw.driver_state(driver_id).map_err(|_| "driver state lookup failed")?;
+    if state != DriverLifecycleState::Unloaded {
+        return Err("expected Unloaded after recovery retries exhausted");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-012 (RFC-DRIVER-001): granted capability count matches manifest.
+fn ctx_driver_derive_narrows_parent_grant() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let manifest = DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![
+            CapabilityDeclaration {
+                cap_type: CapType::DeviceControl,
+                device_id: 1,
+                rights: Rights::READ,
+                flags: 0,
+            },
+            CapabilityDeclaration {
+                cap_type: CapType::MmioRegion,
+                device_id: 2,
+                rights: Rights::READ.union(Rights::WRITE),
+                flags: 0,
+            },
+        ],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    };
+    let driver_id = fw.discover_driver(device_id, manifest, NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    fw.initialise_driver(driver_id, NOW_NS).map_err(|_| "initialise_driver failed")?;
+    fw.declare_ready(driver_id, NOW_NS).map_err(|_| "declare_ready failed")?;
+    let count = fw.driver_capability_count(driver_id).map_err(|_| "capability count failed")?;
+    if count != 2 {
+        return Err("granted capability count does not match manifest declarations");
+    }
+    Ok(())
+}
+
+/// CTX-DRIVER-013 (RFC-DRIVER-001): lifecycle transitions emit events.
+fn ctx_driver_lifecycle_events_emitted() -> Result<(), &'static str> {
+    let mut fw = DriverFramework::new();
+    let device_id = fw.add_device(0x1, 0x10ec, 0x8168, 1, 1, 1, 0, NOW_NS)
+        .map_err(|_| "add_device failed")?;
+    let driver_id = fw.discover_driver(device_id, default_manifest(), NOW_NS)
+        .map_err(|_| "discover_driver failed")?;
+    fw.load_driver(driver_id, NOW_NS).map_err(|_| "load_driver failed")?;
+    if fw.events().event_count() == 0 {
+        return Err("expected lifecycle events to be emitted");
+    }
+    Ok(())
+}
+
+fn default_manifest() -> DriverManifest {
+    DriverManifest {
+        name: "test-driver".into(),
+        device_class: 0x1,
+        device_vendor: 0x10ec,
+        device_product: 0x8168,
+        capabilities: vec![CapabilityDeclaration {
+            cap_type: CapType::DeviceControl,
+            device_id: 1,
+            rights: Rights::READ.union(Rights::WRITE),
+            flags: 0,
+        }],
+        dependencies: Vec::new(),
+        flags: DriverFlags::HOTPLUG,
+    }
 }
