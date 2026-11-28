@@ -1,0 +1,16 @@
+[package]
+name = "aether-obj-projection"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aether-storage-provider = { path = "../aether-storage-provider" }
+aether-object-identity = { path = "../aether-object-identity" }
+aether-lifecycle-model = { path = "../aether-lifecycle-model" }
+aether-transaction-model = { path = "../aether-transaction-model" }
+aether-types = { path = "../aether-types" }
+
+[lints]
+workspace = true

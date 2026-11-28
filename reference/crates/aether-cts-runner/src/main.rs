@@ -38,6 +38,7 @@ use aether_lifecycle_model::{
     LifecycleMachine, LifecyclePolicy, LifecycleState, TransitionTrigger,
 };
 use aether_mediation_model::{MediationFault, MediationOutcome, Mediator};
+use aether_obj_projection::{ObjectCreateEntry, ObjectError, ObjectProjection};
 use aether_object_identity::{
     ConsistencyLevel, ObjectIdentity, ReplicaDescriptor, VersionHistory, VersionReason,
 };
@@ -63,7 +64,7 @@ use aether_types::{
 const NOW_NS: u64 = 1_000_000;
 
 #[allow(clippy::too_many_lines)]
-fn cases() -> [(&'static str, Result<(), &'static str>); 150] {
+fn cases() -> [(&'static str, Result<(), &'static str>); 155] {
     [
         ("CTS-CAP-NARROW-001", narrow_rights_and_bounds()),
         ("CTS-CAP-XFER-001", explicit_transfer()),
@@ -302,6 +303,11 @@ fn cases() -> [(&'static str, Result<(), &'static str>); 150] {
         ("CTS-STATE-POSIX-3", cts_posix_transactional_fsync()),
         ("CTS-STATE-POSIX-4", cts_posix_atomic_rename()),
         ("CTS-STATE-POSIX-5", cts_posix_capability_precedence()),
+        ("CTS-STATE-OBJPROJ-1", cts_objproj_object_api()),
+        ("CTS-STATE-OBJPROJ-2", cts_objproj_dedup()),
+        ("CTS-STATE-OBJPROJ-3", cts_objproj_atomic_update()),
+        ("CTS-STATE-OBJPROJ-4", cts_objproj_batch_all_or_nothing()),
+        ("CTS-STATE-OBJPROJ-5", cts_objproj_immutable_rejected()),
     ]
 }
 
@@ -6549,4 +6555,236 @@ fn cts_posix_capability_precedence() -> Result<(), &'static str> {
     }
     proj.close(fd).map_err(|_| "close failed")?;
     Ok(())
+}
+
+/// CTS-STATE-OBJPROJ-1 (RFC-0021.1): full object API — create, get, update,
+/// delete, metadata, version listing work end to end.
+fn cts_objproj_object_api() -> Result<(), &'static str> {
+    let provider = InMemoryProvider::new(
+        "cts-objproj-1",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    );
+    let mut proj = ObjectProjection::new(provider);
+
+    // Create an object.
+    let id = proj
+        .object_create(b"version one")
+        .map_err(|_| "create failed")?;
+    let meta = proj
+        .object_get_metadata(id)
+        .map_err(|_| "metadata failed")?;
+    if meta.size_bytes != 11 || meta.lifecycle_state != LifecycleState::Created || meta.immutable {
+        return Err("object metadata mismatch");
+    }
+
+    // Get returns the content.
+    if proj.object_get(id).map_err(|_| "get failed")? != b"version one" {
+        return Err("get returned wrong content");
+    }
+
+    // Update creates a new identity; current version reflects it.
+    let id2 = proj
+        .object_update(id, b"version two")
+        .map_err(|_| "update failed")?;
+    if id2 == id {
+        return Err("update did not create a new identity");
+    }
+    if proj.object_get(id).map_err(|_| "get after update failed")? != b"version two" {
+        return Err("current version mismatch after update");
+    }
+
+    // Version history has two entries.
+    let versions = proj
+        .object_list_versions(id)
+        .map_err(|_| "list versions failed")?;
+    if versions.len() != 2 || versions[1].0 != id2 {
+        return Err("version history mismatch");
+    }
+
+    // Get at historical version.
+    if proj
+        .object_get_at_version(id, 0)
+        .map_err(|_| "get at version failed")?
+        != b"version one"
+    {
+        return Err("historical version mismatch");
+    }
+
+    // Delete the original object; it is no longer readable.
+    proj.object_delete(id).map_err(|_| "delete failed")?;
+    if proj.object_get(id).is_ok() {
+        return Err("deleted object still readable");
+    }
+    // The new identity object is unaffected.
+    let _ = proj
+        .object_get(id2)
+        .map_err(|_| "new id unreadable after delete")?;
+    Ok(())
+}
+
+/// CTS-STATE-OBJPROJ-2 (RFC-0021.3): deduplication at identity level —
+/// identical content returns the same identity.
+fn cts_objproj_dedup() -> Result<(), &'static str> {
+    let mut proj = ObjectProjection::new(make_cts_provider()?);
+
+    let id1 = proj
+        .object_create(b"same content")
+        .map_err(|_| "create failed")?;
+    let id2 = proj
+        .object_create(b"same content")
+        .map_err(|_| "create failed")?;
+    if id1 != id2 {
+        return Err("identical content did not dedupe");
+    }
+
+    // No duplicate version is added.
+    let versions = proj
+        .object_list_versions(id1)
+        .map_err(|_| "list versions failed")?;
+    if versions.len() != 1 {
+        return Err("dedupe added a spurious version");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJPROJ-3 (RFC-0021.4): create and update are atomic — both
+/// identities are stored in the provider.
+fn cts_objproj_atomic_update() -> Result<(), &'static str> {
+    let mut proj = ObjectProjection::new(make_cts_provider()?);
+
+    let id = proj
+        .object_create(b"original")
+        .map_err(|_| "create failed")?;
+    let id2 = proj
+        .object_update(id, b"updated")
+        .map_err(|_| "update failed")?;
+    if id2 == id {
+        return Err("update did not create a new identity");
+    }
+
+    // Both identities are retrievable through the provider.
+    let content1 = proj
+        .provider
+        .get(
+            proj.object_get_metadata(id)
+                .map_err(|_| "metadata failed")?
+                .object_id,
+        )
+        .map_err(|_| "provider get failed")?;
+    if content1 != b"original" {
+        return Err("original content not stored");
+    }
+    let content2 = proj
+        .provider
+        .get(
+            proj.object_get_metadata(id2)
+                .map_err(|_| "metadata failed")?
+                .object_id,
+        )
+        .map_err(|_| "provider get failed")?;
+    if content2 != b"updated" {
+        return Err("updated content not stored");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJPROJ-4 (RFC-0021.5): batch creation is all-or-nothing and
+/// dedupes duplicate content.
+fn cts_objproj_batch_all_or_nothing() -> Result<(), &'static str> {
+    let mut proj = ObjectProjection::new(make_cts_provider()?);
+
+    let ids = proj
+        .object_create_batch(&[
+            ObjectCreateEntry {
+                content: b"batch one".to_vec(),
+                immutable: false,
+            },
+            ObjectCreateEntry {
+                content: b"batch two".to_vec(),
+                immutable: true,
+            },
+        ])
+        .map_err(|_| "batch create failed")?;
+    if ids.len() != 2 {
+        return Err("batch returned wrong count");
+    }
+
+    let meta0 = proj
+        .object_get_metadata(ids[0])
+        .map_err(|_| "metadata failed")?;
+    if meta0.immutable || proj.object_get(ids[0]).map_err(|_| "get failed")? != b"batch one" {
+        return Err("batch object 0 mismatch");
+    }
+
+    let meta1 = proj
+        .object_get_metadata(ids[1])
+        .map_err(|_| "metadata failed")?;
+    if !meta1.immutable || proj.object_get(ids[1]).map_err(|_| "get failed")? != b"batch two" {
+        return Err("batch object 1 mismatch");
+    }
+
+    // Duplicate content in a later batch dedupes to the existing id.
+    let ids2 = proj
+        .object_create_batch(&[ObjectCreateEntry {
+            content: b"batch one".to_vec(),
+            immutable: false,
+        }])
+        .map_err(|_| "batch create failed")?;
+    if ids2 != vec![ids[0]] {
+        return Err("batch did not dedupe duplicate content");
+    }
+    Ok(())
+}
+
+/// CTS-STATE-OBJPROJ-5 (RFC-0021.7): immutable flag enforced — updating an
+/// immutable object returns an error and leaves content unchanged.
+fn cts_objproj_immutable_rejected() -> Result<(), &'static str> {
+    let mut proj = ObjectProjection::new(make_cts_provider()?);
+
+    let ids = proj
+        .object_create_batch(&[ObjectCreateEntry {
+            content: b"immutable object".to_vec(),
+            immutable: true,
+        }])
+        .map_err(|_| "batch create failed")?;
+    let id = ids[0];
+
+    assert_eq!(
+        proj.object_update(id, b"attempted change"),
+        Err(ObjectError::Immutable)
+    );
+    if proj.object_get(id).map_err(|_| "get failed")? != b"immutable object" {
+        return Err("immutable object content changed");
+    }
+
+    // A mutable object can still be updated.
+    let id2 = proj
+        .object_create(b"mutable")
+        .map_err(|_| "create failed")?;
+    let id3 = proj
+        .object_update(id2, b"changed")
+        .map_err(|_| "update failed")?;
+    if id3 == id2 {
+        return Err("update did not create a new identity");
+    }
+    if proj.object_get(id2).map_err(|_| "get failed")? != b"changed" {
+        return Err("mutable object not updated");
+    }
+    Ok(())
+}
+
+/// Builds a fresh in-memory provider for CTS cases.
+fn make_cts_provider() -> Result<aether_storage_provider::InMemoryProvider, &'static str> {
+    Ok(aether_storage_provider::InMemoryProvider::new(
+        "cts-objproj",
+        ProviderType::Block,
+        1024 * 1024,
+        LatencyBounds::new(100, 1000, 10_000).ok_or("bad latency bounds")?,
+        0.999,
+        0x01,
+    ))
 }

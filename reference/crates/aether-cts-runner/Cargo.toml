@@ -13,6 +13,7 @@ aether-mediation-model = { path = "../aether-mediation-model" }
 aether-exec-domain-model = { path = "../aether-exec-domain-model" }
 aether-event-model = { path = "../aether-event-model" }
 aether-interrupt-model = { path = "../aether-interrupt-model" }
+aether-obj-projection = { path = "../aether-obj-projection" }
 aether-object-identity = { path = "../aether-object-identity" }
 aether-integrity-model = { path = "../aether-integrity-model" }
 aether-lifecycle-model = { path = "../aether-lifecycle-model" }
